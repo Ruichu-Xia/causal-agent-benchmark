@@ -1,6 +1,6 @@
 import pytest
 
-from causalagentbench.metrics import kendall_tau
+from causalagentbench.scoring.metrics import kendall_tau
 
 
 def test_identical_orderings():

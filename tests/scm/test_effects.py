@@ -1,6 +1,6 @@
 import numpy as np
 
-from causalagentbench.effects import marginal_covariance, total_effects
+from causalagentbench.scm.effects import marginal_covariance, total_effects
 
 
 def test_total_effects_include_mediated_paths():

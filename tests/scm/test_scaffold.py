@@ -1,7 +1,7 @@
 import networkx as nx
 import pytest
 
-from causalagentbench.scaffold import CANONICAL
+from causalagentbench.scm.scaffold import CANONICAL
 from causalagentbench.types import Role, Scaffold
 
 

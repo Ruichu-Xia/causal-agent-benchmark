@@ -1,8 +1,8 @@
 import numpy as np
 
 from causalagentbench import generate, sample
-from causalagentbench.effects import marginal_covariance
-from causalagentbench.scaffold import DECOY
+from causalagentbench.scm.effects import marginal_covariance
+from causalagentbench.scm.scaffold import DECOY
 
 
 def test_generation_is_deterministic():

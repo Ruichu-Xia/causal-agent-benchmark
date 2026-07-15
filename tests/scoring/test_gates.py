@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from causalagentbench import generate_gated, sample
-from causalagentbench.baselines import (
+from causalagentbench.scoring.baselines import (
     correlation_effects,
     full_adjustment_effects,
     oracle_effects,

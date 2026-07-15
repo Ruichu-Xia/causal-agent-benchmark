@@ -32,16 +32,25 @@ uv run mypy src              # strict type check
 
 ```
 src/causalagentbench/
-  config.py        GeneratorConfig (validated knobs)
-  types.py         Role, SCM (hidden answer key), GateReport
-  scaffold.py      the canonical 6-node role graph
-  effects.py       total-effect matrix τ and marginal covariance Σ
-  generate.py      UUMC structural generation (unit-variance, neutral sortability)
-  sample.py        draw a standardized data table from an SCM
-  sortability.py   varsortability / R²-sortability metrics
-  baselines.py     oracle / correlation / full-adjustment reference solvers
-  gates.py         the five soundness gates + rejection-sampling generator
-  smoke.py         acceptance-rate / gate-statistics report
+  types.py          Role, Scaffold, SCM — the shared domain vocabulary
+  config.py         GeneratorConfig
+  smoke.py          acceptance-rate / gate-statistics report
+  scm/              build & simulate the hidden SCM
+    scaffold.py       the canonical 6-node role graph
+    generate.py       UUMC structural generation (unit-variance, neutral sortability)
+    effects.py        total-effect matrix τ and marginal covariance Σ
+    sample.py         draw a data table from an SCM
+    sortability.py    varsortability / R²-sortability diagnostics
+  task/             the agent-facing interface
+    instance.py       Instance (public) / InstanceKey (hidden) + prompt
+    labeling.py       Labeler seam + abstract-label placeholder
+    answer.py         the Pydantic Answer contract + parser
+  scoring/          verification against the hidden SCM
+    gates.py          soundness gates + rejection-sampling generator
+    baselines.py      oracle / correlation / full-adjustment reference solvers
+    metrics.py        ranking metrics (Kendall-τ)
 ```
+
+Tests mirror this layout under `tests/{scm,task,scoring}/`.
 
 License: Apache-2.0.

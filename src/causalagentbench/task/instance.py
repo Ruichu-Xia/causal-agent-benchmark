@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from causalagentbench.labeling import Labeler, abstract_labels
+from causalagentbench.task.labeling import Labeler, abstract_labels
 from causalagentbench.types import SCM, FloatArray, SeedLike
 
 

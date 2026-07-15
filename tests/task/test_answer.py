@@ -1,6 +1,6 @@
 import pytest
 
-from causalagentbench.answer import Answer, AnswerParseError, parse_answer
+from causalagentbench.task.answer import Answer, AnswerParseError, parse_answer
 
 _VALID = """
 reasoning here...

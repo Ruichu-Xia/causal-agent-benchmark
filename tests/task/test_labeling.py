@@ -1,7 +1,7 @@
 import numpy as np
 
-from causalagentbench.labeling import abstract_labels
-from causalagentbench.scaffold import CANONICAL
+from causalagentbench.scm.scaffold import CANONICAL
+from causalagentbench.task.labeling import abstract_labels
 
 
 def test_abstract_labels_assigns_one_distinct_xlabel_per_node():

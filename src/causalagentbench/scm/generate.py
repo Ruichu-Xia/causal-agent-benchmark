@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from causalagentbench.effects import total_effects
-from causalagentbench.scaffold import CANONICAL
+from causalagentbench.scm.effects import total_effects
+from causalagentbench.scm.scaffold import CANONICAL
 from causalagentbench.types import SCM, Scaffold, SeedLike
 
 

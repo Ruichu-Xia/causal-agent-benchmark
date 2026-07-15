@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 
 from causalagentbench.config import GeneratorConfig
-from causalagentbench.gates import evaluate_gates, generate_gated
-from causalagentbench.generate import generate
+from causalagentbench.scm.generate import generate
+from causalagentbench.scoring.gates import evaluate_gates, generate_gated
 
 _GATES = (
     "structure_valid",

@@ -3,7 +3,7 @@ import dataclasses
 import numpy as np
 
 from causalagentbench import generate_gated, sample
-from causalagentbench.instance import Instance, build_instance
+from causalagentbench.task.instance import Instance, build_instance
 
 
 def _instance(seed: int = 0):

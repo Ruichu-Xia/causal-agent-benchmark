@@ -5,14 +5,14 @@ hidden answer key, plus the reject loop whose gates guarantee each instance requ
 Stage 1 adds the agent-facing task interface: instance presentation and the answer contract.
 """
 
-from causalagentbench.answer import Answer, AnswerParseError, DriverVerdict, parse_answer
 from causalagentbench.config import GeneratorConfig
-from causalagentbench.gates import GateReport, evaluate_gates, generate_gated
-from causalagentbench.generate import generate
-from causalagentbench.instance import Instance, InstanceKey, build_instance, build_prompt
-from causalagentbench.labeling import Labeler, abstract_labels
-from causalagentbench.sample import sample
-from causalagentbench.scaffold import CANONICAL
+from causalagentbench.scm.generate import generate
+from causalagentbench.scm.sample import sample
+from causalagentbench.scm.scaffold import CANONICAL
+from causalagentbench.scoring.gates import GateReport, evaluate_gates, generate_gated
+from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer
+from causalagentbench.task.instance import Instance, InstanceKey, build_instance, build_prompt
+from causalagentbench.task.labeling import Labeler, abstract_labels
 from causalagentbench.types import SCM, Role, Scaffold
 
 __all__ = [

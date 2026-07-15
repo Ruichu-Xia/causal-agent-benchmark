@@ -23,13 +23,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from causalagentbench.baselines import full_adjustment_effects, oracle_effects, ranking
 from causalagentbench.config import GeneratorConfig
-from causalagentbench.generate import generate
-from causalagentbench.metrics import kendall_tau
-from causalagentbench.sample import sample
-from causalagentbench.scaffold import CANONICAL
-from causalagentbench.sortability import r2_sortability, varsortability
+from causalagentbench.scm.generate import generate
+from causalagentbench.scm.sample import sample
+from causalagentbench.scm.scaffold import CANONICAL
+from causalagentbench.scm.sortability import r2_sortability, varsortability
+from causalagentbench.scoring.baselines import full_adjustment_effects, oracle_effects, ranking
+from causalagentbench.scoring.metrics import kendall_tau
 from causalagentbench.types import SCM, Role, Scaffold, SeedLike
 
 # --- Stage 0 gate thresholds (future GeneratorConfig fields) ------------------
