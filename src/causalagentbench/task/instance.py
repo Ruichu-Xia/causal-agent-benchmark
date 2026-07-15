@@ -6,7 +6,9 @@ scorer. ``build_instance`` applies a ``Labeler``, shuffles the display column or
 
 The prompt states only the *question* - the outcome and the candidate drivers to rank. It never reveals
 causal roles, and it does not tell the agent which of the remaining columns to adjust for: discovering
-that (confounder vs mechanism, and that a candidate may have zero effect) is the task.
+that (confounder vs mechanism, and that a candidate may have zero effect) is the task. Its wording is
+turn-agnostic: the agent may analyse and iterate over any number of steps and emits a final ``<answer>``
+block, so it fits both a single-shot call and the multi-turn tool-use loop the harness will drive.
 """
 
 from __future__ import annotations
@@ -73,12 +75,13 @@ data and, if so, which columns form a valid adjustment set for estimating its to
 candidates may have little or no causal effect). Then rank the identifiable drivers from strongest to
 weakest causal effect.
 
-Provide your final answer as JSON inside a single <answer>...</answer> block, with this shape:
+Work through the problem step by step, inspecting the data as needed. When your analysis is complete,
+give your final answer as JSON inside a single <answer>...</answer> block, with this shape:
 <answer>
 {{"verdicts": [{{"driver": "<name>", "identifiable": true, "adjustment_set": ["<column>"]}}],
  "ranking": ["<driver>", "..."]}}
 </answer>
-Only the content of the last <answer> block is evaluated; you may reason freely before it."""
+Only the content of the last <answer> block is scored, so it must reflect your final conclusions."""
 
 
 def build_instance(

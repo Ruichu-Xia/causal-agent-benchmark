@@ -125,3 +125,35 @@ Export the public names from `__init__.py`. Reuse Stage 0 unchanged.
 Next (separate, careful design): the **semantic LLM-delegated labeler** (aligned scenarios). Then:
 Stage 2 three-axis scorer (verify an `Answer` against `InstanceKey`); misaligned labeling + the
 aligned-vs-misaligned metric; agent runner + verifiers adapter; more scaffolds + stratified scoring.
+
+## 9. SOTA agent-benchmark alignment (validation findings)
+
+Validated against the current agentic-benchmark literature (SWE-bench, WebArena, OSWorld, tau-bench,
+REAL, BrowserGym; the Agentic-RL survey). Framing: agentic benchmarks are **partial-observability,
+tool-using decision processes**, not question-answer tests, and "the environment is the product".
+
+Where CausalAgentBench already leads: **deterministic verification** (exact closed-form SCM verifier -
+stronger than SWE-bench's tests), **reset/reproducibility** (seeded `generate`, unlimited fresh
+instances, zero contamination), and **failure decomposition** (the three-axis score isolates
+identification vs execution vs calibration). Keep the exact single-artifact verifier - it is the crown
+jewel; do not trade it for interface realism.
+
+Requirements this implies for the **harness stage** (record here so it is not lost; artifact-grading and
+a multi-turn loop are *not* in tension - SWE-bench is exactly a multi-turn agent graded on a final
+patch):
+
+1. **Multi-turn tool-use loop, not a single `chat()` call.** The default agent runs a ReAct-style loop
+   against a code sandbox + Layer-2 causal tools (`backdoor_effect`, `ci_test`, `refute`, `bootstrap_ci`)
+   and emits the `<answer>` artifact at the end. The Stage 1 prompt is already turn-agnostic for this.
+2. **Trajectory / telemetry logging as a first-class output.** Log tool calls, intermediate states, and
+   retries per episode - needed both for "why did it fail" analysis and for RL credit assignment
+   (outcome-only reward is too sparse; cf. observation-level supervision).
+3. **Reliability metric (`pass^k`).** Agent + sampling are stochastic; report `pass^k` / variance across
+   seeds, not just the mean, to keep leaderboards from being noise.
+4. **Task-manifold breadth.** One scaffold + one domain is deliberately narrow for now; the motif bank
+   (colliders, instruments, latents) and additional domains are needed for the paper's generality claim.
+
+Explicitly **N/A** (do not cargo-cult web/computer-use design): GUI manipulation, visual-spatial
+precision, streaming interaction, and hour-long / hundreds-of-call horizons. This is a
+reasoning-with-tools task (peer class: CLADDER / Corr2Cause / CausalDS), so episodes should stay
+short-to-medium horizon.
