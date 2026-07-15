@@ -25,3 +25,6 @@ coverage.xml
 # Generated benchmark artifacts
 /artifacts/
 /outputs/
+
+# Design artifacts (proposal decks etc.), not source
+*.html
