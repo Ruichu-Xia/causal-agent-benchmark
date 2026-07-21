@@ -1,0 +1,8 @@
+# Build configuration for the shipped test set `testset_v1` (committed provenance).
+# Only what a user must choose. Alignment is the fixed grid {-1,-0.5,0,+0.5,+1} (+ name-blind),
+# constructed per instance. Secrets + the CauseNet dump path live in .env, never here.
+
+gen_model: openai/gpt-5        # generator (proposes per-node aligned/neutral/misaligned name triples)
+critic_model: openai/gpt-5     # correctness critic (null to skip; same model is fine, or a different one)
+max_revisions: 2               # propose -> critique -> revise iterations before skipping an SCM
+n_scms: 20                     # base SCM seeds; each yields all grid levels (+ name-blind) as paired skins
