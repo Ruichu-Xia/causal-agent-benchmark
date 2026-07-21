@@ -22,7 +22,7 @@ _GATES = (
 
 
 def main() -> None:
-    """Print the Stage 0 generator health report."""
+    """Print the generator health report."""
     config = GeneratorConfig()
     n_candidates = 500
     counts = dict.fromkeys(_GATES, 0)
@@ -42,7 +42,7 @@ def main() -> None:
             r2sorts.append(report.r2_sortability)
             flips += int(report.overadjust_flips_ranking)
 
-    print(f"Stage 0 report over {n_candidates} candidates (n_samples={config.n_samples})")
+    print(f"Generator health report over {n_candidates} candidates (n_samples={config.n_samples})")
     print("-" * 64)
     for gate in _GATES:
         print(f"  {gate:<22} pass rate: {counts[gate] / n_candidates:6.1%}")

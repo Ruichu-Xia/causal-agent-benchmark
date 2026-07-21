@@ -1,9 +1,9 @@
 """The agent's answer contract.
 
-A minimal, validated deliverable: per candidate driver an identifiability flag and an adjustment set,
-plus an overall ranking of the identifiable drivers. The agent emits this as JSON inside an
-``<answer>...</answer>`` block; ``parse_answer`` extracts and validates it. Validation is shape-only -
-instance-consistency and correctness are the (later) scorer's job.
+A minimal, validated deliverable: per candidate driver an adjustment set, plus an overall ranking of the
+drivers by causal effect. The agent emits this as JSON inside an ``<answer>...</answer>`` block;
+``parse_answer`` extracts and validates it. Validation is shape-only - instance-consistency and
+correctness are the (later) scorer's job.
 """
 
 from __future__ import annotations
@@ -20,12 +20,11 @@ class AnswerParseError(ValueError):
 
 
 class DriverVerdict(BaseModel):
-    """The agent's verdict for one candidate driver."""
+    """The agent's proposed adjustment set for one candidate driver."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     driver: str
-    identifiable: bool
     adjustment_set: tuple[str, ...]
 
 

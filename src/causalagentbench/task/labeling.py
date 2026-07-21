@@ -1,28 +1,63 @@
-"""Labeler seam: how scaffold nodes get the display labels the agent sees.
+"""Labeler seam: how a hidden SCM becomes the data card the agent sees.
 
-A ``Labeler`` maps each node to a column label. Stage 1 ships only ``abstract_labels`` (``X1..Xk``,
-role-free), enough to build and test the task interface. The chosen semantic regime - an LLM-delegated
-labeler that gives names evoking each node's causal role - and a later misaligned variant are sibling
-implementations with the same signature, designed as separate steps.
+A ``Labeler`` maps an SCM to a ``Labeling`` - a node->name map plus a short domain ``context`` and a
+per-column ``schema``. Two implementations exist:
+
+* ``abstract_labels`` - role-free ``X1..Xk``, empty context/schema; the name-blind control and the
+  off-axis anchor of the naming axis.
+* ``LLMLabeler`` (in ``causalagentbench.generation``) - an LLM authors real names, context, and schema
+  for one instance at a target naming alignment ``alpha``.
+
+Whatever the labels, the gold answer is computed on the hidden SCM via ``label_to_node``, so naming is a
+pure presentation transform and the reward is alignment-invariant.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 
 import numpy as np
 
-from causalagentbench.types import Scaffold
-
-Labeler = Callable[[Scaffold, np.random.Generator], dict[str, str]]
-"""Maps each node name to a display label. The extensibility seam for naming strategies."""
+from causalagentbench.types import SCM
 
 
-def abstract_labels(scaffold: Scaffold, rng: np.random.Generator) -> dict[str, str]:
-    """Assign role-free labels ``X1..Xk`` to nodes in a randomly permuted order.
+@dataclass(frozen=True)
+class LabelProvenance:
+    """How an instance was labeled, for stratified scoring and reproducibility."""
 
-    Carries no causal-role information, so it leaks no structure; it also does not make the adjustment
-    task well-posed on its own (that is the semantic labeler's job).
+    alignment: float | None  # the constructed grid level in [-1, 1]; None for the name-blind labeler
+    n_aligned: int  # composition of the constructed labeling (for auditing)
+    n_neutral: int
+    n_misaligned: int
+    domain: str | None
+    producer: str  # e.g. "abstract" or "llm:<gen-model>+critic:<critic-model>"
+
+
+@dataclass(frozen=True)
+class Labeling:
+    """The output of a labeler: the names plus the agent-facing data card and its provenance."""
+
+    node_to_label: Mapping[str, str]
+    context: str  # short domain blurb shown to the agent (may be "")
+    column_schema: Mapping[str, str]  # label -> one-line description (may be {})
+    provenance: LabelProvenance
+
+
+Labeler = Callable[[SCM, np.random.Generator], Labeling]
+"""Maps a hidden SCM to a ``Labeling``. The extensibility seam for naming strategies."""
+
+
+def abstract_labels(scm: SCM, rng: np.random.Generator) -> Labeling:
+    """Assign role-free labels ``X1..Xk`` in a random order; no context or schema.
+
+    Leaks no structure and carries no naming prior, so it anchors the naming axis off to one side and
+    serves as the reasoning-vs-recitation control.
     """
-    order = rng.permutation(len(scaffold.node_names))
-    return {node: f"X{position + 1}" for node, position in zip(scaffold.node_names, order, strict=True)}
+    names = scm.scaffold.node_names
+    order = rng.permutation(len(names))
+    node_to_label = {node: f"X{pos + 1}" for node, pos in zip(names, order, strict=True)}
+    provenance = LabelProvenance(
+        alignment=None, n_aligned=0, n_neutral=0, n_misaligned=0, domain=None, producer="abstract"
+    )
+    return Labeling(node_to_label=node_to_label, context="", column_schema={}, provenance=provenance)

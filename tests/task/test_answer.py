@@ -5,8 +5,8 @@ from causalagentbench.task.answer import Answer, AnswerParseError, parse_answer
 _VALID = """
 reasoning here...
 <answer>
-{"verdicts": [{"driver": "X1", "identifiable": true, "adjustment_set": ["X2"]},
-              {"driver": "X3", "identifiable": false, "adjustment_set": []}],
+{"verdicts": [{"driver": "X1", "adjustment_set": ["X2"]},
+              {"driver": "X3", "adjustment_set": []}],
  "ranking": ["X1"]}
 </answer>
 """
@@ -18,7 +18,7 @@ def test_parses_valid_answer_block():
     assert answer.ranking == ("X1",)
     assert answer.verdicts[0].driver == "X1"
     assert answer.verdicts[0].adjustment_set == ("X2",)
-    assert answer.verdicts[1].identifiable is False
+    assert answer.verdicts[1].adjustment_set == ()
 
 
 def test_last_block_wins():
@@ -44,3 +44,10 @@ def test_extra_field_raises():
 def test_missing_field_raises():
     with pytest.raises(AnswerParseError, match="invalid answer"):
         parse_answer('<answer>{"verdicts": []}</answer>')
+
+
+def test_unknown_verdict_field_raises():
+    # e.g. a stale "identifiable" field from prompt drift - the contract has no such field.
+    verdict = '{"driver": "X1", "identifiable": true, "adjustment_set": []}'
+    with pytest.raises(AnswerParseError, match="invalid answer"):
+        parse_answer(f'<answer>{{"verdicts": [{verdict}], "ranking": []}}</answer>')

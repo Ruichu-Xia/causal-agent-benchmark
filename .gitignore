@@ -17,6 +17,9 @@ htmlcov/
 .coverage.*
 coverage.xml
 
+# Secrets (keep .env.example tracked)
+.env
+
 # OS / editor
 .DS_Store
 .idea/
@@ -28,3 +31,14 @@ coverage.xml
 
 # Design artifacts (proposal decks etc.), not source
 *.html
+
+# External data dumps (e.g. CauseNet, CC BY-NC) - fetched locally, never committed or shipped
+causenet-*.jsonl*
+*.jsonl.bz2
+
+# Local reference material, not project source
+/causalds/
+/causalDS.pdf
+
+# Claude Code local settings
+.claude/settings.local.json
