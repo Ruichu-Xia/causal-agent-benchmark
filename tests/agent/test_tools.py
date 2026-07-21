@@ -44,6 +44,15 @@ def test_correlate_rejects_unknown_column_or_self_pair():
     assert "Error" in tools.correlate(label["A"], label["A"])
 
 
+def test_correlate_rejects_given_that_would_make_the_precision_matrix_singular():
+    # given containing x/y (or a repeat) duplicates a column in the correlation submatrix, which is
+    # singular and would otherwise crash np.linalg.inv - this must degrade to an error string instead.
+    tools, label = _tools()
+    assert "Error" in tools.correlate(label["A"], label["Dz"], given=[label["A"]])
+    assert "Error" in tools.correlate(label["A"], label["Dz"], given=[label["Dz"]])
+    assert "Error" in tools.correlate(label["A"], label["Dz"], given=[label["C"], label["C"]])
+
+
 def test_regress_matches_the_oracle_solver_on_the_same_data():
     # instance.data is data with columns permuted+renamed for display; the OLS coefficient does not
     # depend on column order, so regress() under the gold adjustment set must match oracle_effects()

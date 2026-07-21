@@ -48,6 +48,10 @@ class CausalTools:
             return error
         if x == y:
             return "Error: x and y must be different columns."
+        if len(set(given)) != len(given):
+            return "Error: given must not contain duplicate columns."
+        if x in given or y in given:
+            return "Error: given must not contain x or y (conditioning on a variable on itself)."
         value = _partial_corr(self.instance.data, self.instance.columns, x, y, tuple(given))
         cond = f" given {given}" if given else ""
         return f"corr({x}, {y}{cond}) = {value:+.4f}"

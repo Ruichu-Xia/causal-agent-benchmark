@@ -34,6 +34,8 @@ class LiteLLMClient:
         load_env()
         litellm.drop_params = True
         full_messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *messages]
+        # _skip_mcp_handler: we pass plain function tools, never litellm's MCP gateway; skipping avoids an
+        # eager import of litellm's proxy stack (fastapi/orjson/uvicorn/...), which isn't a dependency here.
         response = litellm.completion(
             model=self.model,
             messages=full_messages,
@@ -41,11 +43,17 @@ class LiteLLMClient:
             tool_choice="none" if force_final else "auto",
             temperature=self.temperature,
             num_retries=_NUM_RETRIES,
+            _skip_mcp_handler=True,
         )
         message = response.choices[0].message
         raw_calls = getattr(message, "tool_calls", None) or ()
-        calls = tuple(
-            ToolCall(id=c.id, name=c.function.name, arguments=json.loads(c.function.arguments or "{}"))
-            for c in raw_calls
-        )
-        return ModelTurn(content=message.content, tool_calls=calls)
+        return ModelTurn(content=message.content, tool_calls=tuple(_parse_tool_call(c) for c in raw_calls))
+
+
+def _parse_tool_call(raw: Any) -> ToolCall:
+    """Parse one wire tool call; malformed arguments JSON becomes a ``ToolCall.error`` the loop can report."""
+    try:
+        arguments = json.loads(raw.function.arguments or "{}")
+    except json.JSONDecodeError as exc:
+        return ToolCall(id=raw.id, name=raw.function.name, arguments={}, error=f"malformed arguments JSON: {exc}")
+    return ToolCall(id=raw.id, name=raw.function.name, arguments=arguments)

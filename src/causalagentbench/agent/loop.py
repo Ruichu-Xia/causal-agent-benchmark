@@ -11,6 +11,7 @@ anything about it, which is the point of a tool-using agent rather than a single
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -29,6 +30,7 @@ class ToolCall:
     id: str
     name: str
     arguments: Mapping[str, Any]
+    error: str | None = None  # set by a client that could not parse this call's arguments; skips dispatch
 
 
 @dataclass(frozen=True)
@@ -123,8 +125,7 @@ def run_agent(instance: Instance, client: ToolCallingClient, *, max_turns: int =
 
         messages.append({"role": "assistant", "content": reply.content, "tool_calls": _as_wire(reply.tool_calls)})
         for call in reply.tool_calls:
-            handler = dispatch.get(call.name)
-            result = handler(**call.arguments) if handler else f"Error: unknown tool {call.name!r}"
+            result = _execute(dispatch, call)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
     # Exhausted max_turns on a tool-call turn; the loop's last force_final request should have produced
@@ -132,8 +133,32 @@ def run_agent(instance: Instance, client: ToolCallingClient, *, max_turns: int =
     return ""
 
 
+def _execute(dispatch: dict[str, Callable[..., str]], call: ToolCall) -> str:
+    """Run one tool call, turning any failure into an error string the model can read and retry from.
+
+    Covers three failure modes uniformly: a client-side arguments-parse failure (``call.error``), an
+    unknown tool name, and any exception the tool itself raises (a malformed/adversarial argument shape a
+    model can produce - e.g. an extra kwarg, or a ``given``/``adjust`` set that makes the underlying
+    computation singular) - none of these should ever crash a batch eval over an unknown-quality model.
+    """
+    if call.error:
+        return f"Error: {call.error}"
+    handler = dispatch.get(call.name)
+    if handler is None:
+        return f"Error: unknown tool {call.name!r}"
+    try:
+        return handler(**call.arguments)
+    except Exception as exc:  # deliberately broad: any tool-call shape a model can produce must degrade to text
+        return f"Error: {exc}"
+
+
 def _as_wire(tool_calls: tuple[ToolCall, ...]) -> list[dict[str, Any]]:
-    """Render ``ToolCall``s back into the assistant-message wire shape expected by chat APIs."""
+    """Render ``ToolCall``s back into the assistant-message wire shape expected by chat APIs.
+
+    ``function.arguments`` must be a JSON-encoded string on the wire (chat-completions APIs reject a raw
+    object), even though ``ToolCall.arguments`` is the already-parsed ``Mapping`` for our own dispatch.
+    """
     return [
-        {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}} for c in tool_calls
+        {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": json.dumps(dict(c.arguments))}}
+        for c in tool_calls
     ]

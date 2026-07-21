@@ -35,6 +35,32 @@ def _perfect_answer_text(key: InstanceKey) -> str:
     return f"<answer>{json.dumps({'verdicts': verdicts, 'ranking': ranking})}</answer>"
 
 
+class _RaisesOnFirstCallClient:
+    """Simulates a client/provider error on the first instance only.
+
+    A stand-in for anything the tool loop itself can't turn into text (e.g. a network failure).
+    """
+
+    def __init__(self, reply: str):
+        self._reply = reply
+        self._calls = 0
+
+    def complete(self, messages, tools, *, force_final: bool) -> ModelTurn:
+        self._calls += 1
+        if self._calls == 1:
+            raise RuntimeError("simulated provider failure")
+        return ModelTurn(content=self._reply)
+
+
+def test_run_evaluation_isolates_a_crashing_instance_instead_of_losing_the_batch():
+    second = _instance(1)
+    instances = [_instance(0), second]
+    scores = run_evaluation(instances, _RaisesOnFirstCallClient(_perfect_answer_text(second[1])))
+    assert len(scores) == 2
+    assert not scores[0].parse_ok  # the crashed instance scores as a parse failure, not an exception
+    assert scores[1].parse_ok  # the second instance still ran normally
+
+
 def test_run_evaluation_returns_one_score_per_instance():
     instances = [_instance(0), _instance(1)]
     scores = run_evaluation(instances, _FixedReplyClient("not an answer"))

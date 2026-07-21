@@ -8,6 +8,7 @@ should stay flat across the grid, a reciter should degrade as names go neutral o
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -15,14 +16,25 @@ from causalagentbench.agent.loop import MAX_TURNS, ToolCallingClient, run_agent
 from causalagentbench.scoring.score import AnswerScore, score_output
 from causalagentbench.task.instance import Instance, InstanceKey
 
+logger = logging.getLogger(__name__)
+
 
 def run_evaluation(
     instances: Iterable[tuple[Instance, InstanceKey]], client: ToolCallingClient, *, max_turns: int = MAX_TURNS
 ) -> list[AnswerScore]:
-    """Run the agent on every instance and score each reply; one ``AnswerScore`` per instance."""
+    """Run the agent on every instance and score each reply; one ``AnswerScore`` per instance.
+
+    A single instance whose agent run raises (a client/provider error the tool loop itself can't turn into
+    text) is logged and scored as a parse failure rather than aborting the whole batch - one bad instance
+    should never cost every other instance's already-computed score.
+    """
     scores = []
     for instance, key in instances:
-        reply = run_agent(instance, client, max_turns=max_turns)
+        try:
+            reply = run_agent(instance, client, max_turns=max_turns)
+        except Exception:
+            logger.exception("agent run failed; scoring this instance as a parse failure")
+            reply = ""
         scores.append(score_output(reply, key))
     return scores
 
