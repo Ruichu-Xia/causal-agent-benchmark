@@ -6,7 +6,11 @@ from causalagentbench.agent.clients import _databricks_client, _parse_tool_call
 
 
 @pytest.fixture(autouse=True)
-def _clear_databricks_client_cache():
+def _clear_databricks_client_cache(monkeypatch):
+    # Also stub load_env to a no-op: python-dotenv's load_dotenv(override=False) fills in any var a
+    # test just monkeypatch.delenv'd from a real ambient .env, undoing the test's own setup - these
+    # tests must control every DATABRICKS_* var themselves, independent of what's on disk.
+    monkeypatch.setattr("causalagentbench.agent.clients.load_env", lambda: None)
     _databricks_client.cache_clear()
     yield
     _databricks_client.cache_clear()

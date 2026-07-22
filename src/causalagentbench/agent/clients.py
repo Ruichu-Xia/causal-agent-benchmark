@@ -80,18 +80,42 @@ class DatabricksClient:
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, force_final: bool) -> ModelTurn:
         """Complete one turn with the configured model via the Databricks AI Gateway."""
+        import openai
+
         full_messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *messages]
-        response = _databricks_client().chat.completions.create(
-            model=self.model,
-            messages=full_messages,
-            tools=tools,
-            tool_choice="none" if force_final else "auto",
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-        )
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": full_messages,
+            "tools": tools,
+            "tool_choice": "none" if force_final else "auto",
+            "max_tokens": self.max_tokens,
+        }
+        try:
+            response = _databricks_client().chat.completions.create(temperature=self.temperature, **kwargs)
+        except openai.BadRequestError as exc:
+            # Some gateway-served models (observed: claude-opus-4-8) reject "temperature" outright, unlike
+            # LiteLLM's drop_params which handles this transparently - retry once without it.
+            if "temperature" not in str(exc):
+                raise
+            response = _databricks_client().chat.completions.create(**kwargs)
         message = response.choices[0].message
         raw_calls = getattr(message, "tool_calls", None) or ()
-        return ModelTurn(content=message.content, tool_calls=tuple(_parse_tool_call(c) for c in raw_calls))
+        calls = tuple(_parse_tool_call(c) for c in raw_calls)
+        return ModelTurn(content=_extract_databricks_content(message.content), tool_calls=calls)
+
+
+def _extract_databricks_content(content: Any) -> str | None:
+    """Normalize a Databricks Gateway message's ``content`` field to plain text.
+
+    Databricks-specific, not shared with ``LiteLLMClient``: usually already a string, but some
+    gateway-served reasoning models (observed: gpt-oss-120b on this gateway) instead return a list
+    mixing a "reasoning" (chain-of-thought) block with the actual "text" answer, which would otherwise
+    silently break a downstream ``<answer>`` parse and corrupt the next turn's message-history replay.
+    """
+    if content is None or isinstance(content, str):
+        return content
+    parts = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
+    return "".join(parts) or None
 
 
 @functools.lru_cache(maxsize=1)
