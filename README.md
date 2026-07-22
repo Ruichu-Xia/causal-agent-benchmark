@@ -122,6 +122,14 @@ Or from the CLI:
 uv run python scripts/run_eval.py --model anthropic/claude-opus-4-8 -n 5
 ```
 
+`DatabricksClient` (same module) is a second `ToolCallingClient`, for a model served behind a Databricks
+AI Gateway (OpenAI-compatible; needs `DATABRICKS_TOKEN` + `DATABRICKS_HOST` in `.env`, see `.env.example`):
+
+```python
+from causalagentbench.agent.clients import DatabricksClient
+scores = run_evaluation(instances, DatabricksClient(model="databricks-claude-opus-4-7"))
+```
+
 `run_agent`/`run_evaluation` take any `ToolCallingClient` (a tiny `Protocol`), so a stub client with no
 network drives the loop's own tests — see `tests/agent/`.
 

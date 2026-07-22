@@ -1,6 +1,15 @@
 from types import SimpleNamespace
 
-from causalagentbench.agent.clients import _parse_tool_call
+import pytest
+
+from causalagentbench.agent.clients import _databricks_client, _parse_tool_call
+
+
+@pytest.fixture(autouse=True)
+def _clear_databricks_client_cache():
+    _databricks_client.cache_clear()
+    yield
+    _databricks_client.cache_clear()
 
 
 def _raw(arguments: str, *, id_: str = "1", name: str = "correlate"):
@@ -26,3 +35,33 @@ def test_parse_tool_call_reports_malformed_json_as_an_error_not_a_raised_excepti
     assert call.arguments == {}
     assert call.error is not None
     assert "malformed arguments JSON" in call.error
+
+
+def test_databricks_client_requires_token(monkeypatch):
+    monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.net")
+    with pytest.raises(RuntimeError, match="DATABRICKS_TOKEN"):
+        _databricks_client()
+
+
+def test_databricks_client_requires_host_when_no_base_url_override(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-fake")
+    monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+    monkeypatch.delenv("DATABRICKS_AI_GATEWAY_BASE_URL", raising=False)
+    with pytest.raises(RuntimeError, match="DATABRICKS_HOST"):
+        _databricks_client()
+
+
+def test_databricks_client_computes_base_url_from_host(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-fake")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net/")
+    monkeypatch.delenv("DATABRICKS_AI_GATEWAY_BASE_URL", raising=False)
+    client = _databricks_client()
+    assert str(client.base_url).rstrip("/") == "https://adb-123.azuredatabricks.net/ai-gateway/mlflow/v1"
+
+
+def test_databricks_client_respects_base_url_override(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-fake")
+    monkeypatch.setenv("DATABRICKS_AI_GATEWAY_BASE_URL", "https://custom.gateway/v1/")
+    client = _databricks_client()
+    assert str(client.base_url).rstrip("/") == "https://custom.gateway/v1"
