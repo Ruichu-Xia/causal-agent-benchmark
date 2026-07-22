@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from causalagentbench.task.labeling import Labeler, LabelProvenance, abstract_labels
-from causalagentbench.types import SCM, FloatArray, SeedLike
+from causalagentbench.types import SCM, FloatArray, Scaffold, SeedLike
 
 
 @dataclass(frozen=True)
@@ -100,6 +100,20 @@ give your final answer as JSON inside a single <answer>...</answer> block, with 
 Only the content of the last <answer> block is scored, so it must reflect your final conclusions."""
 
 
+def outcome_and_drivers(
+    scaffold: Scaffold, node_to_label: Mapping[str, str], columns: tuple[str, ...]
+) -> tuple[str, tuple[str, ...]]:
+    """Return (outcome label, candidate-driver labels in ``columns`` order) from a scaffold + label map.
+
+    Shared by ``build_instance`` (labeling just happened) and ``dataset.load_dataset`` (labeling was
+    already serialized) - same derivation, only the display order's source differs.
+    """
+    label_to_node = {label: node for node, label in node_to_label.items()}
+    outcome = node_to_label[scaffold.outcome]
+    candidate_drivers = tuple(c for c in columns if label_to_node[c] in scaffold.drivers)
+    return outcome, candidate_drivers
+
+
 def build_instance(
     scm: SCM,
     data: FloatArray,
@@ -125,11 +139,9 @@ def build_instance(
     permutation = [scaffold.index(node) for node in display_nodes]
     display_data = np.ascontiguousarray(data[:, permutation])
 
-    outcome = node_to_label[scaffold.outcome]
-    # Present candidates in the shuffled display order (not fixed scaffold order), so a driver's position
-    # carries no information about its role - no "always abstain on the first candidate" shortcut.
-    drivers = set(scaffold.drivers)
-    candidate_drivers = tuple(node_to_label[node] for node in display_nodes if node in drivers)
+    # Candidates come out in the shuffled display order (not fixed scaffold order), so a driver's
+    # position carries no information about its role - no "always abstain on the first candidate" shortcut.
+    outcome, candidate_drivers = outcome_and_drivers(scaffold, node_to_label, columns)
     prompt = build_prompt(columns, outcome, candidate_drivers, labeling.context, labeling.column_schema)
 
     instance = Instance(

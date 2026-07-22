@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from causalagentbench.scoring.metrics import regression_coefficient
 from causalagentbench.task.instance import Instance
 from causalagentbench.types import FloatArray
 
@@ -67,7 +68,7 @@ class CausalTools:
             return "Error: treatment cannot be the outcome column."
         if treatment in adjust:
             return "Error: treatment cannot also appear in adjust."
-        coef = _adjusted_coefficient(self.instance.data, self.instance.columns, outcome, treatment, tuple(adjust))
+        coef = regression_coefficient(self.instance.data, self.instance.columns, outcome, treatment, tuple(adjust))
         adjust_desc = f"{{{', '.join(adjust)}}}" if adjust else "{}"
         return f"regress({outcome} ~ {treatment} | adjust={adjust_desc}) = {coef:+.4f}"
 
@@ -99,14 +100,3 @@ def _partial_corr(data: FloatArray, columns: tuple[str, ...], x: str, y: str, gi
     corr = np.atleast_2d(corr)
     precision = np.linalg.inv(corr)
     return float(-precision[0, 1] / np.sqrt(precision[0, 0] * precision[1, 1]))
-
-
-def _adjusted_coefficient(
-    data: FloatArray, columns: tuple[str, ...], outcome: str, treatment: str, adjust: tuple[str, ...]
-) -> float:
-    """OLS coefficient on ``treatment`` when regressing ``outcome`` on ``treatment`` plus ``adjust``."""
-    predictor_idx = [_column_index(columns, name) for name in (treatment, *adjust)]
-    design = np.column_stack([np.ones(data.shape[0]), data[:, predictor_idx]])
-    target = data[:, _column_index(columns, outcome)]
-    coefficients, *_ = np.linalg.lstsq(design, target, rcond=None)
-    return float(coefficients[1])  # column 0 is the intercept

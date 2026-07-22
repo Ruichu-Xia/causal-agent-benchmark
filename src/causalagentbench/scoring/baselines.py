@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from causalagentbench.scoring.metrics import regression_coefficient
 from causalagentbench.types import SCM, FloatArray
 
 
@@ -23,19 +24,13 @@ def _ols_coefficients(design: FloatArray, target: FloatArray) -> FloatArray:
     return coefficients
 
 
-def _adjusted_effect(data: FloatArray, scm: SCM, driver: str, adjust: tuple[str, ...]) -> float:
-    """Return the regression coefficient on ``driver`` when adjusting for ``adjust``."""
-    index = scm.scaffold.index
-    columns = [index(driver), *(index(z) for z in adjust)]
-    design = np.column_stack([np.ones(data.shape[0]), data[:, columns]])
-    target = data[:, index(scm.scaffold.outcome)]
-    return float(_ols_coefficients(design, target)[1])  # column 0 is the intercept
-
-
 def oracle_effects(data: FloatArray, scm: SCM) -> dict[str, float]:
     """Estimate each driver's effect using its correct backdoor adjustment set."""
     adjust = scm.scaffold.correct_adjustment
-    return {d: _adjusted_effect(data, scm, d, adjust.get(d, ())) for d in scm.scaffold.drivers}
+    return {
+        d: regression_coefficient(data, scm.scaffold.node_names, scm.scaffold.outcome, d, adjust.get(d, ()))
+        for d in scm.scaffold.drivers
+    }
 
 
 def correlation_effects(data: FloatArray, scm: SCM) -> dict[str, float]:

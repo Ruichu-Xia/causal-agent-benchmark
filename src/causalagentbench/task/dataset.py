@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from causalagentbench.scm.scaffold import CANONICAL
-from causalagentbench.task.instance import Instance, InstanceKey, build_prompt
+from causalagentbench.task.instance import Instance, InstanceKey, build_prompt, outcome_and_drivers
 from causalagentbench.task.labeling import LabelProvenance
 from causalagentbench.types import SCM, FloatArray, Scaffold
 
@@ -50,8 +50,7 @@ def _load_record(record: dict[str, Any], data: FloatArray) -> tuple[Instance, In
     node_to_label: dict[str, str] = record["node_to_label"]
     label_to_node = {label: node for node, label in node_to_label.items()}
     columns = tuple(record["columns"])
-    outcome = node_to_label[scaffold.outcome]
-    candidate_drivers = tuple(c for c in columns if label_to_node[c] in scaffold.drivers)
+    outcome, candidate_drivers = outcome_and_drivers(scaffold, node_to_label, columns)
     context = record["context"]
     column_schema = record["column_schema"]
     prompt = build_prompt(columns, outcome, candidate_drivers, context, column_schema)
