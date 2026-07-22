@@ -14,10 +14,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Anything that talks to an LLM: naming generation (causalagentbench.generation) and the real
+# The default LLM path (LiteLLM): naming generation (causalagentbench.generation) and the real
 # tool-calling agent client (causalagentbench.agent.clients.LiteLLMClient). Never needed to build or
 # score an instance with the always-available abstract labeler.
-generation = ["litellm>=1.50", "openai>=1.50", "python-dotenv>=1.0", "tenacity>=8.0"]
+generation = ["litellm>=1.50", "python-dotenv>=1.0", "tenacity>=8.0"]
+
+# Only for causalagentbench.agent.clients.DatabricksClient - comparing the agent against a model served
+# behind a Databricks AI Gateway. Not part of the default path; most users only need `generation`.
+databricks = ["openai>=1.50", "python-dotenv>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/causal-agent-benchmark/causalagentbench"

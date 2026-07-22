@@ -211,9 +211,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+databricks = [
+    { name = "openai" },
+    { name = "python-dotenv" },
+]
 generation = [
     { name = "litellm" },
-    { name = "openai" },
     { name = "python-dotenv" },
     { name = "tenacity" },
 ]
@@ -233,12 +236,13 @@ requires-dist = [
     { name = "litellm", marker = "extra == 'generation'", specifier = ">=1.50" },
     { name = "networkx", specifier = ">=3.3" },
     { name = "numpy", specifier = ">=2.1" },
-    { name = "openai", marker = "extra == 'generation'", specifier = ">=1.50" },
+    { name = "openai", marker = "extra == 'databricks'", specifier = ">=1.50" },
     { name = "pydantic", specifier = ">=2.9" },
+    { name = "python-dotenv", marker = "extra == 'databricks'", specifier = ">=1.0" },
     { name = "python-dotenv", marker = "extra == 'generation'", specifier = ">=1.0" },
     { name = "tenacity", marker = "extra == 'generation'", specifier = ">=8.0" },
 ]
-provides-extras = ["generation"]
+provides-extras = ["generation", "databricks"]
 
 [package.metadata.requires-dev]
 dev = [

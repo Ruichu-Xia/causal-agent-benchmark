@@ -122,8 +122,9 @@ Or from the CLI:
 uv run python scripts/run_eval.py --model anthropic/claude-opus-4-8 -n 5
 ```
 
-`DatabricksClient` (same module) is a second `ToolCallingClient`, for a model served behind a Databricks
-AI Gateway (OpenAI-compatible; needs `DATABRICKS_TOKEN` + `DATABRICKS_HOST` in `.env`, see `.env.example`):
+`DatabricksClient` (same module) is a second `ToolCallingClient`, for comparing against a model served
+behind a Databricks AI Gateway — not part of the default path above; needs `uv sync --extra databricks`
+plus `DATABRICKS_TOKEN` + `DATABRICKS_HOST` in `.env` (see `.env.example`):
 
 ```python
 from causalagentbench.agent.clients import DatabricksClient
