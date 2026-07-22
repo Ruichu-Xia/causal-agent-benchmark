@@ -19,8 +19,15 @@ from typing import Any, Protocol
 from causalagentbench.agent.tools import CausalTools
 from causalagentbench.task.instance import Instance
 
-MAX_TURNS = 8
+MAX_TURNS = 20
 """Safety valve: tool-call turns before forcing a final, tool-free answer."""
+
+_FINAL_TURN_REMINDER = (
+    "This is your final turn - no further tool calls are possible. You must give your complete final "
+    "answer now, as a single <answer>...</answer> JSON block per the instructions above."
+)
+"""Told to the model only on the forced-final turn: without it, a model mid-investigation may keep
+narrating what it would check next instead of committing to an answer (observed on real models)."""
 
 
 @dataclass(frozen=True)
@@ -119,6 +126,8 @@ def run_agent(instance: Instance, client: ToolCallingClient, *, max_turns: int =
 
     for turn in range(max_turns):
         force_final = turn == max_turns - 1
+        if force_final:
+            messages.append({"role": "user", "content": _FINAL_TURN_REMINDER})
         reply = client.complete(messages, list(_TOOL_SCHEMAS), force_final=force_final)
         if not reply.tool_calls:
             return reply.content or ""

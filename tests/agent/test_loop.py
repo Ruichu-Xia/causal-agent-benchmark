@@ -1,7 +1,7 @@
 import json
 
 from causalagentbench import build_instance, generate_gated, sample
-from causalagentbench.agent.loop import MAX_TURNS, ModelTurn, ToolCall, run_agent
+from causalagentbench.agent.loop import _FINAL_TURN_REMINDER, MAX_TURNS, ModelTurn, ToolCall, run_agent
 
 
 def _instance():
@@ -19,7 +19,7 @@ class _ScriptedClient:
         self.calls: list[tuple[list[dict], list[dict], bool]] = []
 
     def complete(self, messages, tools, *, force_final: bool) -> ModelTurn:
-        self.calls.append((messages, tools, force_final))
+        self.calls.append((list(messages), tools, force_final))  # snapshot: run_agent mutates in place
         return self._turns.pop(0)
 
 
@@ -93,6 +93,22 @@ def test_last_turn_requests_force_final():
     client = _ScriptedClient([ModelTurn(content="<answer>{}</answer>")])
     run_agent(instance, client, max_turns=1)
     assert client.calls[0][2] is True  # force_final on the only (last) turn
+
+
+def test_final_turn_reminder_is_only_added_on_the_forced_final_turn():
+    # A model mid-investigation can keep narrating "next I'd check X" instead of answering once tool
+    # access is cut off (observed on real models); the explicit reminder tells it this is its last chance.
+    instance = _instance()
+    call = ToolCall(id="1", name="preview", arguments={})
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content="<answer>ok</answer>")])
+    run_agent(instance, client, max_turns=2)
+
+    first_call_messages, _, first_force_final = client.calls[0]
+    second_call_messages, _, second_force_final = client.calls[1]
+    assert first_force_final is False
+    assert not any(m.get("content") == _FINAL_TURN_REMINDER for m in first_call_messages)
+    assert second_force_final is True
+    assert second_call_messages[-1] == {"role": "user", "content": _FINAL_TURN_REMINDER}
 
 
 def test_misbehaving_model_that_ignores_force_final_yields_empty_string():
