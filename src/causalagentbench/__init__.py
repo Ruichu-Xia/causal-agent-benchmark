@@ -17,6 +17,7 @@ from causalagentbench.scm.scaffold import CANONICAL
 from causalagentbench.scoring.gates import GateReport, evaluate_gates, generate_gated
 from causalagentbench.scoring.score import AnswerScore, score_answer, score_output
 from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer
+from causalagentbench.task.dataset import load_dataset
 from causalagentbench.task.instance import Instance, InstanceKey, build_instance, build_prompt
 from causalagentbench.task.labeling import Labeler, Labeling, LabelProvenance, abstract_labels
 from causalagentbench.types import SCM, Role, Scaffold
@@ -43,6 +44,7 @@ __all__ = [
     "evaluate_gates",
     "generate",
     "generate_gated",
+    "load_dataset",
     "parse_answer",
     "sample",
     "score_answer",

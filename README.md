@@ -91,7 +91,9 @@ uv run python scripts/build_testset.py --config configs/testset_v1.yaml --out ou
 ```
 
 There is currently no packaged/shipped fixed test set — every dataset is generated on demand, either
-abstractly (free, above) or via this CauseNet+LLM path.
+abstractly (free, above) or via this CauseNet+LLM path. `load_dataset` reads a build's output back into
+`(Instance, InstanceKey)` pairs (no LLM calls, no extra needed) — build once, then evaluate several
+models against the identical frozen instances via `scripts/run_eval.py --dataset outputs/my_run`.
 
 ## Evaluating a tool-using agent
 
