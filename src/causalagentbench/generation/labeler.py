@@ -6,10 +6,11 @@ each node, three names from one coherent domain: aligned (prior matches the node
 swapped confounder/mediator cues). A propose -> critique -> revise loop (deterministic pre-checks + an
 optional LLM correctness critic) de-risks the proposal, since all quality now rests on the generator.
 
-The alignment level is then **constructed**, not measured: on the discrete grid ``{-1,-0.5,0,+0.5,+1}``,
-``round(|level|*K)`` load-bearing nodes use their aligned (level>0) or misaligned (level<0) name and the
-rest go neutral - so the level is exact and reproducible, and paired skins (same SCM, all levels) are
-free. Nodes are shown under neutral ids ``v0..vk`` so ids do not leak roles.
+The alignment level is then **constructed**, not measured: on the discrete grid ``{-1,0,+1}``, every
+non-outcome node uniformly takes its aligned (level>0), neutral (level=0), or misaligned (level<0) name -
+so the level is exact and reproducible, comparable cleanly across the naming-vs-identifiability quadrant
+(``scoring/score.py``), and paired skins (same SCM, all levels) are free. Nodes are shown under neutral
+ids ``v0..vk`` so ids do not leak roles.
 """
 
 from __future__ import annotations
@@ -33,8 +34,11 @@ logger = logging.getLogger(__name__)
 #: Grounding: turn an SCM + rng into a domain-context string for the generator prompt.
 GroundingFn = Callable[[SCM, np.random.Generator], str]
 
-#: The discrete alignment grid the test set is built on.
-GRID: tuple[float, ...] = (-1.0, -0.5, 0.0, 0.5, 1.0)
+#: The discrete alignment grid the test set is built on: misaligned, neutral, aligned - applied uniformly
+#: to every non-outcome node (§11.7-adjacent design review: dropped the old ``{-0.5, +0.5}`` partial-flip
+#: midpoints, which needed a hand-tuned node-priority order to pick a subset; the endpoints never did, so
+#: this trades a dose-response curve for a construction mechanism with nothing left to get wrong).
+GRID: tuple[float, ...] = (-1.0, 0.0, 1.0)
 
 _KINDS = ("aligned", "neutral", "misaligned")
 _SNAKE = re.compile(r"[a-z][a-z0-9_]*")
@@ -53,53 +57,26 @@ class NamingTriples:
     choices: Mapping[str, Mapping[str, tuple[str, str]]]
 
 
-def _informative_order(scm: SCM) -> list[str]:
-    """Non-outcome nodes ordered by load-bearing importance (filled into informative slots first)."""
-    scaffold = scm.scaffold
-    decoys = list(scaffold.nodes_with_role(Role.DECOY))
-    drivers = sorted(
-        (d for d in scaffold.drivers if d not in decoys),
-        key=lambda d: abs(scm.total_effect_on_outcome(d)),
-        reverse=True,
-    )
-    ordered = [
-        *decoys,
-        *drivers[:1],  # strongest driver
-        *scaffold.nodes_with_role(Role.CONFOUNDER),
-        *scaffold.nodes_with_role(Role.MEDIATOR),
-        *drivers[1:],  # remaining drivers
-    ]
-    for node in scaffold.node_names:  # any leftover non-outcome nodes
-        if node != scaffold.outcome and node not in ordered:
-            ordered.append(node)
-    seen: list[str] = []
-    for node in ordered:
-        if node not in seen:
-            seen.append(node)
-    return seen
-
-
 def construct_labeling(triples: NamingTriples, scm: SCM, level: float, producer: str) -> Labeling:
-    """Deterministically build a ``Labeling`` at ``level`` from a triple set (no LLM, exact alpha)."""
+    """Deterministically build a ``Labeling`` at ``level`` from a triple set (no LLM, exact alpha).
+
+    ``level``'s sign picks one kind - aligned (>0), misaligned (<0), neutral (0) - applied uniformly to
+    every non-outcome node; only its sign is read, matching ``GRID``'s three points. The outcome is always
+    aligned (its real name is disclosed to the agent regardless of level).
+    """
     scaffold = scm.scaffold
-    order = _informative_order(scm)
-    n_informative = round(abs(level) * len(order))
-    informative = set(order[:n_informative])
-    informative_kind = "aligned" if level > 0 else "misaligned"
+    uniform_kind = "aligned" if level > 0 else "misaligned" if level < 0 else "neutral"
 
     node_to_label: dict[str, str] = {}
     schema: dict[str, str] = {}
+    node_kind: dict[str, str] = {}
     counts = dict.fromkeys(_KINDS, 0)
     for node in scaffold.node_names:
-        if node == scaffold.outcome:
-            kind = "aligned"  # the outcome is disclosed to the agent; always its real name
-        elif node in informative:
-            kind = informative_kind
-        else:
-            kind = "neutral"
+        kind = "aligned" if node == scaffold.outcome else uniform_kind
         name, description = triples.choices[node][kind]
         node_to_label[node] = name
         schema[name] = description
+        node_kind[node] = kind
         counts[kind] += 1
 
     provenance = LabelProvenance(
@@ -107,6 +84,7 @@ def construct_labeling(triples: NamingTriples, scm: SCM, level: float, producer:
         n_aligned=counts["aligned"],
         n_neutral=counts["neutral"],
         n_misaligned=counts["misaligned"],
+        node_kind=node_kind,
         domain=triples.domain,
         producer=producer,
     )

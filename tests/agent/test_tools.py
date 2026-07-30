@@ -1,12 +1,32 @@
 import numpy as np
 
-from causalagentbench import build_instance, generate_gated, sample
+from causalagentbench import build_instance, generate, sample
 from causalagentbench.agent.tools import CausalTools
 from causalagentbench.scoring.baselines import oracle_effects
+from causalagentbench.types import Role, Scaffold
+
+# A small, hand-built example graph (confounder C, confounded driver A + mediator M, clean driver B,
+# decoy Dz) - the same shape used across the test suite (tests/scm/test_scaffold.py). A <- C -> Dz is the
+# fork the partial-correlation tests below rely on.
+_SCAFFOLD = Scaffold(
+    node_names=("C", "A", "B", "M", "Dz", "Y"),
+    roles={
+        "C": Role.CONFOUNDER,
+        "A": Role.DRIVER_CONFOUNDED,
+        "B": Role.DRIVER_CLEAN,
+        "M": Role.MEDIATOR,
+        "Dz": Role.DECOY,
+        "Y": Role.OUTCOME,
+    },
+    edges=(("C", "A"), ("C", "Y"), ("C", "Dz"), ("A", "M"), ("A", "Y"), ("M", "Y"), ("B", "Y")),
+    drivers=("A", "B", "Dz"),
+    outcome="Y",
+    correct_adjustment={"A": ("C",), "B": (), "Dz": ("C",)},
+)
 
 
 def _tools(seed: int = 0, n: int = 2000) -> tuple[CausalTools, dict[str, str]]:
-    scm, _ = generate_gated(seed)
+    scm = generate(seed, _SCAFFOLD)
     data = sample(scm, n, seed=seed)
     instance, key = build_instance(scm, data, seed=seed)
     return CausalTools(instance), dict(key.node_to_label)  # node -> label
@@ -57,7 +77,7 @@ def test_regress_matches_the_oracle_solver_on_the_same_data():
     # instance.data is data with columns permuted+renamed for display; the OLS coefficient does not
     # depend on column order, so regress() under the gold adjustment set must match oracle_effects()
     # (an already-tested reference solver) computed on the identical draw, near-exactly.
-    scm, _ = generate_gated(0)
+    scm = generate(0, _SCAFFOLD)
     data = sample(scm, 2000, seed=0)
     instance, key = build_instance(scm, data, seed=0)
     tools = CausalTools(instance)

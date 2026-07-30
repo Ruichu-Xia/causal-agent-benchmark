@@ -80,7 +80,7 @@ skins = alpha_sweep(
     critic_model="openai/gpt-5",              # correctness critic; None to skip
 )
 for level, instance, key in skins:            # same SCM/data, only names change across levels
-    key.provenance.alignment                  # the constructed level in {-1,-0.5,0,+0.5,+1}
+    key.provenance.alignment                  # the constructed level in {-1,0,+1}
 ```
 
 Generate a batch of instances offline — models and size come from a versioned build config

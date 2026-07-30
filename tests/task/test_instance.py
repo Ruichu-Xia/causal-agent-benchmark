@@ -2,12 +2,13 @@ import dataclasses
 
 import numpy as np
 
-from causalagentbench import generate_gated, sample
+from causalagentbench import sample
+from causalagentbench.scoring.gates import generate_gated_procedural
 from causalagentbench.task.instance import Instance, build_instance
 
 
 def _instance(seed: int = 0):
-    scm, _ = generate_gated(seed)
+    scm, _ = generate_gated_procedural(seed)
     data = sample(scm, 128, seed=seed)
     return scm, data, build_instance(scm, data, seed=seed)
 
@@ -24,7 +25,7 @@ def test_shapes_and_partition():
     k = scm.n_nodes
     assert instance.data.shape == (128, k)
     assert len(instance.columns) == k
-    assert len(instance.candidate_drivers) == 3
+    assert len(instance.candidate_drivers) == len(scm.scaffold.drivers)
     assert instance.outcome not in instance.candidate_drivers
     assert set(instance.other_columns) == set(instance.columns) - {instance.outcome, *instance.candidate_drivers}
 
@@ -46,7 +47,7 @@ def test_display_permutation_preserves_column_data():
 
 
 def test_build_instance_is_deterministic():
-    scm, _ = generate_gated(1)
+    scm, _ = generate_gated_procedural(1)
     data = sample(scm, 64, seed=1)
     a, _ = build_instance(scm, data, seed=1)
     b, _ = build_instance(scm, data, seed=1)

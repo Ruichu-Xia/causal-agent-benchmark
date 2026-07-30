@@ -47,6 +47,7 @@ class AlignmentSummary:
     n: int
     mean_ranking_tau: float
     mean_adjustment_accuracy: float
+    mean_abstention_accuracy: float
     parse_rate: float
 
 
@@ -62,6 +63,7 @@ def aggregate_by_alignment(scores: list[AnswerScore]) -> list[AlignmentSummary]:
             n=len(group),
             mean_ranking_tau=sum(s.ranking_tau for s in group) / len(group),
             mean_adjustment_accuracy=sum(s.adjustment_accuracy for s in group) / len(group),
+            mean_abstention_accuracy=sum(s.abstention_accuracy for s in group) / len(group),
             parse_rate=sum(s.parse_ok for s in group) / len(group),
         )
         for alignment, group in groups.items()

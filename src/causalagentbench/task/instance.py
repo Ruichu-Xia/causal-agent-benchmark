@@ -84,6 +84,8 @@ def build_prompt(
         preamble += f"Columns:\n{lines}\n\n"
     return f"""\
 {preamble}You are given an observational dataset (CSV) with columns: {", ".join(columns)}.
+All columns are standardized (mean 0, standard deviation 1), so magnitudes are directly comparable across
+variables regardless of what they measure.
 The outcome variable is "{outcome}". Evaluate these candidate drivers: {", ".join(candidate_drivers)}.
 The dataset also contains other columns; it is part of the task to work out what role each plays.
 
@@ -91,10 +93,15 @@ For each candidate driver, decide which columns form a valid adjustment set for 
 causal effect on the outcome (some candidates may have little or no causal effect; the adjustment set may
 be empty). Then rank all candidate drivers from strongest to weakest causal effect.
 
+Some drivers may be impossible to resolve from this data alone - two different underlying explanations
+could fit the same observations equally well. When that happens for a driver, set "abstain": true instead
+of guessing; still give it your best-guess position in the ranking, since a wrong committed answer is
+worse than an honest abstention.
+
 Work through the problem step by step, inspecting the data as needed. When your analysis is complete,
 give your final answer as JSON inside a single <answer>...</answer> block, with this shape:
 <answer>
-{{"verdicts": [{{"driver": "<name>", "adjustment_set": ["<column>"]}}],
+{{"verdicts": [{{"driver": "<name>", "adjustment_set": ["<column>"], "abstain": false}}],
  "ranking": ["<driver>", "..."]}}
 </answer>
 Only the content of the last <answer> block is scored, so it must reflect your final conclusions."""

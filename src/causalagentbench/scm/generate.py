@@ -25,11 +25,10 @@ from __future__ import annotations
 import numpy as np
 
 from causalagentbench.scm.effects import total_effects
-from causalagentbench.scm.scaffold import CANONICAL
 from causalagentbench.types import SCM, Scaffold, SeedLike
 
 
-def generate(seed: SeedLike, scaffold: Scaffold = CANONICAL) -> SCM:
+def generate(seed: SeedLike, scaffold: Scaffold) -> SCM:
     """Return an ``SCM`` realizing ``scaffold`` with UUMC-sampled parameters, seeded by ``seed``."""
     rng = np.random.default_rng(seed)
     n_nodes = len(scaffold.node_names)

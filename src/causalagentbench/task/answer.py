@@ -20,12 +20,18 @@ class AnswerParseError(ValueError):
 
 
 class DriverVerdict(BaseModel):
-    """The agent's proposed adjustment set for one candidate driver."""
+    """The agent's proposed adjustment set for one candidate driver, or an abstention.
+
+    ``abstain=True`` means the agent judges the driver's role genuinely undetermined by the data (and,
+    where naming is shown, not resolved by the name either) - ``adjustment_set`` is then not graded on
+    content, only whether abstaining was the right call (``scoring/score.py``).
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     driver: str
     adjustment_set: tuple[str, ...]
+    abstain: bool = False
 
 
 class Answer(BaseModel):

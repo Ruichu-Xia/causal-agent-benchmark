@@ -1,11 +1,12 @@
 import json
 
-from causalagentbench import build_instance, generate_gated, sample
+from causalagentbench import build_instance, sample
 from causalagentbench.agent.loop import _FINAL_TURN_REMINDER, MAX_TURNS, ModelTurn, ToolCall, run_agent
+from causalagentbench.scoring.gates import generate_gated_procedural
 
 
 def _instance():
-    scm, _ = generate_gated(0)
+    scm, _ = generate_gated_procedural(0)
     data = sample(scm, 200, seed=0)
     instance, _ = build_instance(scm, data, seed=0)
     return instance

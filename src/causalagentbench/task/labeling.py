@@ -24,12 +24,18 @@ from causalagentbench.types import SCM
 
 @dataclass(frozen=True)
 class LabelProvenance:
-    """How an instance was labeled, for stratified scoring and reproducibility."""
+    """How an instance was labeled, for stratified scoring and reproducibility.
+
+    ``node_kind`` (``"aligned"``/``"neutral"``/``"misaligned"`` per node) is what the abstain gold rule
+    (``scoring/score.py``) reads: a driver's abstain-correctness depends on whether *its own* name was the
+    aligned one, not on the instance's aggregate composition (``n_aligned`` etc., kept for auditing only).
+    """
 
     alignment: float | None  # the constructed grid level in [-1, 1]; None for the name-blind labeler
     n_aligned: int  # composition of the constructed labeling (for auditing)
     n_neutral: int
     n_misaligned: int
+    node_kind: Mapping[str, str]  # node -> "aligned"/"neutral"/"misaligned", for per-driver abstain scoring
     domain: str | None
     producer: str  # e.g. "abstract" or "llm:<gen-model>+critic:<critic-model>"
 
@@ -58,6 +64,12 @@ def abstract_labels(scm: SCM, rng: np.random.Generator) -> Labeling:
     order = rng.permutation(len(names))
     node_to_label = {node: f"X{pos + 1}" for node, pos in zip(names, order, strict=True)}
     provenance = LabelProvenance(
-        alignment=None, n_aligned=0, n_neutral=0, n_misaligned=0, domain=None, producer="abstract"
+        alignment=None,
+        n_aligned=0,
+        n_neutral=0,
+        n_misaligned=0,
+        node_kind=dict.fromkeys(names, "neutral"),  # no naming manipulation at all - nothing is "aligned"
+        domain=None,
+        producer="abstract",
     )
     return Labeling(node_to_label=node_to_label, context="", column_schema={}, provenance=provenance)

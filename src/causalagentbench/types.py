@@ -28,6 +28,8 @@ class Role(Enum):
     DRIVER_CLEAN = "driver_clean"
     MEDIATOR = "mediator"
     DECOY = "decoy"
+    INSTRUMENT = "instrument"
+    UPSTREAM_CAUSE = "upstream_cause"
     OUTCOME = "outcome"
 
 
@@ -83,6 +85,24 @@ class Scaffold:
     def nodes_with_role(self, role: Role) -> tuple[str, ...]:
         """Return the nodes carrying a given role, in canonical order."""
         return tuple(n for n in self.node_names if self.roles[n] == role)
+
+    def non_decoy_drivers(self) -> tuple[str, ...]:
+        """Candidate drivers that aren't decoys, in canonical order.
+
+        The drivers whose effect size is actually being separated/ranked - a decoy's effect is a
+        structural zero by design, so it's a distractor, not a ranked candidate (`scm/target_effects.py`).
+        """
+        decoys = self.nodes_with_role(Role.DECOY)
+        return tuple(d for d in self.drivers if d not in decoys)
+
+    def mediator_of(self, driver: str) -> str | None:
+        """Return the driver's own mediator, if it has one.
+
+        A child carrying ``Role.MEDIATOR`` - not every driver archetype has one (instrumented and clean
+        drivers don't).
+        """
+        mediators = [c for p, c in self.edges if p == driver and self.roles[c] is Role.MEDIATOR]
+        return mediators[0] if mediators else None
 
     def digraph(self) -> nx.DiGraph:
         """Return the scaffold as a networkx directed graph."""

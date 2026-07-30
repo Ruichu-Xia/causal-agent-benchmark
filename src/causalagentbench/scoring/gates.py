@@ -11,51 +11,73 @@ structure was realized (confounding strong enough, mediated effect material). Th
 gold answer "do not adjust". The full benchmark measures appropriate reliance by scoring a mix of
 scaffolds stratified per scaffold, not by filtering a mixed distribution. Here we validate one scaffold.
 
-``evaluate_gates`` locates nodes by ``Role``, so it is robust to relabelling but assumes the
-confounder/mediator/decoy role structure. Thresholds are Stage 0 invariants and will migrate into
+``evaluate_gates`` locates nodes by ``Role`` and checks every instance of each role, not just the first - a
+procedurally-composed scaffold (``scm/gadgets.py``) can have several, or none, of a given kind (an
+instrumented driver has no mediator at all). A threshold check that only inspected the first instance of a
+role would silently ignore the rest. Thresholds are Stage 0 invariants and will migrate into
 ``GeneratorConfig`` when tunable difficulty arrives.
 """
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from causalagentbench.config import GeneratorConfig
+from causalagentbench.scm.gadgets import RESOLVE_PROBABILITY, procedural_scaffold
 from causalagentbench.scm.generate import generate
+from causalagentbench.scm.identifiability import unidentifiable_drivers
 from causalagentbench.scm.sample import sample
-from causalagentbench.scm.scaffold import CANONICAL
 from causalagentbench.scm.sortability import r2_sortability, varsortability
+from causalagentbench.scm.target_effects import (
+    CONFOUNDING_MARGIN,
+    MIN_MEDIATED_EFFECT,
+    REFERENCE_MIN_EFFECT,
+    REFERENCE_MIN_GAP,
+    scaled_threshold,
+    target_effects,
+    with_constructed_confounding,
+    with_constructed_effects,
+)
 from causalagentbench.scoring.baselines import full_adjustment_effects, oracle_effects, ranking
 from causalagentbench.scoring.metrics import kendall_tau
-from causalagentbench.types import SCM, Role, Scaffold, SeedLike
+from causalagentbench.types import SCM, FloatArray, Role, Scaffold, SeedLike
 
 # --- Stage 0 gate thresholds (future GeneratorConfig fields) ------------------
 DECOY_EFFECT_TOL = 1e-9
 """Decoy total effect is a structural zero; tolerate only numerical dust."""
-MIN_ABS_EFFECT = 0.10
-"""Each true driver must have |standardized effect| at least this large."""
-MIN_EFFECT_GAP = 0.05
-"""The two true drivers' |effects| must differ by at least this (strict ranking)."""
-CONFOUNDING_MARGIN = 0.05
-"""Decoy's |corr(Dz, Y)| must beat the weaker driver's correlation by this margin."""
-MIN_MEDIATED_EFFECT = 0.10
-"""|W[A,M] * W[M,Y]| must be at least this, so over-adjustment biases A materially."""
 ORACLE_TAU_THRESHOLD = 0.99
 """Minimum Kendall-tau between the oracle ranking and the truth."""
 MAX_ATTEMPTS = 1000
 """Rejection-sampling safety valve."""
+
+#: `CONFOUNDING_MARGIN` and `MIN_MEDIATED_EFFECT` live in `scm/target_effects.py`, next to the driver-effect
+#: thresholds - construction and the check that verifies it must share one definition, not two
+#: independently-tuned ones (`procedural_scaffold_plan.md` §5a). Unlike the driver-effect thresholds, these
+#: two are used here unscaled: `with_constructed_confounding`/`with_constructed_effects`'s mediator step
+#: construct comfortably above them directly, independent of driver count, so there's nothing here for
+#: `scaled_threshold` to compensate for.
 
 
 @dataclass(frozen=True)
 class GateReport:
     """Verdict on one candidate: the four gate outcomes plus diagnostics.
 
-    ``varsortability`` and ``r2_sortability`` are reported diagnostics, not gates: UUMC already
-    guarantees population-level neutrality, so per-instance empirical values are informational only.
-    Sample-derived fields are ``nan``/``False`` when structural gates fail and sampling is skipped.
+    Numeric diagnostics are worst-case aggregates across every instance of the relevant kind (e.g.
+    ``min_driver_effect`` is the *weakest* non-decoy driver's effect, not one named driver's) - the
+    generalization of what a single threshold check meant when a scaffold had exactly one of each kind.
+    ``varsortability`` and ``r2_sortability`` are reported diagnostics, not gates: UUMC already guarantees
+    population-level neutrality, so per-instance empirical values are informational only. Sample-derived
+    fields are ``nan``/``False``/``None`` when structural gates fail and sampling is skipped.
+
+    ``data`` is the *exact* table the oracle gate was validated against - not a recipe for reconstructing
+    one (a seed + sample size that a caller must independently get right and keep in sync). A consumer
+    that needs data consistent with what passed the gate (e.g. a released dataset) should use this table
+    directly, never redraw independently: a fresh draw, even at a matching sample size, is not guaranteed
+    to reproduce the specific pass this report already certified (`procedural_scaffold_plan.md` §12).
     """
 
     passed: bool
@@ -63,62 +85,69 @@ class GateReport:
     confounding_realized: bool
     mediation_realized: bool
     oracle_recovers: bool
-    effect_confounded: float
-    effect_clean: float
-    effect_decoy: float
-    effect_gap: float
-    decoy_correlation: float
-    mediated_effect: float
+    min_driver_effect: float
+    max_decoy_effect: float
+    min_effect_gap: float
+    min_confounding_margin: float
+    min_mediated_effect: float
     oracle_tau: float
     varsortability: float
     r2_sortability: float
-    full_adjust_bias: float
+    max_full_adjust_bias: float
     overadjust_flips_ranking: bool
+    data: FloatArray | None
 
 
 def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateReport:
-    """Evaluate the four soundness gates on ``scm`` (plus sortability diagnostics).
+    """Evaluate the four soundness gates on ``scm``, plus sortability diagnostics.
 
-    Structural gates (from the exact SCM) are checked first; the sample-based oracle gate is evaluated
-    only if those pass, so most rejections cost no sampling.
+    Checks every instance of every role, not just the first of each kind. Structural gates (from the
+    exact SCM) are checked first; the sample-based oracle gate is evaluated only if those pass, so most
+    rejections cost no sampling.
     """
     sc = scm.scaffold
-    confounded = sc.nodes_with_role(Role.DRIVER_CONFOUNDED)[0]
-    clean = sc.nodes_with_role(Role.DRIVER_CLEAN)[0]
-    decoy = sc.nodes_with_role(Role.DECOY)[0]
-    mediator = sc.nodes_with_role(Role.MEDIATOR)[0]
     outcome_idx = sc.index(sc.outcome)
+    decoys = sc.nodes_with_role(Role.DECOY)
+    non_decoy_drivers = sc.non_decoy_drivers()
+    n = len(non_decoy_drivers)
 
-    # Structural quantities from the exact SCM (cheap, no sampling).
-    effect_confounded = abs(scm.total_effect_on_outcome(confounded))
-    effect_clean = abs(scm.total_effect_on_outcome(clean))
-    effect_decoy = abs(scm.total_effect_on_outcome(decoy))
-    weaker_effect = min(effect_confounded, effect_clean)
-    effect_gap = abs(effect_confounded - effect_clean)
+    effect = {d: abs(scm.total_effect_on_outcome(d)) for d in sc.drivers}
+    corr = {d: abs(float(scm.sigma[sc.index(d), outcome_idx])) for d in sc.drivers}
 
-    # A correlation ranker orders drivers by |corr(., Y)|; the decoy must beat a true driver's
-    # correlation (not its effect) for that ranker to mis-rank.
-    corr_confounded = abs(float(scm.sigma[sc.index(confounded), outcome_idx]))
-    corr_clean = abs(float(scm.sigma[sc.index(clean), outcome_idx]))
-    decoy_correlation = abs(float(scm.sigma[sc.index(decoy), outcome_idx]))
-    weaker_driver_corr = min(corr_confounded, corr_clean)
+    max_decoy_effect = max((effect[d] for d in decoys), default=0.0)
+    min_driver_effect = min(effect[d] for d in non_decoy_drivers)
+    sorted_effects = sorted(effect[d] for d in non_decoy_drivers)
+    min_effect_gap = min((b - a for a, b in itertools.pairwise(sorted_effects)), default=math.inf)
 
-    edge_am = scm.W[sc.index(confounded), sc.index(mediator)]
-    edge_my = scm.W[sc.index(mediator), outcome_idx]
-    mediated_effect = abs(float(edge_am * edge_my))
+    # A correlation ranker orders drivers by |corr(., Y)|; each decoy must beat the weakest driver's
+    # correlation (not its effect) for that ranker to mis-rank it.
+    weakest_driver_corr = min(corr[d] for d in non_decoy_drivers)
+    min_confounding_margin = min((corr[d] - weakest_driver_corr for d in decoys), default=math.inf)
+
+    mediated_effect = {}
+    for d in non_decoy_drivers:
+        mediator = sc.mediator_of(d)
+        if mediator is not None:
+            mediated_effect[d] = abs(
+                float(scm.W[sc.index(d), sc.index(mediator)] * scm.W[sc.index(mediator), outcome_idx])
+            )
+    min_mediated_effect = min(mediated_effect.values(), default=math.inf)
 
     structure_valid = (
-        effect_decoy <= DECOY_EFFECT_TOL and weaker_effect >= MIN_ABS_EFFECT and effect_gap >= MIN_EFFECT_GAP
+        max_decoy_effect <= DECOY_EFFECT_TOL
+        and min_driver_effect >= scaled_threshold(REFERENCE_MIN_EFFECT, n)
+        and min_effect_gap >= scaled_threshold(REFERENCE_MIN_GAP, n)
     )
-    confounding_realized = decoy_correlation > weaker_driver_corr + CONFOUNDING_MARGIN
-    mediation_realized = mediated_effect >= MIN_MEDIATED_EFFECT
+    confounding_realized = min_confounding_margin > CONFOUNDING_MARGIN
+    mediation_realized = min_mediated_effect >= MIN_MEDIATED_EFFECT
 
     oracle_tau = math.nan
     vsort = math.nan
     r2sort = math.nan
-    full_adjust_bias = math.nan
+    max_full_adjust_bias = math.nan
     overadjust_flips_ranking = False
     oracle_recovers = False
+    data: FloatArray | None = None
 
     if structure_valid and confounding_realized and mediation_realized:
         data = sample(scm, config.n_samples, seed)
@@ -129,7 +158,9 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
         vsort = varsortability(data, scm.W)
         r2sort = r2_sortability(scm)
         full = full_adjustment_effects(data, scm)
-        full_adjust_bias = abs(full[confounded] - scm.total_effect_on_outcome(confounded))
+        max_full_adjust_bias = max(
+            (abs(full[d] - scm.total_effect_on_outcome(d)) for d in mediated_effect), default=0.0
+        )
         overadjust_flips_ranking = ranking(full) != scm.true_ranking()
         oracle_recovers = oracle_tau >= ORACLE_TAU_THRESHOLD
 
@@ -140,34 +171,80 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
         confounding_realized=confounding_realized,
         mediation_realized=mediation_realized,
         oracle_recovers=oracle_recovers,
-        effect_confounded=effect_confounded,
-        effect_clean=effect_clean,
-        effect_decoy=effect_decoy,
-        effect_gap=effect_gap,
-        decoy_correlation=decoy_correlation,
-        mediated_effect=mediated_effect,
+        min_driver_effect=min_driver_effect,
+        max_decoy_effect=max_decoy_effect,
+        min_effect_gap=min_effect_gap,
+        min_confounding_margin=min_confounding_margin,
+        min_mediated_effect=min_mediated_effect,
         oracle_tau=oracle_tau,
         varsortability=vsort,
         r2_sortability=r2sort,
-        full_adjust_bias=full_adjust_bias,
+        max_full_adjust_bias=max_full_adjust_bias,
         overadjust_flips_ranking=overadjust_flips_ranking,
+        data=data,
     )
 
 
-def generate_gated(
+def _has_balanced_identifiability(scaffold: Scaffold) -> bool:
+    """True iff the composed scaffold has both an ambiguous driver and a resolved-but-confounded driver.
+
+    Checked among non-decoy drivers only, on the discovered outcome (``unidentifiable_drivers``) - not
+    declared by construction. Replaces the old single-forced-slot mechanism ("driver 0 is always
+    `confounded_driver`"): that was only ever a proxy for guaranteeing an ambiguous driver exists, and
+    never guaranteed the reverse (a driver whose confounding *is* resolvable from data) at all - measured to
+    leave 30% of instances with zero identifiable non-clean drivers. See ``procedural_scaffold_plan.md``
+    §11.0/§11.3 for the measurement and the reasoning.
+    """
+    ambiguous = set(unidentifiable_drivers(scaffold))
+    non_decoy = scaffold.non_decoy_drivers()
+    has_ambiguous = any(d in ambiguous for d in non_decoy)
+    has_resolved_confounded = any(d not in ambiguous and scaffold.correct_adjustment.get(d) for d in non_decoy)
+    return has_ambiguous and has_resolved_confounded
+
+
+def generate_gated_procedural(
     seed: int,
     config: GeneratorConfig | None = None,
-    scaffold: Scaffold = CANONICAL,
+    n_drivers: int | None = None,
+    resolve_probability: float = RESOLVE_PROBABILITY,
 ) -> tuple[SCM, GateReport]:
-    """Return the first ``(SCM, GateReport)`` that passes all gates, deterministically from ``seed``.
+    """Return the first ``(SCM, GateReport)`` whose composed topology and constructed effects all pass.
 
-    Each attempt draws independent structure and sample seeds spawned from ``seed``. Raises
-    ``RuntimeError`` if no instance passes within ``MAX_ATTEMPTS``.
+    Deterministic from ``seed``. Flat loop, not nested: every attempt draws a fresh topology
+    (``scm/gadgets.py``) and fresh weights together, then constructs every gate-relevant quantity directly
+    rather than leaving it to those random weights - mediated effects, driver totals, and decoy confounding
+    margins, in that order (``scm/target_effects.py``; left to chance, combined acceptance collapsed to 0%
+    at 6+ drivers even after scaling every threshold by driver count, ``procedural_scaffold_plan.md`` §5a).
+    The topology gate runs before any weights are even drawn, and the sample-based oracle gate runs only
+    after every structural piece is constructed - most rejections should cost nothing
+    (``procedural_scaffold_plan.md`` §5). Raises ``RuntimeError`` if no instance passes within
+    ``MAX_ATTEMPTS``.
+
+    ``n_drivers`` fixes the driver count instead of leaving it to ``seed`` (see ``procedural_scaffold``).
+    ``resolve_probability`` controls how much of the composed topology ends up ambiguous vs. resolved,
+    for a controlled ambiguity sweep - see ``procedural_scaffold``; the guarantee of at least one of each
+    holds at every value.
+
+    The returned ``report.data`` is the exact table the oracle gate certified for this instance. A caller
+    that samples its own, different table (a different size, or the same size but a different draw) is
+    not guaranteed the same oracle recovery this report already proved - use ``report.data`` directly for
+    anything the gate's guarantee needs to hold on.
     """
     config = config or GeneratorConfig()
     for child in np.random.SeedSequence(seed).spawn(MAX_ATTEMPTS):
-        structure_seed, sample_seed = child.spawn(2)
-        scm = generate(structure_seed, scaffold)
+        topology_seed, weight_seed, target_seed, construction_seed, confounding_seed, sample_seed = child.spawn(6)
+        scaffold = procedural_scaffold(topology_seed, n_drivers=n_drivers, resolve_probability=resolve_probability)
+        if not _has_balanced_identifiability(scaffold):
+            continue
+        reference = generate(weight_seed, scaffold)
+        non_decoy_drivers = scaffold.non_decoy_drivers()
+        targets = target_effects(np.random.default_rng(target_seed), non_decoy_drivers)
+        scm = with_constructed_effects(reference, targets, np.random.default_rng(construction_seed))
+        if scm is None:
+            continue
+        scm = with_constructed_confounding(scm, np.random.default_rng(confounding_seed))
+        if scm is None:
+            continue
         report = evaluate_gates(scm, config, sample_seed)
         if report.passed:
             return scm, report

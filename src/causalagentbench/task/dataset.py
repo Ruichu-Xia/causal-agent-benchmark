@@ -3,6 +3,10 @@
 Reads ``scripts/build_testset.py``'s ``<out>.json`` + ``<out>.npz``. This is the read side of a fixed
 test set: build once with the ``generation`` extra, then evaluate many models against the identical
 frozen instances with no LLM naming calls (no extra needed here at all - loading is plain numpy/json).
+
+Each record embeds its own full ``Scaffold`` (``serialize_scaffold``/``deserialize_scaffold``), not a
+name looked up in a small fixed set - every procedurally-composed instance has a genuinely different
+topology (``scm/gadgets.py``), unlike the single shared ``CANONICAL`` graph this format used to assume.
 """
 
 from __future__ import annotations
@@ -13,12 +17,33 @@ from typing import Any
 
 import numpy as np
 
-from causalagentbench.scm.scaffold import CANONICAL
 from causalagentbench.task.instance import Instance, InstanceKey, build_prompt, outcome_and_drivers
 from causalagentbench.task.labeling import LabelProvenance
-from causalagentbench.types import SCM, FloatArray, Scaffold
+from causalagentbench.types import SCM, FloatArray, Role, Scaffold
 
-_SCAFFOLDS: dict[str, Scaffold] = {"canonical": CANONICAL}
+
+def serialize_scaffold(scaffold: Scaffold) -> dict[str, Any]:
+    """JSON-safe representation of ``scaffold``, for round-tripping a per-instance composed topology."""
+    return {
+        "node_names": list(scaffold.node_names),
+        "roles": {node: role.value for node, role in scaffold.roles.items()},
+        "edges": [list(edge) for edge in scaffold.edges],
+        "drivers": list(scaffold.drivers),
+        "outcome": scaffold.outcome,
+        "correct_adjustment": {driver: list(adj) for driver, adj in scaffold.correct_adjustment.items()},
+    }
+
+
+def deserialize_scaffold(data: dict[str, Any]) -> Scaffold:
+    """Reconstruct a ``Scaffold`` from ``serialize_scaffold``'s output."""
+    return Scaffold(
+        node_names=tuple(data["node_names"]),
+        roles={node: Role(role) for node, role in data["roles"].items()},
+        edges=tuple(tuple(edge) for edge in data["edges"]),
+        drivers=tuple(data["drivers"]),
+        outcome=data["outcome"],
+        correct_adjustment={driver: tuple(adj) for driver, adj in data["correct_adjustment"].items()},
+    )
 
 
 def load_dataset(path: str | Path) -> list[tuple[Instance, InstanceKey]]:
@@ -36,9 +61,7 @@ def load_dataset(path: str | Path) -> list[tuple[Instance, InstanceKey]]:
 
 def _load_record(record: dict[str, Any], data: FloatArray) -> tuple[Instance, InstanceKey]:
     """Reconstruct one record's ``(Instance, InstanceKey)`` pair."""
-    scaffold = _SCAFFOLDS.get(record["scaffold"])
-    if scaffold is None:
-        raise ValueError(f"unknown scaffold {record['scaffold']!r}")
+    scaffold = deserialize_scaffold(record["scaffold"])
     scm = SCM(
         scaffold=scaffold,
         W=np.array(record["W"]),

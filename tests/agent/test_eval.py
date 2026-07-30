@@ -1,14 +1,15 @@
 import json
 
-from causalagentbench import build_instance, generate_gated, sample
+from causalagentbench import build_instance, sample
 from causalagentbench.agent.eval import aggregate_by_alignment, run_evaluation
 from causalagentbench.agent.loop import ModelTurn
+from causalagentbench.scoring.gates import generate_gated_procedural
 from causalagentbench.scoring.score import score_output
 from causalagentbench.task.instance import Instance, InstanceKey
 
 
 def _instance(seed: int) -> tuple[Instance, InstanceKey]:
-    scm, _ = generate_gated(seed)
+    scm, _ = generate_gated_procedural(seed)
     data = sample(scm, 200, seed=seed)
     return build_instance(scm, data, seed=seed)
 

@@ -76,7 +76,14 @@ class DatabricksClient:
 
     model: str
     temperature: float = 0.2
-    max_tokens: int = 4096
+    max_tokens: int = 32_000
+    """Generous, not a real constraint: this is a hard external cutoff the model has no awareness of - it
+    keeps generating (reasoning tokens count against the same budget as answer tokens) until either it's
+    done or the API truncates it wherever it happens to be, with no chance to wrap up. The previous default
+    (4096) was an arbitrary pick that turned out too small for an extended-thinking model's internal
+    reasoning trace on a forced-final turn - confirmed by direct trace: cut off mid-``reasoning`` block,
+    zero answer text, on a turn that needed ~4x that budget. 32000 was confirmed accepted by this gateway
+    (tested up to 128000) and leaves wide headroom over every observed real turn."""
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, force_final: bool) -> ModelTurn:
         """Complete one turn with the configured model via the Databricks AI Gateway."""

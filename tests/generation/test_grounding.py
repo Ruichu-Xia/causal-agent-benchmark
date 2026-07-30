@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from causalagentbench.generation.grounding import format_menus, load_causenet, sample_menus
-from causalagentbench.scm.scaffold import CANONICAL
+from causalagentbench.scm.gadgets import procedural_scaffold
 
 # Synthetic CauseNet slice: heart_disease is the effect hub, with an embedded confounder
 # (age -> obesity + age -> heart_disease), mediator (obesity -> arterial_plaque -> heart_disease),
@@ -46,7 +46,7 @@ def test_load_causenet_builds_weighted_directed_graph(dump):
 
 
 def test_sample_menus_recovers_roles_by_graph_position(dump):
-    menus = sample_menus(dump, CANONICAL, np.random.default_rng(0))
+    menus = sample_menus(dump, procedural_scaffold(0, n_drivers=3), np.random.default_rng(0))
     assert menus.outcome == "heart_disease"
     strengths = [s for _, s in menus.drivers]
     assert max(strengths) == 1.0
@@ -58,9 +58,9 @@ def test_sample_menus_recovers_roles_by_graph_position(dump):
 
 def test_sample_menus_raises_without_a_hub(dump):
     with pytest.raises(ValueError, match="outcome hub"):
-        sample_menus(dump, CANONICAL, np.random.default_rng(0), min_outcome_causes=99)
+        sample_menus(dump, procedural_scaffold(0, n_drivers=3), np.random.default_rng(0), min_outcome_causes=99)
 
 
 def test_format_menus_is_a_nonempty_line(dump):
-    text = format_menus(sample_menus(dump, CANONICAL, np.random.default_rng(0)))
+    text = format_menus(sample_menus(dump, procedural_scaffold(0, n_drivers=3), np.random.default_rng(0)))
     assert "heart_disease" in text

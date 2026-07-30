@@ -1,11 +1,11 @@
 import numpy as np
 
-from causalagentbench import generate_gated
+from causalagentbench.scoring.gates import generate_gated_procedural
 from causalagentbench.task.labeling import Labeling, abstract_labels
 
 
 def _scm(seed: int = 0):
-    scm, _ = generate_gated(seed)
+    scm, _ = generate_gated_procedural(seed)
     return scm
 
 

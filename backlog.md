@@ -50,6 +50,15 @@ three-pole mixture (see `semantic_labeler_plan.md`) — α is now exact and cont
 and the coverage/gap problem is gone. Remaining future item: *finer* grids toward a smooth continuous
 curve (smaller mixture steps) if a dense dose-response is wanted; and seeded intra-level subset diversity.
 
+**Update (2026-07-27): grid collapsed further, to `{-1,0,+1}`.** The two midpoints needed
+`_informative_order` - a hand-tuned per-node priority list - to pick a partial subset to flip, and that
+list conflated two different justifications (quadrant coverage vs. score sensitivity) with no clean
+single principle. The endpoints never needed an order at all (every node already flipped there), so
+dropping the midpoints removed the ordering question outright rather than re-solving it; `_informative_order`
+is deleted, not kept unused. Trade-off made deliberately: gives up the dose-response middle of the curve
+for a directly comparable, per-quadrant result (aligned vs. neutral vs. misaligned, same SCM, every node
+moving together). See `procedural_scaffold_plan.md` §11.8.
+
 **Related:** `src/causalagentbench/generation/labeler.py` (`LLMLabeler`, `llm_labeler`),
 `generation/generate.py` (`alpha_sweep`), `semantic_labeler_plan.md` §2/§3.
 

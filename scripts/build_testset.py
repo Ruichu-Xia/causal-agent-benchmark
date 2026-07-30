@@ -2,7 +2,10 @@
 
 Driven by a versioned build config (``configs/*.yaml``); secrets and the CauseNet path come from ``.env``.
 Per SCM it runs ONE generator proposal (+ optional correctness critic + revise loop), then *constructs*
-every alignment level ``{-1,-0.5,0,+0.5,+1}`` plus the name-blind control - paired skins over one SCM.
+every alignment level ``{-1,0,+1}`` plus the name-blind control - paired skins over one SCM, sharing the
+exact data table ``generate_gated_procedural`` already validated the oracle gate against (``report.data``)
+- never redrawn independently, which would only be guaranteed to match the gate's own certified oracle
+recovery by coincidence, not by construction (``procedural_scaffold_plan.md`` §12).
 Writes ``<out>.json`` (metadata + SCM params + naming card, one record per instance: ``id``, ``seed``,
 ``scaffold``, ``W``/``noise_var``/``sigma``/``tau``, ``node_to_label``, ``columns``, ``context``,
 ``column_schema``, ``provenance``) + ``<out>.npz`` (one data table per record id).
@@ -25,13 +28,12 @@ import numpy as np
 from causalagentbench.generation.clients import LiteLLMProposer, load_env
 from causalagentbench.generation.config import BuildConfig
 from causalagentbench.generation.labeler import GRID, construct_labeling, grounding_fn, propose_triples
-from causalagentbench.scm.sample import sample
-from causalagentbench.scoring.gates import generate_gated
+from causalagentbench.scoring.gates import generate_gated_procedural
+from causalagentbench.task.dataset import serialize_scaffold
 from causalagentbench.task.instance import Instance, InstanceKey, build_instance
 from causalagentbench.task.labeling import Labeling, abstract_labels
 
 _OUT = "outputs/testset_v1"
-_N_SAMPLES = 1000
 log = logging.getLogger("build_testset")
 
 
@@ -41,7 +43,7 @@ def _record(rid: str, seed: int, instance: Instance, key: InstanceKey) -> dict:
     return {
         "id": rid,
         "seed": seed,
-        "scaffold": "canonical",
+        "scaffold": serialize_scaffold(key.scm.scaffold),
         "W": key.scm.W.tolist(),
         "noise_var": key.scm.noise_var.tolist(),
         "sigma": key.scm.sigma.tolist(),
@@ -55,6 +57,7 @@ def _record(rid: str, seed: int, instance: Instance, key: InstanceKey) -> dict:
             "n_aligned": prov.n_aligned,
             "n_neutral": prov.n_neutral,
             "n_misaligned": prov.n_misaligned,
+            "node_kind": dict(prov.node_kind),
             "domain": prov.domain,
             "producer": prov.producer,
         },
@@ -98,8 +101,9 @@ def main() -> None:
 
     with (partial / "records.jsonl").open("w", encoding="utf-8") as records_file:
         for seed in range(n_scms):
-            scm, _ = generate_gated(seed)
-            data = sample(scm, _N_SAMPLES, seed=seed)
+            scm, report = generate_gated_procedural(seed)
+            assert report.data is not None  # guaranteed: generate_gated_procedural only returns a passing report
+            data = report.data
             try:
                 triples = propose_triples(
                     scm,
@@ -136,7 +140,8 @@ def _assemble(out: Path, partial: Path) -> None:
     """Build the final single-file ``<out>.json`` + ``<out>.npz`` from the incremental partial dir."""
     records = [json.loads(line) for line in (partial / "records.jsonl").read_text(encoding="utf-8").splitlines()]
     tables = {r["id"]: np.load(partial / "data" / f"{r['id']}.npy") for r in records}
-    blob = {"version": out.name, "scaffold": "canonical", "n_samples": _N_SAMPLES, "records": records}
+    n_samples = next(iter(tables.values())).shape[0] if tables else 0  # from the actual data, not a duplicated constant
+    blob = {"version": out.name, "scaffold": "procedural", "n_samples": n_samples, "records": records}
     out.with_suffix(".json").write_text(json.dumps(blob, indent=2), encoding="utf-8")
     with out.with_suffix(".npz").open("wb") as handle:
         np.savez_compressed(handle, **tables)

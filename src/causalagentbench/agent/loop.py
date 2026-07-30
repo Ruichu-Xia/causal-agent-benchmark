@@ -24,10 +24,16 @@ MAX_TURNS = 20
 
 _FINAL_TURN_REMINDER = (
     "This is your final turn - no further tool calls are possible. You must give your complete final "
-    "answer now, as a single <answer>...</answer> JSON block per the instructions above."
+    "answer now, as a single <answer>...</answer> JSON block per the instructions above. Your reply has a "
+    "generous but finite token budget shared between any reasoning and the answer itself - reach the "
+    "<answer> block directly rather than re-deriving everything from scratch, or it may be cut off before "
+    "you write it."
 )
-"""Told to the model only on the forced-final turn: without it, a model mid-investigation may keep
-narrating what it would check next instead of committing to an answer (observed on real models)."""
+"""Told to the model only on the forced-final turn: without the first sentence, a model mid-investigation
+may keep narrating what it would check next instead of committing to an answer (observed on real models).
+The budget clause is a second, independent problem, also observed on a real model (an extended-thinking
+model can spend its entire reply on internal reasoning and get cut off before writing any answer text) -
+the model has no innate awareness that a token cutoff exists at all, so this is the only way to tell it."""
 
 
 @dataclass(frozen=True)

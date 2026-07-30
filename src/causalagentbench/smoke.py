@@ -10,57 +10,64 @@ from __future__ import annotations
 import numpy as np
 
 from causalagentbench.config import GeneratorConfig
+from causalagentbench.scm.gadgets import procedural_scaffold
 from causalagentbench.scm.generate import generate
-from causalagentbench.scoring.gates import evaluate_gates, generate_gated
+from causalagentbench.scm.target_effects import target_effects, with_constructed_confounding, with_constructed_effects
+from causalagentbench.scoring.gates import _has_balanced_identifiability, evaluate_gates
 
-_GATES = (
-    "structure_valid",
-    "confounding_realized",
-    "mediation_realized",
-    "oracle_recovers",
-)
+
+def _procedural_report() -> None:
+    """Health report for the procedural + construction path (``generate_gated_procedural``).
+
+    Broken down by driver count - the axis its acceptance rate actually varies on. Deliberately reimplements
+    ``generate_gated_procedural``'s attempt body stage-by-stage rather than calling it: that function
+    retries internally until one instance passes (or raises), so calling it in a loop would yield 500
+    *successful* instances, not 500 independent candidates broken down by which stage they failed at, which
+    is what this report needs. Keep this in sync by hand if the attempt body in ``scoring/gates.py`` changes.
+    """
+    config = GeneratorConfig()
+    n_candidates = 500
+    by_n: dict[int, list[int]] = {}  # n_drivers -> [candidates, topology_ok, constructed, passed]
+
+    for child in np.random.SeedSequence(20260715).spawn(n_candidates):
+        topology_seed, weight_seed, target_seed, construction_seed, confounding_seed, sample_seed = child.spawn(6)
+        scaffold = procedural_scaffold(topology_seed)
+        non_decoy_drivers = scaffold.non_decoy_drivers()
+        bucket = by_n.setdefault(len(non_decoy_drivers), [0, 0, 0, 0])
+        bucket[0] += 1
+        if not _has_balanced_identifiability(scaffold):
+            continue
+        bucket[1] += 1
+        reference = generate(weight_seed, scaffold)
+        targets = target_effects(np.random.default_rng(target_seed), non_decoy_drivers)
+        scm = with_constructed_effects(reference, targets, np.random.default_rng(construction_seed))
+        if scm is None:
+            continue
+        scm = with_constructed_confounding(scm, np.random.default_rng(confounding_seed))
+        if scm is None:
+            continue
+        bucket[2] += 1
+        report = evaluate_gates(scm, config, sample_seed)
+        bucket[3] += int(report.passed)
+
+    print(f"Procedural health report over {n_candidates} candidates, by driver count (n_samples={config.n_samples})")
+    print("-" * 64)
+    print(f"  {'n_drivers':<10}{'candidates':<12}{'topology_ok':<13}{'constructed':<13}{'passed':<10}")
+    totals = [0, 0, 0, 0]
+    for n_drivers, (candidates, topology_ok, constructed, passed) in sorted(by_n.items()):
+        topology_rate = topology_ok / candidates
+        constructed_rate = constructed / candidates
+        passed_rate = passed / candidates
+        print(f"  {n_drivers:<10}{candidates:<12}{topology_rate:<13.1%}{constructed_rate:<13.1%}{passed_rate:<10.1%}")
+        for i, value in enumerate((candidates, topology_ok, constructed, passed)):
+            totals[i] += value
+    print("-" * 64)
+    print(f"  overall accepted: {totals[3] / totals[0]:.1%}  ({totals[3]}/{totals[0]})")
 
 
 def main() -> None:
-    """Print the generator health report."""
-    config = GeneratorConfig()
-    n_candidates = 500
-    counts = dict.fromkeys(_GATES, 0)
-    accepted = 0
-    varsorts: list[float] = []
-    r2sorts: list[float] = []
-    flips = 0
-
-    for child in np.random.SeedSequence(20260715).spawn(n_candidates):
-        structure_seed, sample_seed = child.spawn(2)
-        report = evaluate_gates(generate(structure_seed), config, sample_seed)
-        for gate in _GATES:
-            counts[gate] += int(getattr(report, gate))
-        if report.passed:
-            accepted += 1
-            varsorts.append(report.varsortability)
-            r2sorts.append(report.r2_sortability)
-            flips += int(report.overadjust_flips_ranking)
-
-    print(f"Generator health report over {n_candidates} candidates (n_samples={config.n_samples})")
-    print("-" * 64)
-    for gate in _GATES:
-        print(f"  {gate:<22} pass rate: {counts[gate] / n_candidates:6.1%}")
-    print("-" * 64)
-    print(f"  accepted (all gates):  {accepted / n_candidates:6.1%}  ({accepted}/{n_candidates})")
-    if accepted:
-        print(f"  varsortability (mean): {np.mean(varsorts):.3f}  [target ~0.5]")
-        print(f"  R2-sortability (mean): {np.mean(r2sorts):.3f}")
-        print(f"  over-adjust flips rank: {flips / accepted:6.1%} of accepted")
-
-    scm, _ = generate_gated(seed=0, config=config)
-    print("-" * 64)
-    print("Example accepted instance (seed=0):")
-    print(f"  true driver ranking: {scm.true_ranking()}")
-    for driver in scm.scaffold.drivers:
-        effect = scm.total_effect_on_outcome(driver)
-        adjust = scm.scaffold.correct_adjustment.get(driver, ())
-        print(f"    {driver:<3} effect={effect:+.3f}  adjust-for={adjust or '{}'}")
+    """Print the generator's health report."""
+    _procedural_report()
 
 
 if __name__ == "__main__":

@@ -1,11 +1,34 @@
-from causalagentbench import build_instance, generate_gated, sample
-from causalagentbench.scoring.score import score_answer, score_output
+from causalagentbench import build_instance, generate, sample
+from causalagentbench.scoring.gates import generate_gated_procedural
+from causalagentbench.scoring.score import Quadrant, _gold_abstain, quadrant, score_answer, score_output
 from causalagentbench.task.answer import Answer, DriverVerdict
 from causalagentbench.task.instance import InstanceKey
+from causalagentbench.task.labeling import LabelProvenance
+from causalagentbench.types import Role, Scaffold
+
+# A small, hand-built example graph (confounder C, confounded driver A + mediator M, clean driver B,
+# decoy Dz) - the same shape used across the test suite as a readable fixture (tests/scm/test_scaffold.py).
+# Scoring logic only needs a valid SCM on a known graph, never gate-passing, so this skips the gate loop
+# entirely rather than depending on it.
+_SCAFFOLD = Scaffold(
+    node_names=("C", "A", "B", "M", "Dz", "Y"),
+    roles={
+        "C": Role.CONFOUNDER,
+        "A": Role.DRIVER_CONFOUNDED,
+        "B": Role.DRIVER_CLEAN,
+        "M": Role.MEDIATOR,
+        "Dz": Role.DECOY,
+        "Y": Role.OUTCOME,
+    },
+    edges=(("C", "A"), ("C", "Y"), ("C", "Dz"), ("A", "M"), ("A", "Y"), ("M", "Y"), ("B", "Y")),
+    drivers=("A", "B", "Dz"),
+    outcome="Y",
+    correct_adjustment={"A": ("C",), "B": (), "Dz": ("C",)},
+)
 
 
 def _instance() -> tuple[InstanceKey, dict[str, str]]:
-    scm, _ = generate_gated(0)
+    scm = generate(0, _SCAFFOLD)
     data = sample(scm, 64, seed=0)
     _, key = build_instance(scm, data, seed=0)
     return key, dict(key.node_to_label)  # node -> label
@@ -13,6 +36,10 @@ def _instance() -> tuple[InstanceKey, dict[str, str]]:
 
 def _verdict(label: dict[str, str], node: str, adjust: tuple[str, ...] = ()) -> DriverVerdict:
     return DriverVerdict(driver=label[node], adjustment_set=tuple(label[z] for z in adjust))
+
+
+def _abstain(label: dict[str, str], node: str) -> DriverVerdict:
+    return DriverVerdict(driver=label[node], adjustment_set=(), abstain=True)
 
 
 def _perfect(key: InstanceKey, label: dict[str, str]) -> Answer:
@@ -77,3 +104,132 @@ def test_alignment_is_carried_through():
     key, label = _instance()
     # abstract labeler -> alignment is None; the field is passed through for stratification.
     assert score_answer(_perfect(key, label), key).alignment is None
+
+
+def test_gold_abstain_flips_with_the_drivers_own_naming():
+    """The core §6/§7 distinction.
+
+    The same unidentifiable driver (A) is abstain-correct when naming doesn't resolve it, but not when
+    its own displayed name happens to be the aligned one.
+    """
+    scm = generate(0, _SCAFFOLD)
+    neutral_kind = dict.fromkeys(scm.scaffold.node_names, "neutral")
+    aligned_a_kind = {**neutral_kind, "A": "aligned"}
+
+    def key_with(node_kind):
+        provenance = LabelProvenance(
+            alignment=1.0, n_aligned=1, n_neutral=5, n_misaligned=0, node_kind=node_kind, domain="d", producer="p"
+        )
+        return InstanceKey(scm=scm, label_to_node={}, node_to_label={}, provenance=provenance)
+
+    assert _gold_abstain(key_with(neutral_kind), "A") is True  # unidentifiable, naming doesn't resolve it
+    assert _gold_abstain(key_with(aligned_a_kind), "A") is False  # same driver, now its own name IS aligned
+
+
+def test_quadrant_covers_all_four_cells():
+    """`_gold_abstain` is just `quadrant`'s "abstain is correct" cell (§11.4).
+
+    Directly verify all four cells classify as §6's table says, using the fixture's known-unidentifiable A
+    and known-identifiable B.
+    """
+    scm = generate(0, _SCAFFOLD)
+    neutral_kind = dict.fromkeys(scm.scaffold.node_names, "neutral")
+    aligned_kind = {**neutral_kind, "A": "aligned", "B": "aligned"}
+
+    def key_with(node_kind):
+        provenance = LabelProvenance(
+            alignment=1.0, n_aligned=2, n_neutral=4, n_misaligned=0, node_kind=node_kind, domain="d", producer="p"
+        )
+        return InstanceKey(scm=scm, label_to_node={}, node_to_label={}, provenance=provenance)
+
+    assert quadrant(key_with(aligned_kind), "A") == Quadrant.UNIDENTIFIABLE_ALIGNED  # trust naming
+    assert quadrant(key_with(neutral_kind), "A") == Quadrant.UNIDENTIFIABLE_NOT_ALIGNED  # abstain correct
+    assert quadrant(key_with(aligned_kind), "B") == Quadrant.IDENTIFIABLE_ALIGNED  # trivial - both agree
+    assert quadrant(key_with(neutral_kind), "B") == Quadrant.IDENTIFIABLE_NOT_ALIGNED  # trust data
+    assert _gold_abstain(key_with(neutral_kind), "B") is False  # never ambiguous, regardless of naming
+
+
+# ---- abstention ---------------------------------------------------------------------------------------
+# The fixture scaffold + abstract_labels (no naming manipulation at all, so nothing is ever "aligned"): A and Dz are
+# gold-abstain-correct (their edges are genuinely unidentifiable, `unidentifiable_drivers`), B is not
+# (exogenous, no incoming edge to be ambiguous about).
+
+
+def test_correctly_abstaining_on_every_unidentifiable_driver_scores_full_credit():
+    key, label = _instance()
+    ranking = tuple(label[node] for node in key.scm.true_ranking())  # abstained drivers still get a slot
+    verdicts = (_abstain(label, "A"), _verdict(label, "B"), _abstain(label, "Dz"))
+    score = score_answer(Answer(verdicts=verdicts, ranking=ranking), key)
+
+    assert score.abstention_accuracy == 1.0
+    # A and Dz excluded from the pairwise comparison entirely - only B is left, vacuously perfect.
+    assert score.ranking_tau == 1.0
+    # A and Dz excluded from the accuracy denominator too - only B is graded, and it's valid.
+    assert score.adjustment_accuracy == 1.0
+    assert score.adjustment_valid["A"] is None
+    assert score.adjustment_valid["Dz"] is None
+    assert score.adjustment_valid["B"] is True
+
+
+def test_committing_instead_of_abstaining_is_graded_normally_but_scores_no_abstention_credit():
+    key, label = _instance()
+    # The perfect answer commits valid backdoor sets for A and Dz too - both gold-abstain-correct, but
+    # committing isn't penalized on adjustment_accuracy/ranking_tau, only on abstention_accuracy.
+    score = score_answer(_perfect(key, label), key)
+    assert score.ranking_tau == 1.0
+    assert score.adjustment_accuracy == 1.0
+    assert score.abstention_accuracy == 1 / 3  # only B (not gold-abstain) was called correctly
+
+
+def test_wrongly_abstaining_on_an_identifiable_driver_is_excluded_but_not_forgiven():
+    key, label = _instance()
+    # true_ranking is (A, B, Dz). Only Dz correctly abstains (excluded); A commits (also gold-abstain-
+    # correct here, so this commit is itself an abstention miss - see the "committing instead" test above);
+    # B - exogenous, never ambiguous - wrongly abstains. If a bug excluded *any* abstained driver (not just
+    # correct ones), B would drop out too, leaving only A - too few items for kendall_tau to catch the
+    # swap below.
+    verdicts = (_verdict(label, "A", ("C",)), _abstain(label, "B"), _abstain(label, "Dz"))
+    swapped_ranking = tuple(label[node] for node in ("B", "A", "Dz"))  # A and B reversed vs. true order
+    score = score_answer(Answer(verdicts=verdicts, ranking=swapped_ranking), key)
+
+    assert score.abstention_accuracy == 1 / 3  # only Dz's abstention call is correct
+    assert score.adjustment_valid["B"] is None  # not graded on content, right or wrong
+    assert score.adjustment_accuracy == 1.0  # only A is graded (Dz and B both abstained), and it's valid
+    # A and B are both still compared (B's wrong abstention doesn't exempt it) - reversed relative to the
+    # true order, so this must come out fully discordant, not the vacuous 1.0 a masked bug would give.
+    assert score.ranking_tau == -1.0
+
+
+def test_missing_verdict_scores_no_abstention_credit():
+    key, label = _instance()
+    # A and Dz correctly abstained; B has no verdict at all (not "correctly didn't abstain").
+    answer = Answer(verdicts=(_abstain(label, "A"), _abstain(label, "Dz")), ranking=())
+    score = score_answer(answer, key)
+    assert score.abstention_accuracy == 2 / 3  # A, Dz correct; B (missing) is not
+
+
+def test_abstaining_on_every_driver_leaves_adjustment_accuracy_vacuously_perfect():
+    key, label = _instance()
+    verdicts = tuple(_abstain(label, node) for node in ("A", "B", "Dz"))
+    score = score_answer(Answer(verdicts=verdicts, ranking=()), key)
+    assert score.adjustment_accuracy == 1.0
+    assert all(v is None for v in score.adjustment_valid.values())
+
+
+def test_ranking_tau_does_not_penalize_order_between_exactly_tied_decoys():
+    """Two decoys always share exactly the same true effect (0) - there is no correct order between them.
+
+    An agent's guess either way must score identically, not get graded as a coin flip. seed=5/n_drivers=3
+    has two decoys (Dz0, Dz1) alongside three real drivers with distinct, non-zero effects (A0, A1, A2) -
+    true order is (A1, A0, A2, Dz0, Dz1) with the last pair a genuine tie.
+    """
+    scm, _ = generate_gated_procedural(5, n_drivers=3)
+    data = sample(scm, 64, seed=5)
+    _, key = build_instance(scm, data, seed=5)
+    label = dict(key.node_to_label)
+    verdicts = tuple(_verdict(label, node) for node in ("A0", "A1", "A2", "Dz0", "Dz1"))
+
+    dz0_first = Answer(verdicts=verdicts, ranking=tuple(label[n] for n in ("A1", "A0", "A2", "Dz0", "Dz1")))
+    dz1_first = Answer(verdicts=verdicts, ranking=tuple(label[n] for n in ("A1", "A0", "A2", "Dz1", "Dz0")))
+
+    assert score_answer(dz0_first, key).ranking_tau == score_answer(dz1_first, key).ranking_tau == 1.0

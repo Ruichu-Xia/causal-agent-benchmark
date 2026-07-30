@@ -3,19 +3,37 @@ import json
 import numpy as np
 import pytest
 
-from causalagentbench import build_instance, generate_gated
+from causalagentbench import build_instance, generate
 from causalagentbench.generation.labeler import (
     GRID,
     LLMLabeler,
     NamingTriples,
-    _informative_order,
     _pre_check,
     construct_labeling,
     propose_triples,
 )
 from causalagentbench.scm.sample import sample
+from causalagentbench.types import Role, Scaffold
 
-# CANONICAL node order: C, A, B, M, Dz, Y -> ids v0..v5.
+# A small, hand-built example graph (confounder C, confounded driver A + mediator M, clean driver B,
+# decoy Dz) - the same shape used across the test suite (tests/scm/test_scaffold.py). Node order:
+# C, A, B, M, Dz, Y -> ids v0..v5.
+_SCAFFOLD = Scaffold(
+    node_names=("C", "A", "B", "M", "Dz", "Y"),
+    roles={
+        "C": Role.CONFOUNDER,
+        "A": Role.DRIVER_CONFOUNDED,
+        "B": Role.DRIVER_CLEAN,
+        "M": Role.MEDIATOR,
+        "Dz": Role.DECOY,
+        "Y": Role.OUTCOME,
+    },
+    edges=(("C", "A"), ("C", "Y"), ("C", "Dz"), ("A", "M"), ("A", "Y"), ("M", "Y"), ("B", "Y")),
+    drivers=("A", "B", "Dz"),
+    outcome="Y",
+    correct_adjustment={"A": ("C",), "B": (), "Dz": ("C",)},
+)
+
 _GOOD = {
     "C": ("age_years", "record_code", "arterial_stiffness"),
     "A": ("ldl_cholesterol", "lab_batch", "appointment_delay"),
@@ -27,8 +45,7 @@ _GOOD = {
 
 
 def _scm(seed: int = 0):
-    scm, _ = generate_gated(seed)
-    return scm
+    return generate(seed, _SCAFFOLD)
 
 
 def _triples(scm, table=_GOOD) -> NamingTriples:
@@ -94,18 +111,19 @@ def test_construct_levels_and_composition():
     assert misaligned.provenance.n_misaligned == 5
 
 
-def test_partial_level_flips_load_bearing_nodes_first():
+def test_uniform_level_ignores_magnitude_only_sign_matters():
+    """An intermediate level collapses to its sign's kind - only sign is read now.
+
+    ``GRID`` only ever passes {-1, 0, +1}, but ``construct_labeling`` itself has no partial-flip
+    machinery left to get wrong at any other value.
+    """
     scm = _scm()
     trip = _triples(scm)
-    order = _informative_order(scm)  # decoy, strongest driver, confounder, mediator, clean driver
-    half = construct_labeling(trip, scm, 0.5, "p")
-    n_inf = round(0.5 * len(order))
-    informative = set(order[:n_inf])
-    for node in scm.scaffold.node_names:
-        if node == scm.scaffold.outcome or node in informative:
-            assert half.node_to_label[node] == trip.choices[node]["aligned"][0]
-        else:
-            assert half.node_to_label[node] == trip.choices[node]["neutral"][0]
+    outcome = scm.scaffold.outcome
+    quarter = construct_labeling(trip, scm, 0.25, "p")
+    full = construct_labeling(trip, scm, 1.0, "p")
+    assert quarter.node_to_label == full.node_to_label
+    assert quarter.node_to_label[outcome] == "cardiovascular_risk"
 
 
 # ---- pre-checks -------------------------------------------------------------------------------------
@@ -187,5 +205,5 @@ def test_paired_skins_same_scm_differ_only_in_names():
     assert pos_key.scm.true_ranking() == neg_key.scm.true_ranking()  # gold identical
 
 
-def test_grid_is_the_five_levels():
-    assert GRID == (-1.0, -0.5, 0.0, 0.5, 1.0)
+def test_grid_is_the_three_levels():
+    assert GRID == (-1.0, 0.0, 1.0)

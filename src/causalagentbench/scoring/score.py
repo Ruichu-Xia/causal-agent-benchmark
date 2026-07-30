@@ -1,13 +1,23 @@
 """Score an agent's answer against the true SCM.
 
-The task is: rank the candidate drivers by causal effect, and give a valid adjustment set for each. Both
-metrics are computed on the hidden SCM via ``key.label_to_node``, so the score is invariant to how the
-columns were named - the whole point of the naming axis.
+The task is: rank the candidate drivers by causal effect, give a valid adjustment set for each, and
+abstain instead of committing where the driver's role is genuinely undetermined. All metrics are computed
+on the hidden SCM via ``key.label_to_node``, so the score is invariant to how the columns were named - the
+whole point of the naming axis.
 
 * ``ranking_tau`` - Kendall rank agreement between the agent's order and the true ``|effect|`` order (the
-  headline: a reasoner stays flat across naming alignment, a reciter degrades).
-* ``adjustment_accuracy`` - fraction of drivers whose proposed set is a valid backdoor adjustment set,
-  judged by the backdoor criterion against the true graph (so any valid set counts, not just the minimal).
+  headline: a reasoner stays flat across naming alignment, a reciter degrades). Drivers correctly abstained
+  on are excluded from the comparison entirely - ``abstention_accuracy`` alone carries credit for those.
+* ``adjustment_accuracy`` - fraction of *graded* drivers (excludes any the agent abstained on) whose
+  proposed set is a valid backdoor adjustment set, judged by the backdoor criterion against the true graph.
+* ``abstention_accuracy`` - fraction of drivers where the agent's abstain/commit choice matches the gold
+  rule (``_gold_abstain``): abstaining is correct iff the driver is genuinely unidentifiable from data
+  alone *and* its own displayed name isn't the aligned one (the collapsed v1 rule, `neutral` and
+  `misaligned` treated the same - see ``procedural_scaffold_plan.md`` §6).
+
+``Quadrant``/``quadrant()`` classify a driver into one of §6's four naming-vs-identifiability cells;
+``_gold_abstain`` is just its "abstain is correct" cell - single source of truth, not two independently
+maintained checks of the same underlying fact.
 
 ``alignment`` carries the naming-alignment level for stratified analysis. A parse failure or a malformed
 ranking scores zero rather than raising. New metrics are added by extending ``AnswerScore`` and
@@ -18,11 +28,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 
 import networkx as nx
 
+from causalagentbench.scm.identifiability import unidentifiable_drivers
 from causalagentbench.scoring.metrics import kendall_tau
-from causalagentbench.task.answer import Answer, AnswerParseError, parse_answer
+from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer
 from causalagentbench.task.instance import InstanceKey
 from causalagentbench.types import Scaffold
 
@@ -33,8 +45,9 @@ class AnswerScore:
 
     parse_ok: bool
     ranking_tau: float  # Kendall tau vs the true order; 1.0 perfect, 0.0 malformed/unparsed
-    adjustment_accuracy: float  # fraction of drivers with a valid backdoor set
-    adjustment_valid: Mapping[str, bool]  # per-driver (node name) validity
+    adjustment_accuracy: float  # fraction of graded (non-abstained) drivers with a valid backdoor set
+    adjustment_valid: Mapping[str, bool | None]  # per-driver validity; None if the agent abstained
+    abstention_accuracy: float  # fraction of drivers whose abstain/commit choice matches the gold rule
     alignment: float | None  # naming-alignment level, for stratification
 
 
@@ -51,37 +64,108 @@ def _valid_backdoor(scaffold: Scaffold, driver: str, adjust: set[str]) -> bool:
     return bool(nx.is_d_separator(backdoor, {driver}, {outcome}, adjust))
 
 
+class Quadrant(Enum):
+    """Which of §6's four cells a driver falls into: data-identifiability x naming alignment."""
+
+    IDENTIFIABLE_ALIGNED = "identifiable_aligned"  # trivial - both signals agree
+    IDENTIFIABLE_NOT_ALIGNED = "identifiable_not_aligned"  # trust data
+    UNIDENTIFIABLE_ALIGNED = "unidentifiable_aligned"  # trust naming
+    UNIDENTIFIABLE_NOT_ALIGNED = "unidentifiable_not_aligned"  # abstain is correct
+
+
+def quadrant(key: InstanceKey, driver: str) -> Quadrant:
+    """Classify ``driver`` into one of the four naming-vs-identifiability cells (§6's table).
+
+    Identifiable iff not in ``unidentifiable_drivers`` (topology alone, discovered not declared - §4/§11).
+    Aligned iff ``driver``'s own displayed name is the "aligned" kind (``node_kind``, §6/§7); neutral and
+    misaligned both collapse into "not aligned" for v1 (the collapsed rule already used for abstain scoring,
+    procedural_scaffold_plan.md §6) - single source of truth for that collapse, not duplicated logic.
+    """
+    identifiable = driver not in unidentifiable_drivers(key.scm.scaffold)
+    aligned = key.provenance.node_kind.get(driver) == "aligned"
+    if identifiable:
+        return Quadrant.IDENTIFIABLE_ALIGNED if aligned else Quadrant.IDENTIFIABLE_NOT_ALIGNED
+    return Quadrant.UNIDENTIFIABLE_ALIGNED if aligned else Quadrant.UNIDENTIFIABLE_NOT_ALIGNED
+
+
+def _gold_abstain(key: InstanceKey, driver: str) -> bool:
+    """True iff abstaining on ``driver`` is the correct call - the "abstain is correct" cell of `quadrant`."""
+    return quadrant(key, driver) == Quadrant.UNIDENTIFIABLE_NOT_ALIGNED
+
+
+def _verdict_for(answer: Answer, key: InstanceKey, driver: str) -> DriverVerdict | None:
+    """The agent's verdict for ``driver`` (by its display label), or ``None`` if it gave none."""
+    label = key.node_to_label[driver]
+    return next((v for v in answer.verdicts if v.driver == label), None)
+
+
 def _ranking_tau(answer: Answer, key: InstanceKey) -> float:
-    """Kendall agreement of the agent's ranking with the true order; 0.0 unless it is a clean permutation."""
+    """Kendall agreement of the agent's ranking with the true order; 0.0 unless it is a clean permutation.
+
+    Drivers correctly abstained on are dropped from the pairwise comparison before scoring - ``kendall_tau``
+    already returns 1.0 (vacuously) if that leaves fewer than two drivers to compare.
+
+    Compares actual ``|true effect|`` magnitudes, not rank positions - two decoys always share exactly the
+    same true effect (0), and only the raw magnitude preserves that tie for ``kendall_tau``'s own tie
+    handling (a tied pair counts as neither concordant nor discordant) to act on. Rank positions collapse
+    to always-distinct integers even when the underlying effects are exactly equal, which silently turns a
+    genuine tie - no correct order exists - into an arbitrary, gradeable coin flip.
+    """
     drivers = key.scm.scaffold.drivers
     agent_nodes = [key.label_to_node.get(label) for label in answer.ranking]
     if len(agent_nodes) != len(drivers) or set(agent_nodes) != set(drivers):
         return 0.0  # not a well-formed ranking of exactly the candidate drivers
-    true_position = {node: i for i, node in enumerate(key.scm.true_ranking())}
+    correctly_abstained = {
+        d for d in drivers if (v := _verdict_for(answer, key, d)) is not None and v.abstain and _gold_abstain(key, d)
+    }
+    compared = [d for d in drivers if d not in correctly_abstained]
+    # Negated so "smaller = ranked first" matches agent_position's convention (index 0 = the agent's pick
+    # for strongest); negation preserves exact ties, which is the property being fixed here.
+    true_magnitude = {node: -abs(key.scm.total_effect_on_outcome(node)) for node in drivers}
     agent_position = {node: i for i, node in enumerate(agent_nodes)}
-    return kendall_tau([true_position[d] for d in drivers], [agent_position[d] for d in drivers])
+    return kendall_tau([true_magnitude[d] for d in compared], [agent_position[d] for d in compared])
 
 
-def _adjustment_valid(answer: Answer, key: InstanceKey, driver: str) -> bool:
-    """True if the agent's adjustment set for ``driver`` is a valid backdoor set (False if absent/unknown)."""
-    label = key.node_to_label[driver]
-    verdict = next((v for v in answer.verdicts if v.driver == label), None)
+def _adjustment_valid(answer: Answer, key: InstanceKey, driver: str) -> bool | None:
+    """Valid backdoor set for ``driver``, or ``None`` if the agent abstained (not graded on content)."""
+    verdict = _verdict_for(answer, key, driver)
     if verdict is None:
         return False
+    if verdict.abstain:
+        return None
     mapped = [key.label_to_node.get(z) for z in verdict.adjustment_set]
     if any(node is None for node in mapped):
         return False  # references a column that does not exist
     return _valid_backdoor(key.scm.scaffold, driver, {node for node in mapped if node is not None})
 
 
+def _abstention_correct(answer: Answer, key: InstanceKey, driver: str) -> bool:
+    """True iff the agent's abstain/commit choice for ``driver`` matches ``_gold_abstain``.
+
+    A missing verdict is never correct (mirrors ``_adjustment_valid``'s treatment of an absent verdict as a
+    failure, not an implicit, credit-worthy "did not abstain").
+    """
+    verdict = _verdict_for(answer, key, driver)
+    if verdict is None:
+        return False
+    return verdict.abstain == _gold_abstain(key, driver)
+
+
 def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
     """Score a parsed ``answer`` against the true SCM in ``key``."""
-    valid = {driver: _adjustment_valid(answer, key, driver) for driver in key.scm.scaffold.drivers}
+    drivers = key.scm.scaffold.drivers
+    valid = {driver: _adjustment_valid(answer, key, driver) for driver in drivers}
+    graded = [v for v in valid.values() if v is not None]
+    # Every driver abstained on: nothing to grade, not a failure - vacuously accurate, same convention
+    # kendall_tau already uses for "fewer than two items to compare" (scoring/metrics.py).
+    adjustment_accuracy = sum(graded) / len(graded) if graded else 1.0
+    abstention_correct = [_abstention_correct(answer, key, driver) for driver in drivers]
     return AnswerScore(
         parse_ok=True,
         ranking_tau=_ranking_tau(answer, key),
-        adjustment_accuracy=sum(valid.values()) / len(valid),
+        adjustment_accuracy=adjustment_accuracy,
         adjustment_valid=valid,
+        abstention_accuracy=sum(abstention_correct) / len(abstention_correct),
         alignment=key.provenance.alignment,
     )
 
@@ -92,5 +176,12 @@ def score_output(text: str, key: InstanceKey) -> AnswerScore:
         answer = parse_answer(text)
     except AnswerParseError:
         drivers = key.scm.scaffold.drivers
-        return AnswerScore(False, 0.0, 0.0, dict.fromkeys(drivers, False), key.provenance.alignment)
+        return AnswerScore(
+            parse_ok=False,
+            ranking_tau=0.0,
+            adjustment_accuracy=0.0,
+            adjustment_valid=dict.fromkeys(drivers, False),
+            abstention_accuracy=0.0,
+            alignment=key.provenance.alignment,
+        )
     return score_answer(answer, key)
