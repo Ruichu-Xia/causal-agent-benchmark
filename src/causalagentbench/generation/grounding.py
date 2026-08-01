@@ -84,15 +84,21 @@ def sample_menus(
     * decoy: an effect of a confounder candidate with no edge to the outcome (correlate, not cause).
     """
     graph = load_causenet(dump_path)
-    hubs = [n for n in graph if graph.in_degree(n) >= min_outcome_causes]
+    # Both defaults are floors, not caps: the scaffold's own driver count is the real requirement, and it is
+    # known here, so scale to it rather than picking a hub and discovering afterwards that it was too small.
+    # Left as-is, `pool_size` silently made some scaffolds impossible rather than merely unlucky - an
+    # 8-driver scaffold plus any decoy needs 9-10 causes, so every such instance failed here 100% of the
+    # time regardless of which hub was drawn. Behavior is unchanged for scaffolds within the old defaults.
+    needed = len(scaffold.drivers)
+    hubs = [n for n in graph if graph.in_degree(n) >= max(min_outcome_causes, needed)]
     if not hubs:
-        raise ValueError(f"no outcome hub with >= {min_outcome_causes} causes; lower min_outcome_causes")
+        raise ValueError(f"no outcome hub with >= {max(min_outcome_causes, needed)} causes for this scaffold")
     outcome = hubs[int(rng.integers(len(hubs)))]
     logger.debug("grounded on outcome hub %r (in-degree %d)", outcome, graph.in_degree(outcome))
 
     causes = sorted(graph.predecessors(outcome), key=lambda c: graph[c][outcome]["weight"], reverse=True)
-    drivers_pool = causes[:pool_size]
-    if len(drivers_pool) < len(scaffold.drivers):
+    drivers_pool = causes[: max(pool_size, needed)]
+    if len(drivers_pool) < needed:
         raise ValueError(f"outcome {outcome!r} has fewer causes than the scaffold needs")
     max_weight = max(graph[c][outcome]["weight"] for c in drivers_pool)
     drivers = tuple((c, graph[c][outcome]["weight"] / max_weight) for c in drivers_pool)

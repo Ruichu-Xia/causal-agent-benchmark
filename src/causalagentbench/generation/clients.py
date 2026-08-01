@@ -79,7 +79,17 @@ class DatabricksProposer:
 
     model: str
     temperature: float = 0.7
-    max_tokens: int = 4096
+    max_tokens: int = 32_000
+    """Sized for the whole naming payload, with room to spare.
+
+    One naming call must emit three names *plus* a description for every node at once, so the response
+    grows with graph size - and a truncated response is not a partial naming, it is invalid JSON that fails
+    the schema check and costs the entire SCM. The previous 4096 was measured to fail on exactly this: an
+    8-driver scaffold has 28 nodes and needs 4113 completion tokens, overshooting the cap by 17 and dying
+    mid-JSON with ``finish_reason='length'``. That failure is silent and *selective* - it only hits the
+    larger graphs - so it quietly biased built datasets toward small SCMs rather than erroring loudly.
+    Deliberately duplicated rather than shared with ``agent.clients.DatabricksClient``'s own budget: same
+    gateway and same reasoning, but the two paths stay textually separate by this project's convention."""
 
     def propose(self, prompt: str) -> str:
         """Complete ``prompt`` with the configured model via the Databricks AI Gateway."""

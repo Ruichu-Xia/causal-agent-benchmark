@@ -80,6 +80,12 @@ def main() -> None:
     parser.add_argument("--dump", default=os.environ.get("CAUSENET_DUMP"), help="CauseNet dump (or $CAUSENET_DUMP)")
     parser.add_argument("--out", default=_OUT, help="output path stem (.json + .npz)")
     parser.add_argument("-n", "--n-scms", type=int, default=3, help="number of SCM seeds")
+    parser.add_argument(
+        "--n-drivers",
+        type=int,
+        default=None,
+        help="fix the non-decoy driver count (default: varies per seed over DRIVER_COUNT_RANGE)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="log per-call detail (DEBUG)")
     args = parser.parse_args()
     logging.basicConfig(
@@ -102,7 +108,7 @@ def main() -> None:
 
     with (partial / "records.jsonl").open("w", encoding="utf-8") as records_file:
         for seed in range(args.n_scms):
-            scm, report = generate_gated_procedural(seed)
+            scm, report = generate_gated_procedural(seed, n_drivers=args.n_drivers)
             assert report.data is not None  # guaranteed: generate_gated_procedural only returns a passing report
             data = report.data
             try:
