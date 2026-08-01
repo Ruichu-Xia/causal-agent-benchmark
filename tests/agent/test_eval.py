@@ -92,3 +92,15 @@ def test_aggregate_computes_means_correctly():
     assert summaries[0].parse_rate == 0.5
     assert summaries[0].mean_ranking_tau == (good.ranking_tau + bad.ranking_tau) / 2
     assert summaries[0].mean_adjustment_accuracy == (good.adjustment_accuracy + bad.adjustment_accuracy) / 2
+
+
+def test_on_turn_tags_every_turn_with_its_own_instance_index():
+    instances = [_instance(0), _instance(1)]
+    seen: list[int] = []
+    run_evaluation(instances, _FixedReplyClient("no tool calls"), on_turn=lambda i, _trace: seen.append(i))
+    assert seen == [0, 1]  # one tool-free turn per instance, tagged by that instance's own index
+
+
+def test_on_turn_is_never_called_when_omitted():
+    instances = [_instance(0)]
+    run_evaluation(instances, _FixedReplyClient("no tool calls"))  # would raise if on_turn were required

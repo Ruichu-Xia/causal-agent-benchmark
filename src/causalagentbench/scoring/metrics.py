@@ -7,6 +7,7 @@ primitive shared by the gate-validation baselines (indexed by scaffold node name
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 import numpy as np
@@ -30,6 +31,22 @@ def kendall_tau(x: Sequence[float], y: Sequence[float]) -> float:
                 discordant += 1
     denominator = concordant + discordant
     return (concordant - discordant) / denominator if denominator else 1.0
+
+
+def kendall_tau_zscore(tau: float, n: int) -> float | None:
+    """Standardize ``tau`` against its null distribution (a uniformly random ranking of ``n`` items).
+
+    Raw tau isn't comparable across ranking tasks of different sizes: both its achievable granularity and
+    its variance under chance depend on ``n`` (at ``n=3``, tau can only take {-1, -1/3, +1/3, +1}; at
+    ``n=8``, a much finer grid) - a given tau is unremarkable at small ``n`` and unusual at large ``n``.
+    Uses the standard asymptotic variance of Kendall's tau-a under the null of no association,
+    ``Var(tau) = 2(2n+5) / (9n(n-1))`` (Kendall 1938) - ``None`` when ``n < 2``, where tau itself is a
+    vacuous constant (``kendall_tau`` returns 1.0), not a real correlation to standardize.
+    """
+    if n < 2:
+        return None
+    variance = 2 * (2 * n + 5) / (9 * n * (n - 1))
+    return tau / math.sqrt(variance)
 
 
 def regression_coefficient(

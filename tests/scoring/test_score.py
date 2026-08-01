@@ -1,5 +1,6 @@
 from causalagentbench import build_instance, generate, sample
 from causalagentbench.scoring.gates import generate_gated_procedural
+from causalagentbench.scoring.metrics import kendall_tau_zscore
 from causalagentbench.scoring.score import Quadrant, _gold_abstain, quadrant, score_answer, score_output
 from causalagentbench.task.answer import Answer, DriverVerdict
 from causalagentbench.task.instance import InstanceKey
@@ -55,6 +56,9 @@ def test_perfect_answer_scores_one():
     assert score.ranking_tau == 1.0
     assert score.adjustment_accuracy == 1.0
     assert all(score.adjustment_valid.values())
+    # n_compared is the candidate count actually behind ranking_tau (all 3: A, B, Dz - nothing abstained).
+    assert score.n_compared == 3
+    assert score.ranking_tau_z == kendall_tau_zscore(1.0, 3)
 
 
 def test_reversed_ranking_scores_minus_one():
@@ -88,7 +92,12 @@ def test_unknown_adjustment_column_is_invalid():
 def test_malformed_ranking_scores_zero():
     key, label = _instance()
     partial = Answer(verdicts=(), ranking=(label["A"],))  # omits B and Dz
-    assert score_answer(partial, key).ranking_tau == 0.0
+    score = score_answer(partial, key)
+    assert score.ranking_tau == 0.0
+    # Nothing was actually compared (the ranking itself is invalid) - n_compared falls back to every
+    # candidate, giving honest task-size context for the 0.0 penalty rather than a meaningless 0.
+    assert score.n_compared == 3
+    assert score.ranking_tau_z == 0.0
 
 
 def test_parse_failure_state():
@@ -98,6 +107,8 @@ def test_parse_failure_state():
     assert score.ranking_tau == 0.0
     assert score.adjustment_accuracy == 0.0
     assert not any(score.adjustment_valid.values())
+    assert score.n_compared == 3
+    assert score.ranking_tau_z == 0.0
 
 
 def test_alignment_is_carried_through():
@@ -164,6 +175,9 @@ def test_correctly_abstaining_on_every_unidentifiable_driver_scores_full_credit(
     assert score.abstention_accuracy == 1.0
     # A and Dz excluded from the pairwise comparison entirely - only B is left, vacuously perfect.
     assert score.ranking_tau == 1.0
+    # n_compared reflects that real exclusion (1, not 3) - too few items for a meaningful z-score.
+    assert score.n_compared == 1
+    assert score.ranking_tau_z is None
     # A and Dz excluded from the accuracy denominator too - only B is graded, and it's valid.
     assert score.adjustment_accuracy == 1.0
     assert score.adjustment_valid["A"] is None

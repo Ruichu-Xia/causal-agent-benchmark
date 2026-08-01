@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from causalagentbench.agent.clients import _databricks_client, _parse_tool_call
+from causalagentbench.agent.clients import _databricks_client, _extract_max_tokens_ceiling, _parse_tool_call
 
 
 @pytest.fixture(autouse=True)
@@ -69,3 +69,21 @@ def test_databricks_client_respects_base_url_override(monkeypatch):
     monkeypatch.setenv("DATABRICKS_AI_GATEWAY_BASE_URL", "https://custom.gateway/v1/")
     client = _databricks_client()
     assert str(client.base_url).rstrip("/") == "https://custom.gateway/v1"
+
+
+def test_extract_max_tokens_ceiling_handles_observed_message_formats():
+    # Two different real phrasings seen from this gateway for the same underlying rejection.
+    llama = "max_new_tokens 32000 cannot be greater than max_output_tokens 8192."
+    qwen = "max_tokens (32000) cannot exceed 25000. Please reduce the length of max output tokens generated."
+    assert _extract_max_tokens_ceiling(llama, requested=32000) == 8192
+    assert _extract_max_tokens_ceiling(qwen, requested=32000) == 25000
+
+
+def test_extract_max_tokens_ceiling_returns_none_for_an_unrelated_message():
+    assert _extract_max_tokens_ceiling("invalid API key", requested=32000) is None
+
+
+def test_extract_max_tokens_ceiling_returns_none_when_no_number_is_smaller():
+    # A number mentioned that's >= requested isn't a ceiling - guards against misreading an unrelated
+    # rejection that happens to mention some other large number.
+    assert _extract_max_tokens_ceiling("rate limit: retry after 60000ms", requested=32000) is None

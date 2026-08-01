@@ -1,7 +1,7 @@
 import json
 
 from causalagentbench import build_instance, sample
-from causalagentbench.agent.loop import _FINAL_TURN_REMINDER, MAX_TURNS, ModelTurn, ToolCall, run_agent
+from causalagentbench.agent.loop import _FINAL_TURN_REMINDER, MAX_TURNS, ModelTurn, ToolCall, TurnTrace, run_agent
 from causalagentbench.scoring.gates import generate_gated_procedural
 
 
@@ -124,3 +124,31 @@ def test_default_max_turns_matches_module_constant():
     client = _ScriptedClient([ModelTurn(content="ok")] * MAX_TURNS)
     run_agent(instance, client)
     assert len(client.calls) == 1  # stops at the first non-tool-call reply, well under MAX_TURNS
+
+
+def test_on_turn_fires_once_per_turn_with_tool_names_and_token_counts():
+    instance = _instance()
+    call_a = ToolCall(id="1", name="preview", arguments={})
+    call_b = ToolCall(id="2", name="correlate", arguments={"x": "a", "y": "b"})
+    client = _ScriptedClient(
+        [
+            ModelTurn(content=None, tool_calls=(call_a, call_b), prompt_tokens=100, completion_tokens=20),
+            ModelTurn(content="<answer>ok</answer>", prompt_tokens=150, completion_tokens=10),
+        ]
+    )
+    traces: list[TurnTrace] = []
+    run_agent(instance, client, on_turn=traces.append)
+
+    assert [t.turn for t in traces] == [0, 1]
+    assert traces[0].tool_calls == ("preview", "correlate")
+    assert traces[0].prompt_tokens == 100 and traces[0].completion_tokens == 20
+    assert traces[1].tool_calls == ()  # the final, tool-free turn
+    assert traces[1].prompt_tokens == 150 and traces[1].completion_tokens == 10
+    assert all(t.duration_seconds >= 0 for t in traces)
+
+
+def test_on_turn_is_never_called_when_omitted():
+    # Default None must impose zero behavior change on every existing caller.
+    instance = _instance()
+    client = _ScriptedClient([ModelTurn(content="<answer>{}</answer>")])
+    run_agent(instance, client)  # would raise if run_agent required on_turn

@@ -9,6 +9,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,7 +50,13 @@ class LiteLLMClient:
         )
         message = response.choices[0].message
         raw_calls = getattr(message, "tool_calls", None) or ()
-        return ModelTurn(content=message.content, tool_calls=tuple(_parse_tool_call(c) for c in raw_calls))
+        usage = response.usage
+        return ModelTurn(
+            content=message.content,
+            tool_calls=tuple(_parse_tool_call(c) for c in raw_calls),
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=usage.completion_tokens if usage else None,
+        )
 
 
 def _parse_tool_call(raw: Any) -> ToolCall:
@@ -82,33 +89,72 @@ class DatabricksClient:
     done or the API truncates it wherever it happens to be, with no chance to wrap up. The previous default
     (4096) was an arbitrary pick that turned out too small for an extended-thinking model's internal
     reasoning trace on a forced-final turn - confirmed by direct trace: cut off mid-``reasoning`` block,
-    zero answer text, on a turn that needed ~4x that budget. 32000 was confirmed accepted by this gateway
-    (tested up to 128000) and leaves wide headroom over every observed real turn."""
+    zero answer text, on a turn that needed ~4x that budget. 32000 was confirmed accepted for
+    ``claude-opus-5`` (tested up to 128000), but the gateway enforces its own hard ceiling *per model* below
+    this in some cases (observed: 8192 for ``meta-llama-3-1-8b-instruct``, 25000 for ``qwen35-122b-a10b``) -
+    ``complete`` learns and caches the real ceiling on first rejection (``_max_tokens_ceiling``), so this
+    field is really just a starting point/upper bound, not the value every model actually gets."""
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, force_final: bool) -> ModelTurn:
         """Complete one turn with the configured model via the Databricks AI Gateway."""
         import openai
 
         full_messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *messages]
+        max_tokens = _max_tokens_ceiling.get(self.model, self.max_tokens)
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": full_messages,
             "tools": tools,
             "tool_choice": "none" if force_final else "auto",
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens,
         }
         try:
             response = _databricks_client().chat.completions.create(temperature=self.temperature, **kwargs)
         except openai.BadRequestError as exc:
-            # Some gateway-served models (observed: claude-opus-4-8) reject "temperature" outright, unlike
-            # LiteLLM's drop_params which handles this transparently - retry once without it.
-            if "temperature" not in str(exc):
+            message_text = str(exc)
+            if "temperature" in message_text:
+                # Some gateway-served models (observed: claude-opus-4-8) reject "temperature" outright,
+                # unlike LiteLLM's drop_params which handles this transparently - retry once without it.
+                response = _databricks_client().chat.completions.create(**kwargs)
+            elif (ceiling := _extract_max_tokens_ceiling(message_text, max_tokens)) is not None:
+                _max_tokens_ceiling[self.model] = ceiling
+                kwargs["max_tokens"] = ceiling
+                response = _databricks_client().chat.completions.create(temperature=self.temperature, **kwargs)
+            else:
                 raise
-            response = _databricks_client().chat.completions.create(**kwargs)
         message = response.choices[0].message
         raw_calls = getattr(message, "tool_calls", None) or ()
         calls = tuple(_parse_tool_call(c) for c in raw_calls)
-        return ModelTurn(content=_extract_databricks_content(message.content), tool_calls=calls)
+        usage = response.usage
+        return ModelTurn(
+            content=_extract_databricks_content(message.content),
+            tool_calls=calls,
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=usage.completion_tokens if usage else None,
+        )
+
+
+_max_tokens_ceiling: dict[str, int] = {}
+"""Learned per-model output-token ceiling (gateway model name -> max accepted ``max_tokens``).
+
+Populated lazily by ``DatabricksClient.complete`` on first rejection, not a hardcoded table - the gateway's
+per-model ceilings aren't documented anywhere we can query up front, and a hardcoded table would silently
+go stale as the model catalog changes. Once learned for a model, every subsequent call for that model goes
+straight to the safe value instead of paying for a failed round trip first."""
+
+
+def _extract_max_tokens_ceiling(message: str, requested: int) -> int | None:
+    """Pull the real ceiling out of a gateway max-tokens rejection, or ``None`` if the message doesn't fit.
+
+    Message wording varies by model/provider behind the gateway (observed: ``"max_new_tokens 32000 cannot
+    be greater than max_output_tokens 8192"`` for one model, ``"max_tokens (32000) cannot exceed 25000"``
+    for another) - rather than special-casing each phrasing, this takes every integer the message mentions
+    and returns the smallest one below what was actually requested. Robust across the observed formats
+    because both always state the rejected (larger) value alongside the ceiling (smaller) one; returns
+    ``None`` if no number in the message is smaller than ``requested`` (not a max-tokens ceiling message).
+    """
+    smaller = [n for n in (int(m) for m in re.findall(r"\d+", message)) if n < requested]
+    return min(smaller) if smaller else None
 
 
 def _extract_databricks_content(content: Any) -> str | None:

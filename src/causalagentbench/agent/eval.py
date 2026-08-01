@@ -9,10 +9,10 @@ should stay flat across the grid, a reciter should degrade as names go neutral o
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from causalagentbench.agent.loop import MAX_TURNS, ToolCallingClient, run_agent
+from causalagentbench.agent.loop import MAX_TURNS, ToolCallingClient, TurnTrace, run_agent
 from causalagentbench.scoring.score import AnswerScore, score_output
 from causalagentbench.task.instance import Instance, InstanceKey
 
@@ -20,22 +20,40 @@ logger = logging.getLogger(__name__)
 
 
 def run_evaluation(
-    instances: Iterable[tuple[Instance, InstanceKey]], client: ToolCallingClient, *, max_turns: int = MAX_TURNS
+    instances: Iterable[tuple[Instance, InstanceKey]],
+    client: ToolCallingClient,
+    *,
+    max_turns: int = MAX_TURNS,
+    on_instance: Callable[[int, AnswerScore], None] | None = None,
+    on_turn: Callable[[int, TurnTrace], None] | None = None,
 ) -> list[AnswerScore]:
     """Run the agent on every instance and score each reply; one ``AnswerScore`` per instance.
 
     A single instance whose agent run raises (a client/provider error the tool loop itself can't turn into
     text) is logged and scored as a parse failure rather than aborting the whole batch - one bad instance
     should never cost every other instance's already-computed score.
+
+    ``on_instance``, if given, is called with (0-based index, that instance's score) right after each one
+    finishes - optional because a batch over many instances against a slow model (an extended-thinking
+    model needing a dozen-plus turns each) can otherwise run for a long time with zero visibility until the
+    entire batch returns; the default (``None``) keeps this function silent, as before.
+
+    ``on_turn``, if given, is called with (0-based instance index, ``TurnTrace``) for every turn of every
+    instance - the same instance-index tagging as ``on_instance``, one level more granular. Passed straight
+    through to each ``run_agent`` call.
     """
     scores = []
-    for instance, key in instances:
+    for i, (instance, key) in enumerate(instances):
+        instance_on_turn = (lambda trace, i=i: on_turn(i, trace)) if on_turn is not None else None
         try:
-            reply = run_agent(instance, client, max_turns=max_turns)
+            reply = run_agent(instance, client, max_turns=max_turns, on_turn=instance_on_turn)
         except Exception:
             logger.exception("agent run failed; scoring this instance as a parse failure")
             reply = ""
-        scores.append(score_output(reply, key))
+        score = score_output(reply, key)
+        scores.append(score)
+        if on_instance is not None:
+            on_instance(i, score)
     return scores
 
 

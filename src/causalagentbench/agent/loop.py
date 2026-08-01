@@ -12,6 +12,7 @@ anything about it, which is the point of a tool-using agent rather than a single
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -48,10 +49,38 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ModelTurn:
-    """One model response: either a final text answer, or tool calls to execute."""
+    """One model response: either a final text answer, or tool calls to execute.
+
+    ``prompt_tokens``/``completion_tokens`` are observability, not scoring input - ``None`` when a client
+    doesn't expose usage (not every provider populates it); present for both ``LiteLLMClient`` and
+    ``DatabricksClient``, since both providers return standard OpenAI-shaped ``usage``.
+    """
 
     content: str | None
     tool_calls: tuple[ToolCall, ...] = ()
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class TurnTrace:
+    """Observability record for one completed turn - not scored, only measured.
+
+    ``tool_calls`` is every tool name requested this turn, in order (repeats allowed - a model can call
+    ``correlate`` a dozen times in one turn); a raw tuple, not a count, so a consumer can build whatever
+    aggregate it wants (a histogram, a total, per-tool breakdowns) without this module guessing which one
+    matters. Per-turn tool-call counts and turn duration are real but not directly comparable across models
+    on their own: models differ in *batching strategy* (one model spreads an investigation across many
+    single-call turns, another batches the same total work into few many-call turns), so a fair cross-model
+    comparison sums these into per-instance totals, not per-turn averages - see the consumer, not this
+    module, for that aggregation.
+    """
+
+    turn: int
+    duration_seconds: float
+    tool_calls: tuple[str, ...]
+    prompt_tokens: int | None
+    completion_tokens: int | None
 
 
 class ToolCallingClient(Protocol):
@@ -118,13 +147,22 @@ def _dispatch(tools: CausalTools) -> dict[str, Callable[..., str]]:
     return {"preview": tools.preview, "correlate": tools.correlate, "regress": tools.regress}
 
 
-def run_agent(instance: Instance, client: ToolCallingClient, *, max_turns: int = MAX_TURNS) -> str:
+def run_agent(
+    instance: Instance,
+    client: ToolCallingClient,
+    *,
+    max_turns: int = MAX_TURNS,
+    on_turn: Callable[[TurnTrace], None] | None = None,
+) -> str:
     """Run the tool-calling loop for one instance; return the model's final reply text.
 
     The initial message is only ``instance.prompt`` - never the raw table - so every fact the agent uses
     about the data comes from a tool call. Returns whatever text the model last produced (possibly empty
     on a degenerate model), which ``score_output``/``score_answer`` will grade as a parse failure if it
     carries no ``<answer>`` block.
+
+    ``on_turn``, if given, is called with a ``TurnTrace`` right after each ``client.complete()`` call
+    returns - optional so this stays free for every caller that doesn't need turn-level observability.
     """
     tools = CausalTools(instance)
     dispatch = _dispatch(tools)
@@ -134,7 +172,18 @@ def run_agent(instance: Instance, client: ToolCallingClient, *, max_turns: int =
         force_final = turn == max_turns - 1
         if force_final:
             messages.append({"role": "user", "content": _FINAL_TURN_REMINDER})
+        turn_start = time.monotonic()
         reply = client.complete(messages, list(_TOOL_SCHEMAS), force_final=force_final)
+        if on_turn is not None:
+            on_turn(
+                TurnTrace(
+                    turn=turn,
+                    duration_seconds=time.monotonic() - turn_start,
+                    tool_calls=tuple(c.name for c in reply.tool_calls),
+                    prompt_tokens=reply.prompt_tokens,
+                    completion_tokens=reply.completion_tokens,
+                )
+            )
         if not reply.tool_calls:
             return reply.content or ""
 

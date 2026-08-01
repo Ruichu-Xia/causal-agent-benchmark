@@ -8,6 +8,12 @@ whole point of the naming axis.
 * ``ranking_tau`` - Kendall rank agreement between the agent's order and the true ``|effect|`` order (the
   headline: a reasoner stays flat across naming alignment, a reciter degrades). Drivers correctly abstained
   on are excluded from the comparison entirely - ``abstention_accuracy`` alone carries credit for those.
+* ``n_compared`` / ``ranking_tau_z`` - task-size context for ``ranking_tau`` and its standardized form.
+  Raw tau isn't comparable across instances with different candidate counts (fewer candidates means a
+  coarser achievable tau and higher variance under pure chance); ``n_compared`` is the actual candidate
+  count behind ``ranking_tau`` (not ``n_drivers`` - decoys are candidates too, and correctly-abstained
+  drivers are excluded), and ``ranking_tau_z`` standardizes ``ranking_tau`` against chance at that size
+  (``scoring/metrics.py::kendall_tau_zscore``) so scores across differently-sized tasks are comparable.
 * ``adjustment_accuracy`` - fraction of *graded* drivers (excludes any the agent abstained on) whose
   proposed set is a valid backdoor adjustment set, judged by the backdoor criterion against the true graph.
 * ``abstention_accuracy`` - fraction of drivers where the agent's abstain/commit choice matches the gold
@@ -33,7 +39,7 @@ from enum import Enum
 import networkx as nx
 
 from causalagentbench.scm.identifiability import unidentifiable_drivers
-from causalagentbench.scoring.metrics import kendall_tau
+from causalagentbench.scoring.metrics import kendall_tau, kendall_tau_zscore
 from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer
 from causalagentbench.task.instance import InstanceKey
 from causalagentbench.types import Scaffold
@@ -45,6 +51,8 @@ class AnswerScore:
 
     parse_ok: bool
     ranking_tau: float  # Kendall tau vs the true order; 1.0 perfect, 0.0 malformed/unparsed
+    n_compared: int  # candidates actually fed into ranking_tau (drivers minus correctly-abstained ones)
+    ranking_tau_z: float | None  # ranking_tau standardized against chance at this n_compared; None if < 2
     adjustment_accuracy: float  # fraction of graded (non-abstained) drivers with a valid backdoor set
     adjustment_valid: Mapping[str, bool | None]  # per-driver validity; None if the agent abstained
     abstention_accuracy: float  # fraction of drivers whose abstain/commit choice matches the gold rule
@@ -99,8 +107,12 @@ def _verdict_for(answer: Answer, key: InstanceKey, driver: str) -> DriverVerdict
     return next((v for v in answer.verdicts if v.driver == label), None)
 
 
-def _ranking_tau(answer: Answer, key: InstanceKey) -> float:
+def _ranking_tau(answer: Answer, key: InstanceKey) -> tuple[float, int]:
     """Kendall agreement of the agent's ranking with the true order; 0.0 unless it is a clean permutation.
+
+    Returns ``(tau, n_compared)`` - ``n_compared`` is the real denominator behind ``tau``, needed to
+    standardize it (``kendall_tau_zscore``): raw tau isn't comparable across instances of different
+    ``n_compared``, since both its achievable granularity and its variance under chance depend on it.
 
     Drivers correctly abstained on are dropped from the pairwise comparison before scoring - ``kendall_tau``
     already returns 1.0 (vacuously) if that leaves fewer than two drivers to compare.
@@ -114,7 +126,7 @@ def _ranking_tau(answer: Answer, key: InstanceKey) -> float:
     drivers = key.scm.scaffold.drivers
     agent_nodes = [key.label_to_node.get(label) for label in answer.ranking]
     if len(agent_nodes) != len(drivers) or set(agent_nodes) != set(drivers):
-        return 0.0  # not a well-formed ranking of exactly the candidate drivers
+        return 0.0, len(drivers)  # not a well-formed ranking of exactly the candidate drivers
     correctly_abstained = {
         d for d in drivers if (v := _verdict_for(answer, key, d)) is not None and v.abstain and _gold_abstain(key, d)
     }
@@ -123,7 +135,8 @@ def _ranking_tau(answer: Answer, key: InstanceKey) -> float:
     # for strongest); negation preserves exact ties, which is the property being fixed here.
     true_magnitude = {node: -abs(key.scm.total_effect_on_outcome(node)) for node in drivers}
     agent_position = {node: i for i, node in enumerate(agent_nodes)}
-    return kendall_tau([true_magnitude[d] for d in compared], [agent_position[d] for d in compared])
+    tau = kendall_tau([true_magnitude[d] for d in compared], [agent_position[d] for d in compared])
+    return tau, len(compared)
 
 
 def _adjustment_valid(answer: Answer, key: InstanceKey, driver: str) -> bool | None:
@@ -160,9 +173,12 @@ def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
     # kendall_tau already uses for "fewer than two items to compare" (scoring/metrics.py).
     adjustment_accuracy = sum(graded) / len(graded) if graded else 1.0
     abstention_correct = [_abstention_correct(answer, key, driver) for driver in drivers]
+    ranking_tau, n_compared = _ranking_tau(answer, key)
     return AnswerScore(
         parse_ok=True,
-        ranking_tau=_ranking_tau(answer, key),
+        ranking_tau=ranking_tau,
+        n_compared=n_compared,
+        ranking_tau_z=kendall_tau_zscore(ranking_tau, n_compared),
         adjustment_accuracy=adjustment_accuracy,
         adjustment_valid=valid,
         abstention_accuracy=sum(abstention_correct) / len(abstention_correct),
@@ -179,6 +195,8 @@ def score_output(text: str, key: InstanceKey) -> AnswerScore:
         return AnswerScore(
             parse_ok=False,
             ranking_tau=0.0,
+            n_compared=len(drivers),
+            ranking_tau_z=kendall_tau_zscore(0.0, len(drivers)),
             adjustment_accuracy=0.0,
             adjustment_valid=dict.fromkeys(drivers, False),
             abstention_accuracy=0.0,

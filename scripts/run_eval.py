@@ -60,8 +60,10 @@ def main() -> None:
     print("-" * 64)
     for i, (n, score) in enumerate(zip(n_drivers, scores, strict=True)):
         level = "name-blind" if score.alignment is None else f"alpha={score.alignment:+.1f}"
+        z = f"{score.ranking_tau_z:+.2f}" if score.ranking_tau_z is not None else " n/a"
         print(
             f"  #{i:<3} n_drivers={n:<3} {level:<12} ranking_tau={score.ranking_tau:+.3f} "
+            f"(n={score.n_compared:<2} z={z})  "
             f"adj_acc={score.adjustment_accuracy:.3f} abstain_acc={score.abstention_accuracy:.3f} "
             f"parse={score.parse_ok}"
         )
