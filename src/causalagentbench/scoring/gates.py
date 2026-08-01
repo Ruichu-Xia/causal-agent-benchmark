@@ -34,7 +34,7 @@ from causalagentbench.scm.sample import sample
 from causalagentbench.scm.sortability import r2_sortability, varsortability
 from causalagentbench.scm.target_effects import (
     CONFOUNDING_MARGIN,
-    MIN_MEDIATED_EFFECT,
+    MIN_MEDIATED_SHARE,
     REFERENCE_MIN_EFFECT,
     REFERENCE_MIN_GAP,
     scaled_threshold,
@@ -54,12 +54,13 @@ ORACLE_TAU_THRESHOLD = 0.99
 MAX_ATTEMPTS = 1000
 """Rejection-sampling safety valve."""
 
-#: `CONFOUNDING_MARGIN` and `MIN_MEDIATED_EFFECT` live in `scm/target_effects.py`, next to the driver-effect
+#: `CONFOUNDING_MARGIN` and `MIN_MEDIATED_SHARE` live in `scm/target_effects.py`, next to the driver-effect
 #: thresholds - construction and the check that verifies it must share one definition, not two
-#: independently-tuned ones (`procedural_scaffold_plan.md` §5a). Unlike the driver-effect thresholds, these
-#: two are used here unscaled: `with_constructed_confounding`/`with_constructed_effects`'s mediator step
-#: construct comfortably above them directly, independent of driver count, so there's nothing here for
-#: `scaled_threshold` to compensate for.
+#: independently-tuned ones (`procedural_scaffold_plan.md` §5a). Both are relative, like the driver-effect
+#: thresholds and for the same reason: `MIN_MEDIATED_SHARE` is checked as a fraction of the driver's own
+#: effect, and `CONFOUNDING_MARGIN` is scaled here by `scaled_threshold` exactly as construction scales it
+#: (`variance_budget_plan.md`). An absolute floor on either one is a demand that grows as a share of the
+#: outcome's fixed variance budget as driver count rises, until no candidate can satisfy it.
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,7 @@ class GateReport:
     max_decoy_effect: float
     min_effect_gap: float
     min_confounding_margin: float
-    min_mediated_effect: float
+    min_mediated_share: float  # mediated path as a fraction of its own driver's total effect, not a magnitude
     oracle_tau: float
     varsortability: float
     r2_sortability: float
@@ -124,22 +125,25 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
     weakest_driver_corr = min(corr[d] for d in non_decoy_drivers)
     min_confounding_margin = min((corr[d] - weakest_driver_corr for d in decoys), default=math.inf)
 
-    mediated_effect = {}
+    # As a share of the driver's own effect, not an absolute magnitude - what makes the over-adjustment trap
+    # sharp is the portion of the effect that conditioning on the mediator removes (`MIN_MEDIATED_SHARE`).
+    # A driver with no effect at all has no share to measure and cannot host a meaningful trap, so it fails
+    # this gate rather than dividing by zero (`structure_valid` independently requires a non-trivial effect).
+    mediated_share = {}
     for d in non_decoy_drivers:
         mediator = sc.mediator_of(d)
         if mediator is not None:
-            mediated_effect[d] = abs(
-                float(scm.W[sc.index(d), sc.index(mediator)] * scm.W[sc.index(mediator), outcome_idx])
-            )
-    min_mediated_effect = min(mediated_effect.values(), default=math.inf)
+            mediated = abs(float(scm.W[sc.index(d), sc.index(mediator)] * scm.W[sc.index(mediator), outcome_idx]))
+            mediated_share[d] = mediated / effect[d] if effect[d] > 0 else 0.0
+    min_mediated_share = min(mediated_share.values(), default=math.inf)
 
     structure_valid = (
         max_decoy_effect <= DECOY_EFFECT_TOL
         and min_driver_effect >= scaled_threshold(REFERENCE_MIN_EFFECT, n)
         and min_effect_gap >= scaled_threshold(REFERENCE_MIN_GAP, n)
     )
-    confounding_realized = min_confounding_margin > CONFOUNDING_MARGIN
-    mediation_realized = min_mediated_effect >= MIN_MEDIATED_EFFECT
+    confounding_realized = min_confounding_margin > scaled_threshold(CONFOUNDING_MARGIN, n)
+    mediation_realized = min_mediated_share >= MIN_MEDIATED_SHARE
 
     oracle_tau = math.nan
     vsort = math.nan
@@ -158,9 +162,7 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
         vsort = varsortability(data, scm.W)
         r2sort = r2_sortability(scm)
         full = full_adjustment_effects(data, scm)
-        max_full_adjust_bias = max(
-            (abs(full[d] - scm.total_effect_on_outcome(d)) for d in mediated_effect), default=0.0
-        )
+        max_full_adjust_bias = max((abs(full[d] - scm.total_effect_on_outcome(d)) for d in mediated_share), default=0.0)
         overadjust_flips_ranking = ranking(full) != scm.true_ranking()
         oracle_recovers = oracle_tau >= ORACLE_TAU_THRESHOLD
 
@@ -175,7 +177,7 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
         max_decoy_effect=max_decoy_effect,
         min_effect_gap=min_effect_gap,
         min_confounding_margin=min_confounding_margin,
-        min_mediated_effect=min_mediated_effect,
+        min_mediated_share=min_mediated_share,
         oracle_tau=oracle_tau,
         varsortability=vsort,
         r2_sortability=r2sort,

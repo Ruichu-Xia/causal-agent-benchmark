@@ -3,6 +3,7 @@ import pytest
 
 from causalagentbench import sample
 from causalagentbench.scm.identifiability import unidentifiable_drivers, unoriented_edges
+from causalagentbench.scm.target_effects import MIN_MEDIATED_SHARE
 from causalagentbench.scoring.baselines import (
     correlation_effects,
     full_adjustment_effects,
@@ -60,7 +61,12 @@ def test_procedural_oracle_recovers_truth_but_naive_shortcuts_fail(seed):
     assert mediated_drivers
     mediated_driver = mediated_drivers[0]
     full_estimate = full_adjustment_effects(data, scm)[mediated_driver]
-    assert abs(full_estimate - scm.total_effect_on_outcome(mediated_driver)) > 0.02
+    # Relative, not absolute: the mediated path is now a *share* of the driver's own effect
+    # (`MIN_MEDIATED_SHARE`), so the bias it induces scales with that effect rather than sitting above some
+    # fixed magnitude. Half the guaranteed share, so this tests the guarantee with headroom instead of
+    # restating construction's own arithmetic back to itself.
+    true_effect = scm.total_effect_on_outcome(mediated_driver)
+    assert abs(full_estimate - true_effect) > 0.5 * MIN_MEDIATED_SHARE * abs(true_effect)
 
 
 def test_gated_procedural_generation_is_deterministic():

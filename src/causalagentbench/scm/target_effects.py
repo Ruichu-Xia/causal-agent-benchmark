@@ -17,6 +17,13 @@ contribution and the confounder edges as they stand after any shrink), then deco
 to know the *realized* weakest driver correlation, which only exists once driver construction is done).
 Every step patches only a node's own incoming edges - never anything upstream of it - so nothing already
 fixed is disturbed by a later step.
+
+Every target this module picks is expressed *relative* to the instance it belongs to - the driver-effect
+floor and gap via ``scaled_threshold``, the mediated path as a share of its own driver's effect, the decoy
+margin as a scaled offset from the realized weakest driver correlation. That is one rule, not three
+coincidences: the outcome's incoming variance is capped at 1, so every demand on it competes, and a demand
+expressed as a fixed absolute magnitude grows without bound as a share of that cap as driver count rises
+(`variance_budget_plan.md`).
 """
 
 from __future__ import annotations
@@ -40,14 +47,30 @@ _MARGIN = 1.1
 
 #: `mediation_realized`'s and `confounding_realized`'s floors. Live here, not in `scoring/gates.py`, for
 #: the same reason the driver-effect thresholds do: construction and the check that verifies it must share
-#: one definition. Unlike the driver-effect thresholds, these do NOT scale with driver count - construction
-#: carves out a comfortable, fixed-size mediated effect and confounding margin *before* drivers compete for
-#: the outcome's remaining budget, so neither one is subject to the `1/sqrt(N)` squeeze in the first place.
-MIN_MEDIATED_EFFECT = 0.10
-"""|W[driver,mediator] * W[mediator,outcome]| must be at least this, so over-adjustment biases the driver
-materially."""
+#: one definition. Both are *relative* quantities, never fixed magnitudes: everything competing for the
+#: outcome's unit-variance budget must scale the same way the achievable effects do (`1/sqrt(N)`), so a
+#: threshold pinned to a fixed absolute size grows without bound as a share of that budget and eventually
+#: consumes all of it. Being constructed *first* does not make a demand free - it still competes. Measured
+#: before this was fixed: mediator edges alone took 0.30 of the budget at 3 drivers but 0.75 at 10, and
+#: mediation construction was infeasible in 81% of attempts at 10 drivers, collapsing overall acceptance to
+#: 0.3% (`variance_budget_plan.md` §1).
+MIN_MEDIATED_SHARE = 0.25
+"""|W[driver,mediator] * W[mediator,outcome]| must be at least this *fraction* of that driver's own total
+effect, so over-adjustment biases it materially. A fraction in magnitude only - the mediated path may
+oppose the direct effect (`_construct_mediator_edge`), which this floor is deliberately blind to.
+
+A share, not a magnitude, on its own merits and not just for the budget: what makes the over-adjustment trap
+sharp is the mediated path carrying a material portion of the effect it belongs to - condition on the
+mediator and the estimate moves by that share. An absolute floor expresses that faithfully at exactly one
+driver count, and for a weak driver it is simply wrong: a fixed 0.10 can exceed the entire total effect it
+is supposed to be one component of."""
 CONFOUNDING_MARGIN = 0.05
-"""Decoy's |corr(decoy, outcome)| must beat the weakest driver's correlation by this margin."""
+"""Decoy's |corr(decoy, outcome)| must beat the weakest driver's correlation by this margin, scaled to the
+instance's driver count via `scaled_threshold`.
+
+The two correlations it sits between both shrink as `1/sqrt(N)`, so an unscaled margin is a growing demand
+on a shrinking quantity - the decoy edge needed to clear it eventually exceeds unit variance and the
+candidate is rejected, which is what made this the largest single rejection source (§11.6)."""
 #: Multiplier range applied to a floor when constructing comfortably above it, so instances vary rather
 #: than every one landing on the exact same value.
 _SLACK_RANGE = (1.2, 2.0)
@@ -93,6 +116,12 @@ def target_effects(rng: np.random.Generator, drivers: tuple[str, ...]) -> dict[s
 #: arbitrarily close to 0, which would force the mediator->outcome edge (solved from it, below) to blow up
 #: to compensate. Bounding it away from zero up front avoids that failure mode entirely.
 _MEDIATOR_EDGE_RANGE = (0.3, 0.7)
+
+#: |Portion| of a driver's own total effect routed through its mediator, drawn comfortably above
+#: `MIN_MEDIATED_SHARE` so construction clears the gate it has to satisfy rather than landing on the
+#: boundary - the role `_SLACK_RANGE` plays for the thresholds that are still absolute. A magnitude only:
+#: the mediated path's *sign* is drawn independently (see `_construct_mediator_edge`).
+_MEDIATED_SHARE_RANGE = (0.35, 0.60)
 
 #: Confounder->outcome edge magnitude range, chosen directly rather than left to raw UUMC - the same
 #: near-zero problem the mediator edge avoids: a confounder can have several co-parents on the outcome
@@ -145,21 +174,37 @@ def _construct_mediator_edge(
     driver_idx: int,
     mediator_idx: int,
     outcome_idx: int,
+    target: float,
     rng: np.random.Generator,
 ) -> None:
     """Mutate ``w``/``noise_var``/``sigma`` in place to fix one driver's mediator edges.
 
     Picks ``driver->mediator`` directly (see ``_MEDIATOR_EDGE_RANGE``), then solves ``mediator->outcome``
-    to hit a mediated-effect target comfortably above ``MIN_MEDIATED_EFFECT``. Only the mediator's own row
-    is touched here - the outcome's ``mediator->outcome`` entry is set as a weight only; its own
-    noise/covariance aren't recomputed until later, when its whole row is rebuilt from every parent at once
-    (``with_constructed_effects``).
+    so the mediated path carries ``_MEDIATED_SHARE_RANGE`` of ``target`` in *magnitude* - the driver's own
+    total-effect target, not a fixed magnitude (see ``MIN_MEDIATED_SHARE``).
+
+    The mediated path's **sign is drawn independently of the target's**, so the indirect effect agrees with
+    the direct one only half the time. This costs budget (an opposing path makes the direct edge
+    ``(1 + share) * target``, larger than the target it is solving for) and it would be cheaper to always
+    share the sign - but always sharing it is unsound in two ways. It deletes *inconsistent mediation*
+    (suppression: a direct and an indirect effect that oppose), a real and well-documented structure, and
+    it makes ``|direct| < |total|`` hold universally, which turns "adding Z to the adjustment set shrinks my
+    estimate" into a perfectly separating test for "Z is a mediator" - measured 100% on true mediators vs.
+    53.7% on other variables. The over-adjustment trap is supposed to require reasoning about what is
+    downstream of the treatment; a numeric probe that identifies mediators without any structural reasoning
+    defeats it (`variance_budget_plan.md` §10). The scaling fix this module exists for is that the mediated
+    path is *proportional to its own driver's effect* rather than a fixed magnitude - which is preserved
+    either way, independent of sign.
+
+    Only the mediator's own row is touched here - the outcome's ``mediator->outcome`` entry is set as a
+    weight only; its own noise/covariance aren't recomputed until later, when its whole row is rebuilt from
+    every parent at once (``with_constructed_effects``).
     """
     edge = float(rng.uniform(*_MEDIATOR_EDGE_RANGE)) * float(rng.choice((-1.0, 1.0)))
     _set_single_parent_edge(w, noise_var, sigma, driver_idx, mediator_idx, edge)
 
-    mediated_target = float(rng.uniform(*_SLACK_RANGE)) * MIN_MEDIATED_EFFECT * float(rng.choice((-1.0, 1.0)))
-    w[mediator_idx, outcome_idx] = mediated_target / edge
+    share = float(rng.uniform(*_MEDIATED_SHARE_RANGE)) * float(rng.choice((-1.0, 1.0)))
+    w[mediator_idx, outcome_idx] = share * target / edge
 
 
 def _construct_confounder_edge(w: np.ndarray, confounder_idx: int, outcome_idx: int, rng: np.random.Generator) -> None:
@@ -210,9 +255,12 @@ def with_constructed_effects(
         mediator = scaffold.mediator_of(driver)
         if mediator is None:
             continue
+        # Only decoys are drivers without a target, and no decoy has a mediator (`scm/gadgets.py`) - assert
+        # rather than assume, since a mediated driver silently missing a target would now be a KeyError.
+        assert driver in targets, f"driver {driver!r} has a mediator but no target effect"
         mediator_idx = scaffold.index(mediator)
         _construct_mediator_edge(
-            w, noise_var, sigma, scaffold.index(driver), mediator_idx, outcome_idx, construction_rng
+            w, noise_var, sigma, scaffold.index(driver), mediator_idx, outcome_idx, targets[driver], construction_rng
         )
         mediator_mask[mediator_idx] = True
 
@@ -258,10 +306,12 @@ def with_constructed_confounding(scm: SCM, rng: np.random.Generator) -> SCM | No
     """Return ``scm`` with every decoy's edge from its confounder solved to beat the weakest driver.
 
     Returns ``None`` if a confounder's own correlation with the outcome is too small for any edge weight to
-    reach the target without exceeding unit variance - measured at ~25-27% of attempts, the largest single
-    rejection source in `generate_gated_procedural`'s loop (`procedural_scaffold_plan.md` §11.6). Must run
-    *after* driver construction - it needs each driver's realized correlation with the outcome, which only
-    exists once ``with_constructed_effects`` has run.
+    reach the target without exceeding unit variance - historically ~25-27% of attempts, the largest single
+    rejection source in `generate_gated_procedural`'s loop (`procedural_scaffold_plan.md` §11.6), because
+    the margin it had to clear was a fixed absolute value while the correlations on both sides of it shrank
+    as ``1/sqrt(N)``; the margin now scales with driver count (``CONFOUNDING_MARGIN``). Must run *after*
+    driver construction - it needs each driver's realized correlation with the outcome, which only exists
+    once ``with_constructed_effects`` has run.
 
     Each decoy has exactly one parent, its confounder (``scm/gadgets.py``), and no children, so - like the
     outcome in ``with_constructed_effects`` - only its own row is patched; nothing else in the graph is
@@ -272,9 +322,9 @@ def with_constructed_confounding(scm: SCM, rng: np.random.Generator) -> SCM | No
     decoys = scaffold.nodes_with_role(Role.DECOY)
     if not decoys:
         return scm
-    weakest_driver_corr = min(
-        abs(float(scm.sigma[scaffold.index(d), outcome_idx])) for d in scaffold.non_decoy_drivers()
-    )
+    non_decoy_drivers = scaffold.non_decoy_drivers()
+    weakest_driver_corr = min(abs(float(scm.sigma[scaffold.index(d), outcome_idx])) for d in non_decoy_drivers)
+    margin = scaled_threshold(CONFOUNDING_MARGIN, len(non_decoy_drivers))
 
     w = scm.W.copy()
     noise_var = scm.noise_var.copy()
@@ -286,7 +336,7 @@ def with_constructed_confounding(scm: SCM, rng: np.random.Generator) -> SCM | No
         if confounder_corr == 0.0:
             return None
 
-        target = weakest_driver_corr + float(rng.uniform(*_SLACK_RANGE)) * CONFOUNDING_MARGIN
+        target = weakest_driver_corr + float(rng.uniform(*_SLACK_RANGE)) * margin
         edge = target / confounder_corr
         if edge * edge > 1.0:
             return None

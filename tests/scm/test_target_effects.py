@@ -7,7 +7,7 @@ from causalagentbench.scm.gadgets import procedural_scaffold
 from causalagentbench.scm.generate import generate
 from causalagentbench.scm.target_effects import (
     CONFOUNDING_MARGIN,
-    MIN_MEDIATED_EFFECT,
+    MIN_MEDIATED_SHARE,
     REFERENCE_MIN_EFFECT,
     REFERENCE_MIN_GAP,
     scaled_threshold,
@@ -71,6 +71,7 @@ def test_with_constructed_effects_hits_targets_exactly():
 
 
 def test_with_constructed_effects_guarantees_mediation_realized():
+    """The mediated path carries at least MIN_MEDIATED_SHARE of that driver's *own* total effect."""
     n_checked = 0
     for seed in range(30):
         scaffold = procedural_scaffold(seed)
@@ -89,8 +90,42 @@ def test_with_constructed_effects_guarantees_mediation_realized():
             edge = (
                 scm.W[scaffold.index(driver), scaffold.index(mediator)] * scm.W[scaffold.index(mediator), outcome_idx]
             )
-            assert abs(edge) >= MIN_MEDIATED_EFFECT
+            assert abs(edge) >= MIN_MEDIATED_SHARE * abs(targets[driver])
     assert n_checked > 0  # sanity: the loop actually exercised at least one mediated driver
+
+
+def test_mediated_path_sometimes_opposes_its_own_drivers_effect():
+    """Both mediation directions must occur - consistent *and* inconsistent (suppression).
+
+    Pinning the mediated path to the target's sign is cheaper on the outcome's variance budget, but it
+    deletes suppression (a real structure) and makes `|direct| < |total|` universal - which turns "adding Z
+    to the adjustment set shrinks my estimate" into a perfect test for "Z is a mediator", letting an agent
+    dodge the over-adjustment trap by numeric probing instead of reasoning about what is downstream of the
+    treatment (measured 100% vs 53.7%, `variance_budget_plan.md` §10).
+    """
+    agrees = opposes = 0
+    for seed in range(30):
+        scaffold = procedural_scaffold(seed)
+        drivers = _non_decoy_drivers(scaffold)
+        reference = generate(seed, scaffold)
+        targets = target_effects(np.random.default_rng(seed), drivers)
+        scm = with_constructed_effects(reference, targets, np.random.default_rng(seed))
+        if scm is None:
+            continue
+        outcome_idx = scaffold.index(scaffold.outcome)
+        for driver in drivers:
+            mediator = scaffold.mediator_of(driver)
+            if mediator is None:
+                continue
+            mediated = float(
+                scm.W[scaffold.index(driver), scaffold.index(mediator)] * scm.W[scaffold.index(mediator), outcome_idx]
+            )
+            if mediated * targets[driver] > 0:
+                agrees += 1
+            else:
+                opposes += 1
+    assert agrees > 0, "no consistent mediation drawn"
+    assert opposes > 0, "no inconsistent mediation (suppression) drawn - the over-adjustment trap is probeable"
 
 
 def test_with_constructed_effects_touches_only_the_outcomes_and_mediator_rows():
@@ -129,10 +164,11 @@ def test_with_constructed_confounding_guarantees_the_margin():
             continue
         drivers = _non_decoy_drivers(scaffold)
         weakest = min(abs(float(scm.sigma[scaffold.index(d), outcome_idx])) for d in drivers)
+        margin = scaled_threshold(CONFOUNDING_MARGIN, len(drivers))
         for decoy in decoys:
             n_checked += 1
             decoy_corr = abs(float(scm.sigma[scaffold.index(decoy), outcome_idx]))
-            assert decoy_corr > weakest + CONFOUNDING_MARGIN
+            assert decoy_corr > weakest + margin
     assert n_checked > 0
 
 
