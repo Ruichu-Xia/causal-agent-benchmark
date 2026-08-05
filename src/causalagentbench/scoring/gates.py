@@ -70,9 +70,17 @@ class GateReport:
     Numeric diagnostics are worst-case aggregates across every instance of the relevant kind (e.g.
     ``min_driver_effect`` is the *weakest* non-decoy driver's effect, not one named driver's) - the
     generalization of what a single threshold check meant when a scaffold had exactly one of each kind.
-    ``varsortability`` and ``r2_sortability`` are reported diagnostics, not gates: UUMC already guarantees
-    population-level neutrality, so per-instance empirical values are informational only. Sample-derived
-    fields are ``nan``/``False``/``None`` when structural gates fail and sampling is skipped.
+    ``varsortability`` and ``r2_sortability`` are reported diagnostics, not gates, but for different
+    reasons. UUMC does deliver population-level *variance* neutrality, so per-instance ``varsortability`` is
+    ensemble noise around 0.5 (measured mean 0.47) and gating on it would reject on chance alone.
+    ``r2_sortability`` is **not** neutral here and is not claimed to be: UUMC draws each node's signal share
+    as ``r = U(0,1)^(1/d)``, so ``E[R^2] = d/(d+2)`` rises with parent count, and in these scaffolds parent
+    count rises toward the outcome sink - measured mean 0.89 against a 0.5 no-signal baseline (0.70 for the
+    observable regress-on-all-others variant). It is reported so that is visible rather than assumed. Whether
+    it is exploitable *for this task* - ranking effects and choosing adjustment sets, not recovering a causal
+    order - has not been measured; gating on it is not the answer either way, since the pattern is structural
+    rather than a bad draw. Sample-derived fields are ``nan``/``False``/``None`` when structural gates fail
+    and sampling is skipped.
 
     ``data`` is the *exact* table the oracle gate was validated against - not a recipe for reconstructing
     one (a seed + sample size that a caller must independently get right and keep in sync). A consumer

@@ -290,6 +290,7 @@ def main() -> None:
             last = [start]  # mutable box: closures can't rebind an outer float, only mutate a container
             durations: list[float] = []
             turns_by_instance: dict[int, list[TurnTrace]] = {}
+            errors_by_instance: dict[int, str] = {}
 
             def _on_turn(
                 i: int, trace: TurnTrace, *, model: str = model, turns_by_instance: dict = turns_by_instance
@@ -307,6 +308,7 @@ def main() -> None:
                 last: list[float] = last,
                 durations: list[float] = durations,
                 turns_by_instance: dict = turns_by_instance,
+                errors_by_instance: dict = errors_by_instance,
             ) -> None:
                 now = time.monotonic()
                 instance_secs = now - last[0]
@@ -314,6 +316,29 @@ def main() -> None:
                 durations.append(instance_secs)
                 turns = turns_by_instance.pop(i, [])
                 total_tools = sum(len(t.tool_calls) for t in turns)
+                error = errors_by_instance.get(i)
+                if error is not None:
+                    _print(
+                        f"  [{model}] instance {i + 1}/{len(instances)}  (+{instance_secs:5.0f}s, "
+                        f"{now - start:6.0f}s total)  ERROR: {error}"
+                    )
+                    results_file.write(
+                        json.dumps(
+                            {
+                                "kind": "instance_error",
+                                "model": model,
+                                "index": i,
+                                "duration_seconds": instance_secs,
+                                "n_drivers": n_drivers[i],
+                                "error": error,
+                                "total_turns": len(turns),
+                                "total_tool_calls": total_tools,
+                            }
+                        )
+                        + "\n"
+                    )
+                    results_file.flush()
+                    return
                 _print(
                     f"  [{model}] instance {i + 1}/{len(instances)}  (+{instance_secs:5.0f}s, "
                     f"{now - start:6.0f}s total)  turns={len(turns):<3} tools={total_tools:<3} "
@@ -325,6 +350,9 @@ def main() -> None:
                 )
                 results_file.flush()
 
+            def _on_instance_error(i: int, error: Exception, *, errors_by_instance: dict = errors_by_instance) -> None:
+                errors_by_instance[i] = f"{type(error).__name__}: {error}"
+
             try:
                 scores = run_evaluation(
                     instances,
@@ -332,6 +360,7 @@ def main() -> None:
                     max_turns=args.max_turns,
                     on_instance=_progress,
                     on_turn=_on_turn,
+                    on_instance_error=_on_instance_error,
                 )
             except Exception as exc:  # one unavailable/misnamed model shouldn't abort the rest of the sweep
                 _print(f"model={model}  FAILED: {exc}\n")
@@ -344,12 +373,22 @@ def main() -> None:
             record["kind"] = "model_summary"
             record["total_seconds"] = time.monotonic() - start
             record["instance_seconds"] = durations
-            summaries = aggregate_by_alignment(scores)
-            cells = aggregate_by_driver_cell(scores)
-            _print_scores(model, n_drivers, scores)
+            # A provider failure is scored as a parse failure by run_evaluation (all zeros) and would
+            # otherwise be averaged in as if the model had answered badly, deflating it for a network blip.
+            paired = enumerate(zip(n_drivers, scores, strict=True))
+            scored = [(n, s) for i, (n, s) in paired if i not in errors_by_instance]
+            scored_n_drivers = [n for n, _ in scored]
+            scored_scores = [s for _, s in scored]
+            summaries = aggregate_by_alignment(scored_scores)
+            cells = aggregate_by_driver_cell(scored_scores)
+            _print_scores(model, scored_n_drivers, scored_scores)
             _print_summaries(summaries)
             _print_cells(cells)
-            record["per_instance"] = [_score_record(n, s) for n, s in zip(n_drivers, scores, strict=True)]
+            record["instances_requested"] = len(instances)
+            record["instances_scored"] = len(scored)
+            record["provider_error_count"] = len(errors_by_instance)
+            record["failed_instances"] = [{"index": i, "error": e} for i, e in sorted(errors_by_instance.items())]
+            record["per_instance"] = [_score_record(n, s) for n, s in scored]
             record["summaries"] = [_summary_record(s) for s in summaries]
             record["driver_cells"] = [_cell_record(c) for c in cells]
             results_file.write(json.dumps(record) + "\n")
