@@ -34,11 +34,17 @@ logger = logging.getLogger(__name__)
 #: Grounding: turn an SCM + rng into a domain-context string for the generator prompt.
 GroundingFn = Callable[[SCM, np.random.Generator], str]
 
-#: The discrete alignment grid the test set is built on: misaligned, neutral, aligned - applied uniformly
-#: to every non-outcome node (§11.7-adjacent design review: dropped the old ``{-0.5, +0.5}`` partial-flip
-#: midpoints, which needed a hand-tuned node-priority order to pick a subset; the endpoints never did, so
-#: this trades a dose-response curve for a construction mechanism with nothing left to get wrong).
-GRID: tuple[float, ...] = (-1.0, 0.0, 1.0)
+#: The discrete alignment grid the test set is built on: misaligned and aligned, applied uniformly to every
+#: non-outcome node (§11.7-adjacent design review: dropped the old ``{-0.5, +0.5}`` partial-flip midpoints,
+#: which needed a hand-tuned node-priority order to pick a subset; the endpoints never did).
+#:
+#: Neutral was dropped too, for a different reason: the gold turns on whether a driver's own name is the
+#: *aligned* one, so neutral produces the same gold as misaligned in every cell. It added a third point on a
+#: distractor-strength scale rather than a fourth quadrant - a real question, but a separate one, and it cost
+#: a third of every build. These two endpoints are the capability itself: use a prior that has proven
+#: reliable (+1), reject one that has proven misleading (-1). The name-blind labeler (``task/labeling.py``)
+#: is the no-prior control and costs no LLM calls, so it stays.
+GRID: tuple[float, ...] = (-1.0, 1.0)
 
 _KINDS = ("aligned", "neutral", "misaligned")
 _SNAKE = re.compile(r"[a-z][a-z0-9_]*")

@@ -223,5 +223,5 @@ def test_paired_skins_same_scm_differ_only_in_names():
     assert pos_key.scm.true_ranking() == neg_key.scm.true_ranking()  # gold identical
 
 
-def test_grid_is_the_three_levels():
-    assert GRID == (-1.0, 0.0, 1.0)
+def test_grid_is_the_two_endpoints():
+    assert GRID == (-1.0, 1.0)

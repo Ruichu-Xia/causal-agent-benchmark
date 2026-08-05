@@ -21,6 +21,7 @@ from causalagentbench.agent.clients import LiteLLMClient
 from causalagentbench.agent.eval import (
     AlignmentSummary,
     DriverCellSummary,
+    abstention_rates,
     aggregate_by_alignment,
     aggregate_by_driver_cell,
     run_evaluation,
@@ -29,7 +30,7 @@ from causalagentbench.agent.loop import MAX_TURNS, ToolCall, TurnTrace, TurnTran
 from causalagentbench.generation.clients import load_env
 from causalagentbench.scm.sample import sample
 from causalagentbench.scoring.gates import generate_gated_procedural
-from causalagentbench.scoring.score import AnswerScore
+from causalagentbench.scoring.score import AnswerScore, reference_scores
 from causalagentbench.task.dataset import load_dataset
 from causalagentbench.task.instance import Instance, InstanceKey, build_instance
 
@@ -51,7 +52,7 @@ def _print_scores(model: str, n_drivers: list[int], scores: list[AnswerScore]) -
         _print(
             f"  #{i:<3} n_drivers={n:<3} {level:<12} ranking_tau={score.ranking_tau:+.3f} "
             f"(n={score.n_compared:<2} z={_fmt_z(score.ranking_tau_z)})  "
-            f"eff_acc={score.effect_accuracy:.3f} "
+            f"score={score.mean_driver_score:.3f} eff_acc={score.effect_accuracy:.3f} "
             f"adj_acc={score.adjustment_accuracy:.3f} abstain_acc={score.abstention_accuracy:.3f} "
             f"parse={score.parse_ok}"
         )
@@ -77,11 +78,26 @@ def _print_cells(cells: list[DriverCellSummary]) -> None:
         kind = "identifiable" if cell.identifiable else "unidentifiable"
         _print(
             f"  {kind:<15}{level:<12} n={cell.n:<4} graded={cell.n_graded:<4} "
-            f"eff_acc={cell.mean_effect_accuracy:.3f} "
+            f"score={cell.mean_driver_score:.3f} eff_acc={cell.mean_effect_accuracy:.3f} "
             f"adj_acc={cell.mean_adjustment_accuracy:.3f} abstain_acc={cell.mean_abstention_accuracy:.3f} "
             f"ranking_tau={cell.ranking_tau:+.3f} (pairs={cell.n_ranking_pairs})"
         )
     _print()
+
+
+def _print_headline(model: str, headline: float, references: dict[str, float], rates: tuple) -> None:
+    """The one number, with the reference points it has to be read against."""
+    sensitivity, specificity = rates
+    _print("-" * 64)
+    _print(f"  [{model}] HEADLINE mean_driver_score = {headline:.3f}   (paired alpha conditions only)")
+    for name, value in references.items():
+        _print(f"      vs {name:28s} {value:.3f}")
+    _print(f"      abstention sensitivity={_fmt_rate(sensitivity)} specificity={_fmt_rate(specificity)}")
+    _print()
+
+
+def _fmt_rate(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
 
 
 def _score_record(n_drivers: int, score: AnswerScore) -> dict[str, object]:
@@ -91,6 +107,7 @@ def _score_record(n_drivers: int, score: AnswerScore) -> dict[str, object]:
         "ranking_tau": score.ranking_tau,
         "n_compared": score.n_compared,
         "ranking_tau_z": score.ranking_tau_z,
+        "mean_driver_score": score.mean_driver_score,
         "effect_accuracy": score.effect_accuracy,
         "adjustment_accuracy": score.adjustment_accuracy,
         "abstention_accuracy": score.abstention_accuracy,
@@ -101,6 +118,8 @@ def _score_record(n_drivers: int, score: AnswerScore) -> dict[str, object]:
         "drivers": {
             driver: {
                 "identifiable": identifiable,
+                "gold_abstain": score.gold_abstain[driver],
+                "driver_score": score.driver_score[driver],
                 "effect_error": score.effect_error[driver],
                 "adjustment_valid": score.adjustment_valid[driver],
                 "abstention_correct": score.abstention_correct[driver],
@@ -243,6 +262,7 @@ def _cell_record(cell: DriverCellSummary) -> dict[str, object]:
         "alignment": cell.alignment,
         "n": cell.n,
         "n_graded": cell.n_graded,
+        "mean_driver_score": cell.mean_driver_score,
         "mean_effect_accuracy": cell.mean_effect_accuracy,
         "mean_adjustment_accuracy": cell.mean_adjustment_accuracy,
         "mean_abstention_accuracy": cell.mean_abstention_accuracy,
@@ -555,9 +575,21 @@ def _run_models(
         scored_scores = [score for _, _, score in scored]
         summaries = aggregate_by_alignment(scored_scores)
         cells = aggregate_by_driver_cell(scored_scores)
+        # The headline is the paired naming contrast; name-blind is a control, reported but not averaged in.
+        paired = [score for score in scored_scores if score.alignment is not None]
+        headline = sum(s.mean_driver_score for s in paired) / len(paired) if paired else float("nan")
+        scored_indices = {index for index, _, _ in scored}
+        references = reference_scores(
+            [
+                key
+                for index, (_instance, key) in enumerate(instances)
+                if index in scored_indices and key.provenance.alignment is not None
+            ]
+        )
         _print_scores(model, scored_n_drivers, scored_scores)
         _print_summaries(summaries)
         _print_cells(cells)
+        _print_headline(model, headline, references, abstention_rates(scored_scores))
         record["kind"] = "model_summary"
         record["total_seconds"] = time.monotonic() - start
         record["evaluation_config"] = {
@@ -581,6 +613,11 @@ def _run_models(
         record["per_instance"] = [_score_record(n_drivers, score) for _, n_drivers, score in scored]
         record["summaries"] = [_summary_record(summary) for summary in summaries]
         record["driver_cells"] = [_cell_record(cell) for cell in cells]
+        record["headline"] = headline
+        record["reference_scores"] = references
+        sensitivity, specificity = abstention_rates(scored_scores)
+        record["abstention_sensitivity"] = sensitivity
+        record["abstention_specificity"] = specificity
         if costs:
             _print(f"  [{model}] estimated_cost_usd=${sum(costs):.6f} across {len(costs)} model call(s)")
         else:

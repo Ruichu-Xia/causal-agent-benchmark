@@ -5,7 +5,12 @@ and abstain instead of committing where the effect is genuinely not identified. 
 on the hidden SCM via ``key.label_to_node``, so the score is invariant to how the columns were named - the
 whole point of the naming axis.
 
-* ``effect_accuracy`` - **the headline**, and the one metric no shortcut reaches. Measured on the
+* ``mean_driver_score`` - **the headline**. Every candidate has exactly one correct deliverable, set by its
+  ``quadrant``, and this asks whether the agent produced it. Scored on *every* driver, so unlike the three
+  metrics below the denominator is never the agent's to choose. See ``_driver_score``. Interpret it against
+  ``reference_scores``, which recomputes the reference points on the same set - in particular the
+  data-only oracle, the ceiling for any agent that ignores column names.
+* ``effect_accuracy`` - estimation error alone, and the component no shortcut reaches. Measured on the
   generator, blind policies (marginal correlation, adjust-for-everything) rank the drivers at tau 0.68-0.78
   but estimate them 21-34% of a typical effect away, while correct adjustment recovers the truth exactly.
   So an order is cheap and a number is not; ``scoring/gates.py::SHORTCUT_ERROR_THRESHOLD`` certifies that
@@ -26,7 +31,9 @@ whole point of the naming axis.
   the denominator would be the agent's to choose, and abstaining would raise this score for free.
 * ``abstention_accuracy`` - fraction of drivers where the agent's abstain/commit choice matches the gold
   rule (``_gold_abstain``): abstaining is correct iff the data cannot orient the driver's confounder edge
-  *and* its own displayed name isn't the aligned one.
+  *and* its own displayed name isn't the aligned one. Read it per cell, or via
+  ``agent/eval.py::abstention_rates``: as one pooled number it has a floor set by class balance, since a
+  model that never abstains scores 0.605 without deciding anything.
 
 ``Quadrant``/``quadrant()`` classify a driver into one of §6's four naming-vs-identifiability cells, and
 those cells are the capability under test rather than a reporting convenience: trust data where data
@@ -49,7 +56,7 @@ ranking scores zero rather than raising. New metrics are added by extending ``An
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
@@ -57,7 +64,7 @@ from typing import NamedTuple
 import networkx as nx
 
 from causalagentbench.scm.identifiability import unidentifiable_drivers
-from causalagentbench.scoring.baselines import effect_scale
+from causalagentbench.scoring.baselines import effect_scale, population_coefficient
 from causalagentbench.scoring.metrics import kendall_tau, kendall_tau_zscore
 from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer_for_instance
 from causalagentbench.task.instance import InstanceKey
@@ -87,6 +94,9 @@ class AnswerScore:
     """The score of one answer. Metrics are on [0, 1] except ``ranking_tau`` which is on [-1, 1]."""
 
     parse_ok: bool
+    mean_driver_score: float  # THE headline; mean of driver_score over every candidate, nothing ungraded
+    driver_score: Mapping[str, float]  # per driver on [0, 1]; see _driver_score
+    gold_abstain: Mapping[str, bool]  # what the quadrant rule required, for sensitivity/specificity
     ranking_tau: float  # Kendall tau vs the true order; 1.0 perfect, 0.0 malformed/unparsed
     n_compared: int  # candidates actually fed into ranking_tau (drivers minus correctly-abstained ones)
     ranking_tau_z: float | None  # ranking_tau standardized against chance at this n_compared; None if < 2
@@ -306,6 +316,36 @@ def _abstention_correct(answer: Answer, key: InstanceKey, driver: str) -> bool:
     return verdict.abstain == _gold_abstain(key, driver)
 
 
+def _driver_score(answer: Answer, key: InstanceKey, driver: str, scale: float) -> float:
+    """The one number per driver: did the agent produce the correct deliverable for it?
+
+    Every candidate has exactly one correct action, set by its ``quadrant``, so every candidate is scored -
+    there is no ungraded case and the denominator is never the agent's to choose. That is the defect this
+    replaces: ``adjustment_accuracy`` and ``effect_accuracy`` both exclude correctly-abstained drivers, so a
+    model that abstains more is scored on a smaller population (measured: 4.2 drivers graded for a
+    blanket-abstainer against 7.0 for one that always commits).
+
+    Gold abstain -> 1.0 for abstaining, else 0.0. Committing scores zero even when the number happens to be
+    right: the effect was not identified, so being close was luck rather than calibration.
+
+    Gold commit -> 0.0 for abstaining (the failure this benchmark exists to catch: declining a question the
+    evidence did answer), else the mean of adjustment validity and estimate accuracy. Equal weights because
+    that is the only split with no free parameter to justify; the mean rather than a product so a right
+    number from a wrong set scores 0.5 instead of 0, which is both more informative and a denser signal.
+    """
+    verdict = _verdict_for(answer, key, driver)
+    abstained = verdict is not None and verdict.abstain
+    if _gold_abstain(key, driver):
+        return 1.0 if abstained else 0.0
+    if abstained:
+        return 0.0
+    valid = _adjustment_valid(answer, key, driver)
+    error = _effect_error(answer, key, driver, scale)
+    # Neither is None here: both return None only for a *correct* abstention, handled above.
+    assert valid is not None and error is not None
+    return (float(valid) + (1.0 - error)) / 2.0
+
+
 def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
     """Score a parsed ``answer`` against the true SCM in ``key``."""
     drivers = key.scm.scaffold.drivers
@@ -319,8 +359,12 @@ def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
     adjustment_accuracy = sum(graded) / len(graded) if graded else 1.0
     abstention_correct = {driver: _abstention_correct(answer, key, driver) for driver in drivers}
     ranking_tau, n_compared, ranking_pairs = _ranking_tau(answer, key)
+    scores = {driver: _driver_score(answer, key, driver, scale) for driver in drivers}
     return AnswerScore(
         parse_ok=True,
+        mean_driver_score=sum(scores.values()) / len(scores),
+        driver_score=scores,
+        gold_abstain={driver: _gold_abstain(key, driver) for driver in drivers},
         ranking_tau=ranking_tau,
         n_compared=n_compared,
         ranking_tau_z=kendall_tau_zscore(ranking_tau, n_compared),
@@ -337,6 +381,47 @@ def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
     )
 
 
+def reference_scores(keys: Sequence[InstanceKey]) -> dict[str, float]:
+    """Headline ``mean_driver_score`` for fixed reference strategies, on the same instances.
+
+    A headline is uninterpretable alone, and these reference points *move with the built set* - they depend
+    on the realized identifiable/unidentifiable mix - so they have to be recomputed per set rather than
+    quoted from anywhere.
+
+    ``data-only oracle`` is the one that carries the benchmark's claim: a *perfect* agent that ignores column
+    names entirely (correct adjustment and exact effects wherever the data settles the structure, abstaining
+    everywhere it does not). It is therefore the ceiling for any model not using names, and a model scoring
+    above it is provably extracting something from the naming. Under the current design that ceiling sits
+    ~25 points below the full oracle, which is what the naming capability is worth.
+    """
+    totals: dict[str, list[float]] = {}
+    for key in keys:
+        scaffold = key.scm.scaffold
+        label = key.node_to_label
+        unidentifiable = set(unidentifiable_drivers(scaffold))
+        commit = {
+            d: DriverVerdict(
+                driver=label[d],
+                adjustment_set=tuple(label[z] for z in scaffold.correct_adjustment.get(d, ())),
+                effect=key.scm.total_effect_on_outcome(d),
+            )
+            for d in scaffold.drivers
+        }
+        abstain = {d: DriverVerdict(driver=label[d], adjustment_set=(), abstain=True) for d in scaffold.drivers}
+        blind = {
+            d: DriverVerdict(driver=label[d], adjustment_set=(), effect=population_coefficient(key.scm, d))
+            for d in scaffold.drivers
+        }
+        for name, verdicts in (
+            ("oracle", [abstain[d] if _gold_abstain(key, d) else commit[d] for d in scaffold.drivers]),
+            ("data-only oracle", [abstain[d] if d in unidentifiable else commit[d] for d in scaffold.drivers]),
+            ("always abstain", [abstain[d] for d in scaffold.drivers]),
+            ("correlation, never abstain", [blind[d] for d in scaffold.drivers]),
+        ):
+            totals.setdefault(name, []).append(score_answer(Answer(verdicts=tuple(verdicts)), key).mean_driver_score)
+    return {name: sum(values) / len(values) for name, values in totals.items() if values}
+
+
 def score_output(text: str, key: InstanceKey) -> AnswerScore:
     """Parse ``text`` and score it; an unparseable answer scores zero rather than raising."""
     try:
@@ -351,6 +436,10 @@ def score_output(text: str, key: InstanceKey) -> AnswerScore:
         drivers = key.scm.scaffold.drivers
         return AnswerScore(
             parse_ok=False,
+            # No deliverable at all for any candidate - zero on every one, no exemptions.
+            mean_driver_score=0.0,
+            driver_score=dict.fromkeys(drivers, 0.0),
+            gold_abstain={driver: _gold_abstain(key, driver) for driver in drivers},
             ranking_tau=0.0,
             n_compared=len(drivers),
             ranking_tau_z=kendall_tau_zscore(0.0, len(drivers)),

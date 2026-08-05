@@ -105,7 +105,7 @@ def _print_scores(model: str, n_drivers: list[int], scores: list[AnswerScore]) -
         _print(
             f"  #{i:<3} n_drivers={n:<3} {level:<12} ranking_tau={score.ranking_tau:+.3f} "
             f"(n={score.n_compared:<2} z={_fmt_z(score.ranking_tau_z)})  "
-            f"eff_acc={score.effect_accuracy:.3f} "
+            f"score={score.mean_driver_score:.3f} eff_acc={score.effect_accuracy:.3f} "
             f"adj_acc={score.adjustment_accuracy:.3f} abstain_acc={score.abstention_accuracy:.3f} "
             f"parse={score.parse_ok}"
         )
@@ -131,7 +131,7 @@ def _print_cells(cells: list[DriverCellSummary]) -> None:
         kind = "identifiable" if cell.identifiable else "unidentifiable"
         _print(
             f"  {kind:<15}{level:<12} n={cell.n:<4} graded={cell.n_graded:<4} "
-            f"eff_acc={cell.mean_effect_accuracy:.3f} "
+            f"score={cell.mean_driver_score:.3f} eff_acc={cell.mean_effect_accuracy:.3f} "
             f"adj_acc={cell.mean_adjustment_accuracy:.3f} abstain_acc={cell.mean_abstention_accuracy:.3f} "
             f"ranking_tau={cell.ranking_tau:+.3f} (pairs={cell.n_ranking_pairs})"
         )
@@ -145,6 +145,7 @@ def _score_record(n_drivers: int, score: AnswerScore) -> dict:
         "ranking_tau": score.ranking_tau,
         "n_compared": score.n_compared,
         "ranking_tau_z": score.ranking_tau_z,
+        "mean_driver_score": score.mean_driver_score,
         "effect_accuracy": score.effect_accuracy,
         "adjustment_accuracy": score.adjustment_accuracy,
         "abstention_accuracy": score.abstention_accuracy,
@@ -153,6 +154,8 @@ def _score_record(n_drivers: int, score: AnswerScore) -> dict:
         "drivers": {
             driver: {
                 "identifiable": identifiable,
+                "gold_abstain": score.gold_abstain[driver],
+                "driver_score": score.driver_score[driver],
                 "effect_error": score.effect_error[driver],
                 "adjustment_valid": score.adjustment_valid[driver],
                 "abstention_correct": score.abstention_correct[driver],
@@ -223,6 +226,7 @@ def _cell_record(cell: DriverCellSummary) -> dict:
         "alignment": cell.alignment,
         "n": cell.n,
         "n_graded": cell.n_graded,
+        "mean_driver_score": cell.mean_driver_score,
         "mean_effect_accuracy": cell.mean_effect_accuracy,
         "mean_adjustment_accuracy": cell.mean_adjustment_accuracy,
         "mean_abstention_accuracy": cell.mean_abstention_accuracy,

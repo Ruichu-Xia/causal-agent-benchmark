@@ -1,7 +1,12 @@
 import json
 
 from causalagentbench import build_instance, sample
-from causalagentbench.agent.eval import aggregate_by_alignment, aggregate_by_driver_cell, run_evaluation
+from causalagentbench.agent.eval import (
+    abstention_rates,
+    aggregate_by_alignment,
+    aggregate_by_driver_cell,
+    run_evaluation,
+)
 from causalagentbench.agent.loop import ModelTurn
 from causalagentbench.scoring.gates import generate_gated_procedural
 from causalagentbench.scoring.score import AnswerScore, RankingPairs, score_output
@@ -122,12 +127,18 @@ def _score(alignment: float | None, drivers: dict[str, tuple]) -> AnswerScore:
     def error(v: tuple) -> float | None:
         return v[4] if len(v) > 4 else (None if v[1] is None else 0.0)
 
+    def score(v: tuple) -> float:
+        return v[5] if len(v) > 5 else float(bool(v[1])) if v[1] is not None else 1.0
+
     return AnswerScore(
         parse_ok=True,
         ranking_tau=0.0,
         n_compared=len(drivers),
         ranking_tau_z=None,
         ranking_pairs={d: v[3] for d, v in drivers.items()},
+        mean_driver_score=0.0,
+        driver_score={d: score(v) for d, v in drivers.items()},
+        gold_abstain={d: v[1] is None for d, v in drivers.items()},
         effect_accuracy=0.0,
         effect_error={d: error(v) for d, v in drivers.items()},
         adjustment_accuracy=0.0,
@@ -234,3 +245,32 @@ def test_on_turn_tags_every_turn_with_its_own_instance_index():
 def test_on_turn_is_never_called_when_omitted():
     instances = [_instance(0)]
     run_evaluation(instances, _FixedReplyClient("no tool calls"))  # would raise if on_turn were required
+
+
+def test_abstention_rates_separate_the_two_error_directions():
+    """One pooled accuracy has a floor set by class balance; two rates do not.
+
+    Sensitivity is "abstained where it had to", specificity is "committed where it could". A model can be
+    perfect on one and hopeless on the other, which a single number hides.
+    """
+    # One gold-abstain driver handled correctly, two gold-commit drivers - one right, one wrong.
+    scores = [
+        _score(
+            1.0,
+            {
+                "must_abstain": (False, None, True, RankingPairs(0, 0)),
+                "may_commit_ok": (True, True, True, RankingPairs(0, 0)),
+                "may_commit_bad": (True, True, False, RankingPairs(0, 0)),
+            },
+        )
+    ]
+    sensitivity, specificity = abstention_rates(scores)
+    assert sensitivity == 1.0
+    assert specificity == 1 / 2
+
+
+def test_abstention_rates_are_none_when_a_class_is_absent():
+    scores = [_score(1.0, {"a": (True, True, True, RankingPairs(0, 0))})]  # no gold-abstain driver at all
+    sensitivity, specificity = abstention_rates(scores)
+    assert sensitivity is None
+    assert specificity == 1.0

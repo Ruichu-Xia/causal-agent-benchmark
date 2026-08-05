@@ -137,6 +137,7 @@ class DriverCellSummary:
     alignment: float | None
     n: int  # driver observations in this cell, NOT instances
     n_graded: int  # of those, the ones graded (the rest were correctly abstained on)
+    mean_driver_score: float  # THE headline for this cell; every driver counts, nothing is ungraded
     mean_effect_accuracy: float  # 1 - mean normalized estimation error; the shortcut-resistant metric
     mean_adjustment_accuracy: float
     mean_abstention_accuracy: float
@@ -155,6 +156,7 @@ class _DriverObservation(NamedTuple):
     abstention_correct: bool
     ranking_pairs: RankingPairs
     effect_error: float | None
+    driver_score: float
 
 
 def _driver_cell_summary(cell: tuple[bool, float | None], group: list[_DriverObservation]) -> DriverCellSummary:
@@ -170,6 +172,7 @@ def _driver_cell_summary(cell: tuple[bool, float | None], group: list[_DriverObs
         alignment=alignment,
         n=len(group),
         n_graded=len(graded),
+        mean_driver_score=sum(o.driver_score for o in group) / len(group),
         # Nothing to grade is vacuously accurate, the convention score_answer and kendall_tau both already
         # use for an empty comparison - not a zero, which would read as a failure the agent never had.
         mean_effect_accuracy=1.0 - sum(errors) / len(errors) if errors else 1.0,
@@ -177,6 +180,27 @@ def _driver_cell_summary(cell: tuple[bool, float | None], group: list[_DriverObs
         mean_abstention_accuracy=sum(o.abstention_correct for o in group) / len(group),
         n_ranking_pairs=decided,
         ranking_tau=(concordant - discordant) / decided if decided else 1.0,
+    )
+
+
+def abstention_rates(scores: list[AnswerScore]) -> tuple[float | None, float | None]:
+    """``(sensitivity, specificity)`` of the abstain decision, pooled over drivers; ``None`` if no such driver.
+
+    Reported as two numbers rather than one accuracy because one accuracy has a floor set by class balance:
+    ~2.6 of 7 candidates are gold-abstain, so a model that simply never abstains scores 0.605 without
+    deciding anything. Sensitivity is "abstained where it had to", specificity is "committed where it
+    could" - a model can be strong on one and hopeless on the other, and the single number hides it.
+
+    Not per cell: ``_gold_abstain`` is constant within a cell (it is a function of identifiability and
+    aligned-ness, which are the cell axes), so a cell's ``mean_abstention_accuracy`` already *is* whichever
+    of the two applies there. This is the pooled pair for a model-comparison table.
+    """
+    hit = [(s.abstention_correct[d], gold) for s in scores for d, gold in s.gold_abstain.items()]
+    must_abstain = [correct for correct, gold in hit if gold]
+    may_commit = [correct for correct, gold in hit if not gold]
+    return (
+        sum(must_abstain) / len(must_abstain) if must_abstain else None,
+        sum(may_commit) / len(may_commit) if may_commit else None,
     )
 
 
@@ -191,6 +215,7 @@ def aggregate_by_driver_cell(scores: list[AnswerScore]) -> list[DriverCellSummar
                     score.abstention_correct[driver],
                     score.ranking_pairs[driver],
                     score.effect_error[driver],
+                    score.driver_score[driver],
                 )
             )
 

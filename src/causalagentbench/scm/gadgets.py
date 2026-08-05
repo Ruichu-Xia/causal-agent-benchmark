@@ -48,7 +48,15 @@ FREE_ARCHETYPES = ("clean", "confounded", "multi_confounder", "instrumented")
 #: flip per driver, not per confounder - a multi-confounder driver's two confounders are always resolved
 #: together, never independently (§11.1: the partial case is real but scores identically to fully ambiguous
 #: under the binary abstain schema, so isn't worth tracking separately).
-RESOLVE_PROBABILITY = 0.5
+RESOLVE_PROBABILITY = 0.25
+#: 0.25 rather than 0.5, chosen so the four quadrants come out equally weighted. This probability sets how
+#: many candidates the data can settle on its own, which is exactly the split between "trust the data" and
+#: "fall back on the name": at 0.25 an instance averages 3.6 unidentifiable and 3.4 identifiable candidates
+#: of 7, giving ~25% in each of `scoring/score.py::Quadrant`'s four cells across the paired naming
+#: conditions. Lower is tempting - 0.0 widens the oracle-vs-data-only margin from 25.7% to 28.9% - but it
+#: shrinks the identifiable half (where "don't be swayed by a misleading name" is tested) to 3.0 of 7 and
+#: drops orientable edges from 72% to 67%, eroding the name-consistency check the whole design rests on.
+#: Acceptance is flat across this range, so the choice costs nothing to generate either way.
 
 
 @dataclass(frozen=True)

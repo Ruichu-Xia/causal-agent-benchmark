@@ -6,6 +6,7 @@ from causalagentbench.scoring.score import (
     RankingPairs,
     _gold_abstain,
     quadrant,
+    reference_scores,
     score_answer,
     score_output,
 )
@@ -405,3 +406,56 @@ def test_ranking_tau_does_not_penalize_order_between_exactly_tied_decoys():
     dz1_first = _ordered(label, ("A1", "A0", "A2", "Dz1", "Dz0"))
 
     assert score_answer(dz0_first, key).ranking_tau == score_answer(dz1_first, key).ranking_tau == 1.0
+
+
+# ---- the headline -------------------------------------------------------------------------------------
+
+
+def test_driver_score_grades_every_candidate_with_no_agent_chosen_denominator():
+    """Nothing is exempt, so the denominator is never the agent's to choose.
+
+    The defect this replaces: adjustment and effect accuracy both exempt correctly-abstained drivers, so a
+    model that abstains more is scored on a smaller population than one that commits.
+    """
+    key, label = _instance()
+    score = score_answer(Answer(verdicts=tuple(_abstain(label, n) for n in ("A", "B", "Dz"))), key)
+    assert set(score.driver_score) == {"A", "B", "Dz"}  # nothing exempt, unlike adjustment_valid
+    assert score.adjustment_valid["A"] is None  # ...which does exempt it
+    assert score.driver_score["A"] == 1.0  # A is gold-abstain here, so abstaining is the whole answer
+    assert score.driver_score["B"] == 0.0  # B is identifiable: declining a question the data answered
+
+
+def test_driver_score_splits_credit_between_adjustment_and_estimate():
+    key, label = _instance()
+    truth = key.scm.total_effect_on_outcome("B")  # B is the fixture's one identifiable driver
+    assert score_answer(Answer(verdicts=(_verdict(label, "B", (), truth),)), key).driver_score["B"] == 1.0
+
+    # Right number, invalid set -> half credit: not zero (which a product would give), not full (which
+    # scoring the estimate alone would). A set naming a column that doesn't exist can never be valid;
+    # B is exogenous, so any *real* non-descendant set is legitimately valid and wouldn't test this.
+    bad_set = Answer(verdicts=(DriverVerdict(driver=label["B"], adjustment_set=("nope",), effect=truth),))
+    assert score_answer(bad_set, key).driver_score["B"] == 0.5
+
+    # Valid set, wrong number -> the other half.
+    no_estimate = Answer(verdicts=(_verdict(label, "B", (), 0.0),))
+    assert score_answer(no_estimate, key).driver_score["B"] == 0.5
+
+
+def test_committing_on_a_gold_abstain_driver_scores_zero_even_when_the_number_is_right():
+    """Being close on an effect the data cannot identify is luck, not calibration."""
+    key, label = _instance()
+    truth = key.scm.total_effect_on_outcome("A")  # A is gold-abstain on this fixture
+    score = score_answer(Answer(verdicts=(_verdict(label, "A", ("C",), truth),)), key)
+    assert score.gold_abstain["A"] is True
+    assert score.driver_score["A"] == 0.0
+
+
+def test_reference_scores_bracket_the_headline():
+    """The oracle is 1.0 by construction; the reference points below it are what make a raw score readable."""
+    key, _ = _instance()
+    references = reference_scores([key])
+    assert references["oracle"] == 1.0
+    assert references["always abstain"] < references["oracle"]
+    assert references["correlation, never abstain"] < references["oracle"]
+    # Abstract labels mark nothing "aligned", so ignoring names costs nothing here - the two oracles agree.
+    assert references["data-only oracle"] == 1.0
