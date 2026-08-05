@@ -388,11 +388,24 @@ def reference_scores(keys: Sequence[InstanceKey]) -> dict[str, float]:
     on the realized identifiable/unidentifiable mix - so they have to be recomputed per set rather than
     quoted from anywhere.
 
-    ``data-only oracle`` is the one that carries the benchmark's claim: a *perfect* agent that ignores column
-    names entirely (correct adjustment and exact effects wherever the data settles the structure, abstaining
-    everywhere it does not). It is therefore the ceiling for any model not using names, and a model scoring
-    above it is provably extracting something from the naming. Under the current design that ceiling sits
-    ~25 points below the full oracle, which is what the naming capability is worth.
+    The two that carry the benchmark's claim are the *fixed-policy* oracles. Both know the structure
+    perfectly; they differ only in what they do where the data runs out. ``never trust names`` abstains
+    there, ``always trust names`` commits using the name. Measured over the paired conditions they score
+    **identically**, and the reason is the design rather than a coincidence::
+
+        policy                alpha=+1   alpha=-1   paired
+        never trust names       0.500      1.000     0.750
+        always trust names      1.000      0.500     0.750
+
+    Each is perfect in the condition its fixed assumption happens to match and loses every unidentifiable
+    driver in the other. So **0.750 is the ceiling for any policy that does not decide, per instance, whether
+    the names can be trusted** - which is the capability under test. Only an agent that checks the names
+    against the structure the data does settle can exceed it, and the ~25 points between 0.750 and the full
+    oracle is exactly what that calibration is worth.
+
+    Reported per condition as well as paired: neither condition alone separates the two policies, since
+    ``never trust names`` is optimal at alpha=-1 and ``always trust names`` is optimal at alpha=+1. Only the
+    pair does.
     """
     totals: dict[str, list[float]] = {}
     for key in keys:
@@ -413,8 +426,11 @@ def reference_scores(keys: Sequence[InstanceKey]) -> dict[str, float]:
             for d in scaffold.drivers
         }
         for name, verdicts in (
-            ("oracle", [abstain[d] if _gold_abstain(key, d) else commit[d] for d in scaffold.drivers]),
-            ("data-only oracle", [abstain[d] if d in unidentifiable else commit[d] for d in scaffold.drivers]),
+            # Calibrates: uses the name exactly where the data ran out and the name is trustworthy.
+            ("oracle (calibrates)", [abstain[d] if _gold_abstain(key, d) else commit[d] for d in scaffold.drivers]),
+            # The two fixed policies. Both know the structure; neither decides whether to believe the names.
+            ("never trust names", [abstain[d] if d in unidentifiable else commit[d] for d in scaffold.drivers]),
+            ("always trust names", [commit[d] for d in scaffold.drivers]),
             ("always abstain", [abstain[d] for d in scaffold.drivers]),
             ("correlation, never abstain", [blind[d] for d in scaffold.drivers]),
         ):

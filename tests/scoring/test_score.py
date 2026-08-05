@@ -454,8 +454,11 @@ def test_reference_scores_bracket_the_headline():
     """The oracle is 1.0 by construction; the reference points below it are what make a raw score readable."""
     key, _ = _instance()
     references = reference_scores([key])
-    assert references["oracle"] == 1.0
-    assert references["always abstain"] < references["oracle"]
-    assert references["correlation, never abstain"] < references["oracle"]
-    # Abstract labels mark nothing "aligned", so ignoring names costs nothing here - the two oracles agree.
-    assert references["data-only oracle"] == 1.0
+    assert references["oracle (calibrates)"] == 1.0
+    assert references["always abstain"] < references["oracle (calibrates)"]
+    assert references["correlation, never abstain"] < references["oracle (calibrates)"]
+    # Abstract labels mark nothing "aligned", so gold never asks for a name - "never trust names" is optimal
+    # and "always trust names" pays for committing where it should have abstained. The two fixed policies
+    # only tie once the paired conditions are averaged; within one condition they are mirror images.
+    assert references["never trust names"] == 1.0
+    assert references["always trust names"] < 1.0
