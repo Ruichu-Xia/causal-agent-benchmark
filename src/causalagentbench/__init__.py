@@ -17,7 +17,14 @@ from causalagentbench.scm.generate import generate
 from causalagentbench.scm.sample import sample
 from causalagentbench.scoring.gates import GateReport, evaluate_gates, generate_gated_procedural
 from causalagentbench.scoring.score import AnswerScore, score_answer, score_output
-from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer
+from causalagentbench.task.answer import (
+    Answer,
+    AnswerParseError,
+    DriverVerdict,
+    parse_answer,
+    parse_answer_for_instance,
+    validate_answer_contract,
+)
 from causalagentbench.task.dataset import load_dataset
 from causalagentbench.task.instance import Instance, InstanceKey, build_instance, build_prompt
 from causalagentbench.task.labeling import Labeler, Labeling, LabelProvenance, abstract_labels
@@ -46,7 +53,9 @@ __all__ = [
     "generate_gated_procedural",
     "load_dataset",
     "parse_answer",
+    "parse_answer_for_instance",
     "sample",
     "score_answer",
     "score_output",
+    "validate_answer_contract",
 ]

@@ -124,6 +124,63 @@ Or from the CLI:
 uv run python scripts/run_eval.py --model anthropic/claude-opus-4-8 -n 5
 ```
 
+For a comparable multi-model sweep, use one frozen, non-empty dataset and pass the LiteLLM model IDs as a
+comma-separated list. Every model is evaluated sequentially on exactly the same SCMs and naming conditions;
+the JSONL output is flushed after every model call, instance, and model summary so an interrupted run retains
+completed work:
+
+```bash
+uv sync --extra generation
+uv run python scripts/build_testset.py --config configs/testset_v1.yaml --out outputs/my_testset
+uv run python scripts/run_eval.py \
+  --dataset outputs/my_testset \
+  --models openai/gpt-5,anthropic/claude-opus-4-8 \
+  --max-turns 20 \
+  --out outputs/litellm_eval_results.jsonl
+```
+
+LiteLLM selects credentials from the model prefix (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and so on) in
+`.env`; this evaluation path does not use Databricks credentials or the Databricks client. `--model` remains
+available for a one-model run. With `--dataset`, `-n` selects approximately that many instances while keeping
+the full paired naming-condition set for each selected SCM together.
+
+For an `openrouter/...` model ID, LiteLLM sends the request through OpenRouter and charges the OpenRouter
+account identified by `OPENROUTER_API_KEY`; LiteLLM itself is only the client library. The default
+`--temperature 0 --sampling-seed 0` and a stable per-model OpenRouter session keep a multi-turn run
+reproducible as far as the provider permits. Override the session namespace with
+`--openrouter-session-prefix experiment-42` when intentionally separating routing experiments.
+
+For full request/response observability, add `--transcript-out` with a different JSONL path. It writes one
+record per model call, including the system and user messages, tool schemas, previous tool results, returned
+text/tool calls, token counts, and LiteLLM's cost estimate. Treat this file as sensitive run data and do not
+commit it:
+
+```bash
+uv run python scripts/run_eval.py \
+  --model openrouter/meta-llama/llama-3.3-70b-instruct \
+  -n 1 --max-turns 3 \
+  --out outputs/llama_metrics.jsonl \
+  --transcript-out outputs/llama_transcript.jsonl
+```
+
+When a model stops without a syntactically valid `<answer>` block, the agent makes one additional tool-free
+formatting repair request. A valid answer, regardless of its score, is never retried; the repair is one extra
+model call and is included in the run's cost total.
+
+Every `model_summary` record includes the evaluation configuration, final `estimated_cost_usd`, and the
+number of successfully scored and provider-failed instances. A provider failure is written as an
+`instance_error` record and excluded from score averages, rather than being reported as a parse failure.
+
+For a fast provider smoke comparison without building names, omit `--dataset`; one generated abstract-label
+batch is shared by every model in that invocation:
+
+```bash
+uv run python scripts/run_eval.py \
+  --models openai/gpt-5,anthropic/claude-opus-4-8 \
+  -n 5 \
+  --out outputs/litellm_smoke_results.jsonl
+```
+
 `DatabricksClient` (same module) is a second `ToolCallingClient`, for comparing against a model served
 behind a Databricks AI Gateway — not part of the default path above; needs `uv sync --extra databricks`
 plus `DATABRICKS_TOKEN` + `DATABRICKS_HOST` in `.env` (see `.env.example`):

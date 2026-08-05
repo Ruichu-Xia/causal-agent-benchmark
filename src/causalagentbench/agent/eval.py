@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from causalagentbench.agent.loop import MAX_TURNS, ToolCallingClient, TurnTrace, run_agent
+from causalagentbench.agent.loop import MAX_TURNS, ToolCallingClient, TurnTrace, TurnTranscript, run_agent
 from causalagentbench.scoring.score import AnswerScore, score_output
 from causalagentbench.task.instance import Instance, InstanceKey
 
@@ -26,6 +26,8 @@ def run_evaluation(
     max_turns: int = MAX_TURNS,
     on_instance: Callable[[int, AnswerScore], None] | None = None,
     on_turn: Callable[[int, TurnTrace], None] | None = None,
+    on_transcript: Callable[[int, TurnTranscript], None] | None = None,
+    on_instance_error: Callable[[int, Exception], None] | None = None,
 ) -> list[AnswerScore]:
     """Run the agent on every instance and score each reply; one ``AnswerScore`` per instance.
 
@@ -41,14 +43,32 @@ def run_evaluation(
     ``on_turn``, if given, is called with (0-based instance index, ``TurnTrace``) for every turn of every
     instance - the same instance-index tagging as ``on_instance``, one level more granular. Passed straight
     through to each ``run_agent`` call.
+
+    ``on_transcript`` similarly receives an instance index and full ``TurnTranscript`` for each model call.
+    It is opt-in because transcripts include prompts, tool results, and unredacted model output.
+
+    ``on_instance_error`` distinguishes a provider/client failure from an unparseable model answer. The
+    returned list retains a zero score for compatibility with existing callers; evaluation runners should use
+    this callback to record and exclude transport failures from benchmark aggregates.
     """
     scores = []
     for i, (instance, key) in enumerate(instances):
         instance_on_turn = (lambda trace, i=i: on_turn(i, trace)) if on_turn is not None else None
+        instance_on_transcript = (
+            (lambda transcript, i=i: on_transcript(i, transcript)) if on_transcript is not None else None
+        )
         try:
-            reply = run_agent(instance, client, max_turns=max_turns, on_turn=instance_on_turn)
-        except Exception:
+            reply = run_agent(
+                instance,
+                client,
+                max_turns=max_turns,
+                on_turn=instance_on_turn,
+                on_transcript=instance_on_transcript,
+            )
+        except Exception as exc:
             logger.exception("agent run failed; scoring this instance as a parse failure")
+            if on_instance_error is not None:
+                on_instance_error(i, exc)
             reply = ""
         score = score_output(reply, key)
         scores.append(score)

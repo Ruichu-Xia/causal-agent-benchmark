@@ -111,6 +111,13 @@ def test_parse_failure_state():
     assert score.ranking_tau_z == 0.0
 
 
+def test_incomplete_but_json_shaped_answer_is_a_parse_failure():
+    key, _ = _instance()
+    score = score_output('<answer>{"verdicts": [], "ranking": []}</answer>', key)
+
+    assert score.parse_ok is False
+
+
 def test_alignment_is_carried_through():
     key, label = _instance()
     # abstract labeler -> alignment is None; the field is passed through for stratification.

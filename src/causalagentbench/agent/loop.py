@@ -14,14 +14,23 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from causalagentbench.agent.tools import CausalTools
+from causalagentbench.task.answer import AnswerParseError, parse_answer_for_instance
 from causalagentbench.task.instance import Instance
 
 MAX_TURNS = 20
 """Safety valve: tool-call turns before forcing a final, tool-free answer."""
+
+_SYSTEM_PROMPT = (
+    "You are a careful causal data scientist. Dataset values are not embedded in the messages: call the "
+    "provided tools to inspect them, and each tool result will appear in the following conversation turn. "
+    "Do not invent tool results or give an <answer> block until you are ready to conclude. Never guess an "
+    "adjustment set or effect without checking it with a tool."
+)
 
 _FINAL_TURN_REMINDER = (
     "This is your final turn - no further tool calls are possible. You must give your complete final "
@@ -35,6 +44,17 @@ may keep narrating what it would check next instead of committing to an answer (
 The budget clause is a second, independent problem, also observed on a real model (an extended-thinking
 model can spend its entire reply on internal reasoning and get cut off before writing any answer text) -
 the model has no innate awareness that a token cutoff exists at all, so this is the only way to tell it."""
+
+_FORMAT_REPAIR_REMINDER = (
+    "Your previous reply was not a valid final answer. Do not call any tools. Reply now with only one "
+    "<answer>...</answer> block containing JSON that exactly follows the requested verdicts and ranking shape."
+)
+"""Sent once after a tool-free reply fails the public answer contract.
+
+This is deliberately a formatting repair rather than a correctness retry: it can see the original prompt and
+prior tool results, but never the hidden SCM or score. One bounded, tool-free retry prevents otherwise usable
+models from turning ordinary chatty prose into an immediate parse failure without concealing genuine failures.
+"""
 
 
 @dataclass(frozen=True)
@@ -60,6 +80,7 @@ class ModelTurn:
     tool_calls: tuple[ToolCall, ...] = ()
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +102,30 @@ class TurnTrace:
     tool_calls: tuple[str, ...]
     prompt_tokens: int | None
     completion_tokens: int | None
+    cost_usd: float | None = None
+
+
+@dataclass(frozen=True)
+class TurnTranscript:
+    """An application-level model request and its response, suitable for opt-in JSONL capture.
+
+    ``messages`` and ``tools`` are snapshots of the exact values supplied to ``client.complete``. A
+    transcript is only constructed when requested, since it includes prompts, tool results, and raw model
+    text that callers may not want to retain by default. ``error`` is populated when the client raised
+    before returning a response; in that case the response fields remain empty.
+    """
+
+    turn: int
+    duration_seconds: float
+    force_final: bool
+    messages: tuple[dict[str, Any], ...]
+    tools: tuple[dict[str, Any], ...]
+    content: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cost_usd: float | None = None
+    error: str | None = None
 
 
 class ToolCallingClient(Protocol):
@@ -108,7 +153,8 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
             "name": "correlate",
             "description": (
                 "Partial correlation between two columns given a conditioning set "
-                "(the conditioning set may be empty for the marginal correlation)."
+                "(the conditioning set may be empty for the marginal correlation). Returns sample size "
+                "and an approximate 95% confidence interval."
             ),
             "parameters": {
                 "type": "object",
@@ -127,7 +173,8 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
             "name": "regress",
             "description": (
                 "OLS coefficient of a treatment column on the fixed outcome, adjusting for a given set of "
-                "columns - the total effect estimate under that adjustment set."
+                "columns - the total effect estimate under that adjustment set. Returns sample size, standard "
+                "error, and an approximate 95% confidence interval."
             ),
             "parameters": {
                 "type": "object",
@@ -153,39 +200,89 @@ def run_agent(
     *,
     max_turns: int = MAX_TURNS,
     on_turn: Callable[[TurnTrace], None] | None = None,
+    on_transcript: Callable[[TurnTranscript], None] | None = None,
 ) -> str:
     """Run the tool-calling loop for one instance; return the model's final reply text.
 
-    The initial message is only ``instance.prompt`` - never the raw table - so every fact the agent uses
-    about the data comes from a tool call. Returns whatever text the model last produced (possibly empty
-    on a degenerate model), which ``score_output``/``score_answer`` will grade as a parse failure if it
-    carries no ``<answer>`` block.
+    The initial request contains fixed system instructions plus ``instance.prompt`` - never the raw table -
+    so every fact the agent uses about the data comes from a tool call. Returns whatever text the model
+    last produced (possibly empty on a degenerate model). One tool-free reply that fails the public answer
+    contract receives a single tool-free formatting repair; a second malformed reply is returned for normal
+    scoring as a parse failure.
 
     ``on_turn``, if given, is called with a ``TurnTrace`` right after each ``client.complete()`` call
     returns - optional so this stays free for every caller that doesn't need turn-level observability.
+    ``on_transcript`` is an opt-in companion that receives the complete application-level request and
+    response for every model call, including client errors.
     """
     tools = CausalTools(instance)
     dispatch = _dispatch(tools)
-    messages: list[dict[str, Any]] = [{"role": "user", "content": instance.prompt}]
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": instance.prompt},
+    ]
+
+    def complete_turn(turn: int, *, force_final: bool) -> ModelTurn:
+        """Make one model call and emit the optional trace/transcript records."""
+        turn_start = time.monotonic()
+        transcript_messages = tuple(deepcopy(messages)) if on_transcript is not None else ()
+        transcript_tools = tuple(deepcopy(_TOOL_SCHEMAS)) if on_transcript is not None else ()
+        try:
+            reply = client.complete(messages, list(_TOOL_SCHEMAS), force_final=force_final)
+        except Exception as exc:
+            if on_transcript is not None:
+                on_transcript(
+                    TurnTranscript(
+                        turn=turn,
+                        duration_seconds=time.monotonic() - turn_start,
+                        force_final=force_final,
+                        messages=transcript_messages,
+                        tools=transcript_tools,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
+            raise
+        duration_seconds = time.monotonic() - turn_start
+        if on_turn is not None:
+            on_turn(
+                TurnTrace(
+                    turn=turn,
+                    duration_seconds=duration_seconds,
+                    tool_calls=tuple(c.name for c in reply.tool_calls),
+                    prompt_tokens=reply.prompt_tokens,
+                    completion_tokens=reply.completion_tokens,
+                    cost_usd=reply.cost_usd,
+                )
+            )
+        if on_transcript is not None:
+            on_transcript(
+                TurnTranscript(
+                    turn=turn,
+                    duration_seconds=duration_seconds,
+                    force_final=force_final,
+                    messages=transcript_messages,
+                    tools=transcript_tools,
+                    content=reply.content,
+                    tool_calls=reply.tool_calls,
+                    prompt_tokens=reply.prompt_tokens,
+                    completion_tokens=reply.completion_tokens,
+                    cost_usd=reply.cost_usd,
+                )
+            )
+        return reply
 
     for turn in range(max_turns):
         force_final = turn == max_turns - 1
         if force_final:
             messages.append({"role": "user", "content": _FINAL_TURN_REMINDER})
-        turn_start = time.monotonic()
-        reply = client.complete(messages, list(_TOOL_SCHEMAS), force_final=force_final)
-        if on_turn is not None:
-            on_turn(
-                TurnTrace(
-                    turn=turn,
-                    duration_seconds=time.monotonic() - turn_start,
-                    tool_calls=tuple(c.name for c in reply.tool_calls),
-                    prompt_tokens=reply.prompt_tokens,
-                    completion_tokens=reply.completion_tokens,
-                )
-            )
+        reply = complete_turn(turn, force_final=force_final)
         if not reply.tool_calls:
-            return reply.content or ""
+            if _is_valid_final(reply.content, instance.candidate_drivers, instance.columns, instance.outcome):
+                return reply.content or ""
+            messages.append({"role": "assistant", "content": reply.content or ""})
+            messages.append({"role": "user", "content": _FORMAT_REPAIR_REMINDER})
+            repaired = complete_turn(turn + 1, force_final=True)
+            return repaired.content or ""
 
         messages.append({"role": "assistant", "content": reply.content, "tool_calls": _as_wire(reply.tool_calls)})
         for call in reply.tool_calls:
@@ -195,6 +292,20 @@ def run_agent(
     # Exhausted max_turns on a tool-call turn; the loop's last force_final request should have produced
     # text, but guard against a model that ignores force_final and keeps requesting tools.
     return ""
+
+
+def _is_valid_final(
+    content: str | None,
+    candidate_drivers: tuple[str, ...],
+    columns: tuple[str, ...],
+    outcome: str,
+) -> bool:
+    """Return whether ``content`` meets the public answer contract, without checking hidden correctness."""
+    try:
+        parse_answer_for_instance(content or "", candidate_drivers, columns=columns, outcome=outcome)
+    except AnswerParseError:
+        return False
+    return True
 
 
 def _execute(dispatch: dict[str, Callable[..., str]], call: ToolCall) -> str:

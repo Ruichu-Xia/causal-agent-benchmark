@@ -40,7 +40,7 @@ import networkx as nx
 
 from causalagentbench.scm.identifiability import unidentifiable_drivers
 from causalagentbench.scoring.metrics import kendall_tau, kendall_tau_zscore
-from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer
+from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer_for_instance
 from causalagentbench.task.instance import InstanceKey
 from causalagentbench.types import Scaffold
 
@@ -189,7 +189,13 @@ def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
 def score_output(text: str, key: InstanceKey) -> AnswerScore:
     """Parse ``text`` and score it; an unparseable answer scores zero rather than raising."""
     try:
-        answer = parse_answer(text)
+        candidate_labels = tuple(key.node_to_label[driver] for driver in key.scm.scaffold.drivers)
+        answer = parse_answer_for_instance(
+            text,
+            candidate_labels,
+            columns=tuple(key.node_to_label.values()),
+            outcome=key.node_to_label[key.scm.scaffold.outcome],
+        )
     except AnswerParseError:
         drivers = key.scm.scaffold.drivers
         return AnswerScore(

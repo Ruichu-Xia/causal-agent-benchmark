@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -16,11 +17,9 @@ from typing import Any
 from causalagentbench.agent.loop import ModelTurn, ToolCall
 from causalagentbench.generation.clients import load_env
 
-_NUM_RETRIES = 6
-_SYSTEM_PROMPT = (
-    "You are a careful causal data scientist. Use the provided tools to inspect the data before "
-    "answering; never guess an adjustment set or effect without checking it with a tool."
-)
+_LITELLM_DEFAULT_MAX_RETRIES = 2
+_DATABRICKS_NUM_RETRIES = 6
+_REQUIRED_TOOL_PARAMS = frozenset({"tools", "tool_choice", "temperature"})
 
 
 @dataclass(frozen=True)
@@ -28,35 +27,93 @@ class LiteLLMClient:
     """Default ``ToolCallingClient`` on LiteLLM. Pass ``model`` like ``"anthropic/claude-opus-4-8"``."""
 
     model: str
-    temperature: float = 0.2
+    temperature: float = 0.0
+    request_timeout: float = 120.0
+    max_retries: int = _LITELLM_DEFAULT_MAX_RETRIES
+    seed: int | None = 0
+    openrouter_session_id: str | None = None
+
+    def validate_tool_capability(self) -> None:
+        """Fail before an evaluation if LiteLLM cannot verify the required request parameters."""
+        load_env()
+        if self.openrouter_session_id is not None and not self.model.startswith("openrouter/"):
+            raise ValueError("openrouter_session_id requires an openrouter/ model ID")
+        required = _REQUIRED_TOOL_PARAMS | ({"seed"} if self.seed is not None else set())
+        _validate_litellm_params(self.model, tuple(sorted(required)))
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, force_final: bool) -> ModelTurn:
         """Complete one turn with the configured model via LiteLLM."""
         import litellm
 
         load_env()
-        litellm.drop_params = True
-        full_messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *messages]
+        self.validate_tool_capability()
         # _skip_mcp_handler: we pass plain function tools, never litellm's MCP gateway; skipping avoids an
         # eager import of litellm's proxy stack (fastapi/orjson/uvicorn/...), which isn't a dependency here.
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "none" if force_final else "auto",
+            "temperature": self.temperature,
+            "seed": self.seed,
+            "num_retries": self.max_retries,
+            "timeout": self.request_timeout,
+            "drop_params": False,
+            "_skip_mcp_handler": True,
+        }
+        if self.openrouter_session_id is not None:
+            # OpenRouter uses this request-body field for sticky upstream-provider routing. LiteLLM passes
+            # OpenRouter-specific body fields through ``extra_body`` rather than dropping them.
+            kwargs["extra_body"] = {"session_id": self.openrouter_session_id}
         response = litellm.completion(
-            model=self.model,
-            messages=full_messages,
-            tools=tools,
-            tool_choice="none" if force_final else "auto",
-            temperature=self.temperature,
-            num_retries=_NUM_RETRIES,
-            _skip_mcp_handler=True,
+            **kwargs,
         )
         message = response.choices[0].message
         raw_calls = getattr(message, "tool_calls", None) or ()
         usage = response.usage
+        cost_usd = _response_cost_usd(litellm, response, usage)
         return ModelTurn(
             content=message.content,
             tool_calls=tuple(_parse_tool_call(c) for c in raw_calls),
             prompt_tokens=usage.prompt_tokens if usage else None,
             completion_tokens=usage.completion_tokens if usage else None,
+            cost_usd=cost_usd,
         )
+
+
+@functools.cache
+def _validate_litellm_params(model: str, required: tuple[str, ...]) -> None:
+    """Verify that LiteLLM knows the model supports every parameter the benchmark requires."""
+    import litellm
+
+    _require_litellm_params(litellm, model, set(required))
+
+
+def _require_litellm_params(litellm: Any, model: str, required: set[str]) -> None:
+    """Raise a clear error when model capability metadata cannot prove a required parameter is supported."""
+    try:
+        supported = litellm.get_supported_openai_params(model=model)
+    except Exception as exc:
+        raise RuntimeError(f"could not verify LiteLLM parameter support for {model!r}: {exc}") from exc
+    if supported is None:
+        raise RuntimeError(f"LiteLLM has no parameter-support metadata for {model!r}; refusing an unverified eval")
+    missing = sorted(required - set(supported))
+    if missing:
+        raise RuntimeError(f"{model!r} does not support required evaluation parameters: {', '.join(missing)}")
+
+
+def _response_cost_usd(litellm: Any, response: Any, usage: Any) -> float | None:
+    """Return LiteLLM's USD estimate for one completion, or ``None`` when it cannot price the response."""
+    try:
+        cost = getattr(usage, "cost", None)
+        if cost is None:
+            cost = litellm.completion_cost(completion_response=response)
+        cost = float(cost)
+    except (TypeError, ValueError, AttributeError, KeyError):
+        return None
+    except Exception:
+        return None
+    return cost if math.isfinite(cost) and cost >= 0 else None
 
 
 def _parse_tool_call(raw: Any) -> ToolCall:
@@ -99,11 +156,10 @@ class DatabricksClient:
         """Complete one turn with the configured model via the Databricks AI Gateway."""
         import openai
 
-        full_messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *messages]
         max_tokens = _max_tokens_ceiling.get(self.model, self.max_tokens)
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "messages": full_messages,
+            "messages": messages,
             "tools": tools,
             "tool_choice": "none" if force_final else "auto",
             "max_tokens": max_tokens,
@@ -186,4 +242,4 @@ def _databricks_client() -> Any:
         if not host:
             raise RuntimeError("DATABRICKS_HOST not found; add it to the gitignored repo-root .env")
         base_url = f"{host.rstrip('/')}{_GATEWAY_SUFFIX}"
-    return OpenAI(api_key=token, base_url=base_url.rstrip("/"), max_retries=_NUM_RETRIES)
+    return OpenAI(api_key=token, base_url=base_url.rstrip("/"), max_retries=_DATABRICKS_NUM_RETRIES)

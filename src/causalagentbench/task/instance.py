@@ -84,6 +84,8 @@ def build_prompt(
         preamble += f"Columns:\n{lines}\n\n"
     return f"""\
 {preamble}You are given an observational dataset (CSV) with columns: {", ".join(columns)}.
+The row values are available only through the provided data tools; their results will be returned in the
+conversation after you call them. Do not infer or invent values that a tool has not returned.
 All columns are standardized (mean 0, standard deviation 1), so magnitudes are directly comparable across
 variables regardless of what they measure.
 The outcome variable is "{outcome}". Evaluate these candidate drivers: {", ".join(candidate_drivers)}.

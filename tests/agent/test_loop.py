@@ -1,7 +1,16 @@
 import json
 
 from causalagentbench import build_instance, sample
-from causalagentbench.agent.loop import _FINAL_TURN_REMINDER, MAX_TURNS, ModelTurn, ToolCall, TurnTrace, run_agent
+from causalagentbench.agent.loop import (
+    _FINAL_TURN_REMINDER,
+    _FORMAT_REPAIR_REMINDER,
+    _SYSTEM_PROMPT,
+    ModelTurn,
+    ToolCall,
+    TurnTrace,
+    TurnTranscript,
+    run_agent,
+)
 from causalagentbench.scoring.gates import generate_gated_procedural
 
 
@@ -10,6 +19,11 @@ def _instance():
     data = sample(scm, 200, seed=0)
     instance, _ = build_instance(scm, data, seed=0)
     return instance
+
+
+def _valid_answer(instance) -> str:
+    verdicts = [{"driver": driver, "adjustment_set": [], "abstain": False} for driver in instance.candidate_drivers]
+    return f"<answer>{json.dumps({'verdicts': verdicts, 'ranking': list(instance.candidate_drivers)})}</answer>"
 
 
 class _ScriptedClient:
@@ -24,12 +38,15 @@ class _ScriptedClient:
         return self._turns.pop(0)
 
 
-def test_initial_message_is_the_prompt_only_no_raw_data():
+def test_initial_messages_include_instructions_and_prompt_but_no_raw_data():
     instance = _instance()
-    client = _ScriptedClient([ModelTurn(content="<answer>{}</answer>")])
+    client = _ScriptedClient([ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client)
     messages, _tools, _ = client.calls[0]
-    assert messages == [{"role": "user", "content": instance.prompt}]
+    assert messages == [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": instance.prompt},
+    ]
     assert not any(instance.to_csv().splitlines()[1] in str(m) for m in messages)  # no raw row pasted in
 
 
@@ -37,9 +54,10 @@ def test_tool_call_is_dispatched_and_result_fed_back():
     instance = _instance()
     a, b = instance.candidate_drivers[0], instance.outcome
     call = ToolCall(id="1", name="correlate", arguments={"x": a, "y": b})
-    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content="<answer>done</answer>")])
+    answer = _valid_answer(instance)
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=answer)])
     result = run_agent(instance, client)
-    assert result == "<answer>done</answer>"
+    assert result == answer
     tool_message = client.calls[1][0][-1]
     assert tool_message["role"] == "tool" and tool_message["tool_call_id"] == "1"
     assert f"corr({a}, {b})" in tool_message["content"]
@@ -50,7 +68,7 @@ def test_replayed_tool_call_arguments_are_a_json_string_on_the_wire():
     instance = _instance()
     a, b = instance.candidate_drivers[0], instance.outcome
     call = ToolCall(id="1", name="correlate", arguments={"x": a, "y": b})
-    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content="<answer>done</answer>")])
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client)
     assistant_message = client.calls[1][0][-2]
     wire_args = assistant_message["tool_calls"][0]["function"]["arguments"]
@@ -61,9 +79,10 @@ def test_replayed_tool_call_arguments_are_a_json_string_on_the_wire():
 def test_unknown_tool_name_returns_error_without_crashing():
     instance = _instance()
     call = ToolCall(id="1", name="nonexistent_tool", arguments={})
-    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content="<answer>ok</answer>")])
+    answer = _valid_answer(instance)
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=answer)])
     result = run_agent(instance, client)
-    assert result == "<answer>ok</answer>"
+    assert result == answer
     assert "Error" in client.calls[1][0][-1]["content"]
 
 
@@ -72,9 +91,10 @@ def test_a_tool_call_that_raises_returns_an_error_string_without_crashing_the_lo
     # tool itself; the loop must turn that into a tool-result error, not propagate the exception.
     instance = _instance()
     call = ToolCall(id="1", name="preview", arguments={"n": 5, "unexpected_kwarg": True})
-    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content="<answer>ok</answer>")])
+    answer = _valid_answer(instance)
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=answer)])
     result = run_agent(instance, client)
-    assert result == "<answer>ok</answer>"
+    assert result == answer
     assert "Error" in client.calls[1][0][-1]["content"]
 
 
@@ -83,15 +103,16 @@ def test_a_client_side_parse_error_on_a_tool_call_is_reported_without_dispatch()
     # JSON); the loop must report it as a tool-result error and never attempt to dispatch it.
     instance = _instance()
     call = ToolCall(id="1", name="preview", arguments={}, error="malformed arguments JSON: boom")
-    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content="<answer>ok</answer>")])
+    answer = _valid_answer(instance)
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=answer)])
     result = run_agent(instance, client)
-    assert result == "<answer>ok</answer>"
+    assert result == answer
     assert "malformed arguments JSON" in client.calls[1][0][-1]["content"]
 
 
 def test_last_turn_requests_force_final():
     instance = _instance()
-    client = _ScriptedClient([ModelTurn(content="<answer>{}</answer>")])
+    client = _ScriptedClient([ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client, max_turns=1)
     assert client.calls[0][2] is True  # force_final on the only (last) turn
 
@@ -101,7 +122,7 @@ def test_final_turn_reminder_is_only_added_on_the_forced_final_turn():
     # access is cut off (observed on real models); the explicit reminder tells it this is its last chance.
     instance = _instance()
     call = ToolCall(id="1", name="preview", arguments={})
-    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content="<answer>ok</answer>")])
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client, max_turns=2)
 
     first_call_messages, _, first_force_final = client.calls[0]
@@ -112,6 +133,42 @@ def test_final_turn_reminder_is_only_added_on_the_forced_final_turn():
     assert second_call_messages[-1] == {"role": "user", "content": _FINAL_TURN_REMINDER}
 
 
+def test_invalid_tool_free_reply_gets_one_tool_free_format_repair():
+    instance = _instance()
+    answer = _valid_answer(instance)
+    client = _ScriptedClient([ModelTurn(content="I cannot access the data."), ModelTurn(content=answer)])
+    transcripts: list[TurnTranscript] = []
+
+    result = run_agent(instance, client, on_transcript=transcripts.append)
+
+    assert result == answer
+    assert [force_final for _, _, force_final in client.calls] == [False, True]
+    repair_messages = client.calls[1][0]
+    assert repair_messages[-2] == {"role": "assistant", "content": "I cannot access the data."}
+    assert repair_messages[-1] == {"role": "user", "content": _FORMAT_REPAIR_REMINDER}
+    assert [transcript.turn for transcript in transcripts] == [0, 1]
+    assert [transcript.force_final for transcript in transcripts] == [False, True]
+
+
+def test_incomplete_json_answer_gets_a_format_repair():
+    instance = _instance()
+    answer = _valid_answer(instance)
+    client = _ScriptedClient(
+        [ModelTurn(content='<answer>{"verdicts": [], "ranking": []}</answer>'), ModelTurn(content=answer)]
+    )
+
+    assert run_agent(instance, client) == answer
+    assert client.calls[1][0][-1] == {"role": "user", "content": _FORMAT_REPAIR_REMINDER}
+
+
+def test_invalid_format_is_repaired_only_once():
+    instance = _instance()
+    client = _ScriptedClient([ModelTurn(content="first invalid reply"), ModelTurn(content="second invalid reply")])
+
+    assert run_agent(instance, client) == "second invalid reply"
+    assert len(client.calls) == 2
+
+
 def test_misbehaving_model_that_ignores_force_final_yields_empty_string():
     instance = _instance()
     call = ToolCall(id="1", name="preview", arguments={})
@@ -119,9 +176,9 @@ def test_misbehaving_model_that_ignores_force_final_yields_empty_string():
     assert run_agent(instance, client, max_turns=1) == ""
 
 
-def test_default_max_turns_matches_module_constant():
+def test_valid_tool_free_reply_ends_immediately():
     instance = _instance()
-    client = _ScriptedClient([ModelTurn(content="ok")] * MAX_TURNS)
+    client = _ScriptedClient([ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client)
     assert len(client.calls) == 1  # stops at the first non-tool-call reply, well under MAX_TURNS
 
@@ -132,8 +189,10 @@ def test_on_turn_fires_once_per_turn_with_tool_names_and_token_counts():
     call_b = ToolCall(id="2", name="correlate", arguments={"x": "a", "y": "b"})
     client = _ScriptedClient(
         [
-            ModelTurn(content=None, tool_calls=(call_a, call_b), prompt_tokens=100, completion_tokens=20),
-            ModelTurn(content="<answer>ok</answer>", prompt_tokens=150, completion_tokens=10),
+            ModelTurn(
+                content=None, tool_calls=(call_a, call_b), prompt_tokens=100, completion_tokens=20, cost_usd=0.01
+            ),
+            ModelTurn(content=_valid_answer(instance), prompt_tokens=150, completion_tokens=10, cost_usd=0.02),
         ]
     )
     traces: list[TurnTrace] = []
@@ -142,13 +201,35 @@ def test_on_turn_fires_once_per_turn_with_tool_names_and_token_counts():
     assert [t.turn for t in traces] == [0, 1]
     assert traces[0].tool_calls == ("preview", "correlate")
     assert traces[0].prompt_tokens == 100 and traces[0].completion_tokens == 20
+    assert traces[0].cost_usd == 0.01
     assert traces[1].tool_calls == ()  # the final, tool-free turn
     assert traces[1].prompt_tokens == 150 and traces[1].completion_tokens == 10
+    assert traces[1].cost_usd == 0.02
     assert all(t.duration_seconds >= 0 for t in traces)
 
 
 def test_on_turn_is_never_called_when_omitted():
     # Default None must impose zero behavior change on every existing caller.
     instance = _instance()
-    client = _ScriptedClient([ModelTurn(content="<answer>{}</answer>")])
+    client = _ScriptedClient([ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client)  # would raise if run_agent required on_turn
+
+
+def test_on_transcript_captures_full_request_and_response():
+    instance = _instance()
+    answer = _valid_answer(instance)
+    client = _ScriptedClient([ModelTurn(content=answer, prompt_tokens=10, completion_tokens=5)])
+    transcripts: list[TurnTranscript] = []
+
+    run_agent(instance, client, on_transcript=transcripts.append)
+
+    assert len(transcripts) == 1
+    transcript = transcripts[0]
+    assert transcript.messages == (
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": instance.prompt},
+    )
+    assert transcript.tools[0]["function"]["name"] == "preview"
+    assert transcript.content == answer
+    assert transcript.prompt_tokens == 10
+    assert transcript.completion_tokens == 5

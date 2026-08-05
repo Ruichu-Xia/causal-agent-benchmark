@@ -56,10 +56,17 @@ class _RaisesOnFirstCallClient:
 def test_run_evaluation_isolates_a_crashing_instance_instead_of_losing_the_batch():
     second = _instance(1)
     instances = [_instance(0), second]
-    scores = run_evaluation(instances, _RaisesOnFirstCallClient(_perfect_answer_text(second[1])))
+    errors: list[tuple[int, Exception]] = []
+    scores = run_evaluation(
+        instances,
+        _RaisesOnFirstCallClient(_perfect_answer_text(second[1])),
+        on_instance_error=lambda index, error: errors.append((index, error)),
+    )
     assert len(scores) == 2
     assert not scores[0].parse_ok  # the crashed instance scores as a parse failure, not an exception
     assert scores[1].parse_ok  # the second instance still ran normally
+    assert len(errors) == 1
+    assert errors[0][0] == 0 and isinstance(errors[0][1], RuntimeError)
 
 
 def test_run_evaluation_returns_one_score_per_instance():
@@ -98,7 +105,7 @@ def test_on_turn_tags_every_turn_with_its_own_instance_index():
     instances = [_instance(0), _instance(1)]
     seen: list[int] = []
     run_evaluation(instances, _FixedReplyClient("no tool calls"), on_turn=lambda i, _trace: seen.append(i))
-    assert seen == [0, 1]  # one tool-free turn per instance, tagged by that instance's own index
+    assert seen == [0, 0, 1, 1]  # invalid replies receive one tagged formatting repair per instance
 
 
 def test_on_turn_is_never_called_when_omitted():

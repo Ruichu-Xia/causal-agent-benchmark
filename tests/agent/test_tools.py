@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 
 from causalagentbench import build_instance, generate, sample
@@ -33,7 +35,9 @@ def _tools(seed: int = 0, n: int = 2000) -> tuple[CausalTools, dict[str, str]]:
 
 
 def _value(result: str) -> float:
-    return float(result.rsplit("=", 1)[-1])
+    match = re.search(r"= ([+-]?\d+(?:\.\d+)?)", result)
+    assert match is not None
+    return float(match.group(1))
 
 
 def test_preview_returns_header_and_bounded_rows():
@@ -50,6 +54,15 @@ def test_correlate_marginal_matches_numpy():
     a, c = tools.instance.data[:, idx[label["A"]]], tools.instance.data[:, idx[label["C"]]]
     expected = float(np.corrcoef(a, c)[0, 1])
     assert abs(_value(tools.correlate(label["A"], label["C"])) - expected) < 1e-4
+
+
+def test_correlation_reports_sample_size_and_uncertainty():
+    tools, label = _tools(n=2000)
+
+    result = tools.correlate(label["A"], label["C"])
+
+    assert "n=2000" in result
+    assert "approx_95%CI" in result
 
 
 def test_correlate_partial_screens_off_confounder_and_decoy():
@@ -73,6 +86,23 @@ def test_correlate_rejects_given_that_would_make_the_precision_matrix_singular()
     assert "Error" in tools.correlate(label["A"], label["Dz"], given=[label["C"], label["C"]])
 
 
+def test_correlate_handles_an_inherently_singular_matrix_as_a_tool_error():
+    tools, label = _tools()
+    duplicate = tools.instance.data.copy()
+    duplicate[:, tools.instance.columns.index(label["B"])] = duplicate[:, tools.instance.columns.index(label["A"])]
+    singular_tools = CausalTools(
+        tools.instance.__class__(
+            data=duplicate,
+            columns=tools.instance.columns,
+            outcome=tools.instance.outcome,
+            candidate_drivers=tools.instance.candidate_drivers,
+            prompt=tools.instance.prompt,
+        )
+    )
+
+    assert "singular" in singular_tools.correlate(label["A"], label["B"])
+
+
 def test_regress_matches_the_oracle_solver_on_the_same_data():
     # instance.data is data with columns permuted+renamed for display; the OLS coefficient does not
     # depend on column order, so regress() under the gold adjustment set must match oracle_effects()
@@ -90,8 +120,45 @@ def test_regress_matches_the_oracle_solver_on_the_same_data():
         assert abs(coef - oracle[node]) < 5e-5  # tool formats to 4 decimals
 
 
+def test_regress_reports_sample_size_and_uncertainty():
+    tools, label = _tools(n=2000)
+
+    result = tools.regress(label["A"], adjust=[label["C"]])
+
+    assert "n=2000" in result
+    assert "se=" in result
+    assert "approx_95%CI" in result
+
+
 def test_regress_rejects_unknown_column_treatment_as_outcome_and_self_adjust():
     tools, label = _tools()
     assert "Error" in tools.regress("nope")
     assert "Error" in tools.regress(tools.instance.outcome)
     assert "Error" in tools.regress(label["A"], adjust=[label["A"]])
+    assert "Error" in tools.regress(label["A"], adjust=[tools.instance.outcome])
+    assert "Error" in tools.regress(label["A"], adjust=[label["C"], label["C"]])
+
+
+def test_schema_violating_argument_types_are_reported_not_coerced():
+    """The declared type is the model's to honor; a violation is named plainly, never quietly accepted.
+
+    Observed live: a model sent ``preview(n="10")`` and got
+    ``'<' not supported between instances of 'int' and 'str'`` from inside ``min()`` - an error naming
+    nothing it could act on, which it read as the tool being broken before abandoning tool arguments
+    entirely. The fix is the message, not tolerance: ``"10"`` still fails, but says why, so a model can
+    correct itself on the next turn.
+    """
+    tools, label = _tools()
+    for bad in ("10", 10.0, "many", {"rows": 5}, True):  # True: bool subclasses int, still a mistake
+        assert "Error: n must be an integer" in tools.preview(n=bad)
+    for bad_cols in (label["C"], 5, [1, 2]):  # a bare string is not a list of columns
+        assert "Error: given must be a list" in tools.correlate(label["A"], label["B"], given=bad_cols)
+        assert "Error: adjust must be a list" in tools.regress(label["A"], adjust=bad_cols)
+
+
+def test_omitted_column_sets_still_default_to_empty():
+    """Absent is not malformed: `given`/`adjust` are optional, and omitting them is the marginal case."""
+    tools, label = _tools()
+    assert "Error" not in tools.correlate(label["A"], label["B"])
+    assert "Error" not in tools.regress(label["A"])
+    assert "Error" not in tools.preview()

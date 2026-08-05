@@ -2,7 +2,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from causalagentbench.agent.clients import _databricks_client, _extract_max_tokens_ceiling, _parse_tool_call
+from causalagentbench.agent.clients import (
+    _databricks_client,
+    _extract_max_tokens_ceiling,
+    _parse_tool_call,
+    _require_litellm_params,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -87,3 +92,19 @@ def test_extract_max_tokens_ceiling_returns_none_when_no_number_is_smaller():
     # A number mentioned that's >= requested isn't a ceiling - guards against misreading an unrelated
     # rejection that happens to mention some other large number.
     assert _extract_max_tokens_ceiling("rate limit: retry after 60000ms", requested=32000) is None
+
+
+def test_litellm_parameter_preflight_accepts_tool_capable_model():
+    fake_litellm = SimpleNamespace(get_supported_openai_params=lambda model: ["tools", "tool_choice", "temperature"])
+
+    _require_litellm_params(fake_litellm, "provider/model", {"tools", "tool_choice", "temperature"})
+
+
+def test_litellm_parameter_preflight_rejects_missing_or_unknown_capability_metadata():
+    missing_seed = SimpleNamespace(get_supported_openai_params=lambda model: ["tools", "tool_choice", "temperature"])
+    with pytest.raises(RuntimeError, match="seed"):
+        _require_litellm_params(missing_seed, "provider/model", {"tools", "tool_choice", "temperature", "seed"})
+
+    unknown = SimpleNamespace(get_supported_openai_params=lambda model: None)
+    with pytest.raises(RuntimeError, match="no parameter-support metadata"):
+        _require_litellm_params(unknown, "provider/model", {"tools", "tool_choice"})

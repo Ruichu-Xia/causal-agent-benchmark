@@ -1,6 +1,6 @@
 import pytest
 
-from causalagentbench.task.answer import Answer, AnswerParseError, parse_answer
+from causalagentbench.task.answer import Answer, AnswerParseError, parse_answer, parse_answer_for_instance
 
 _VALID = """
 reasoning here...
@@ -51,3 +51,44 @@ def test_unknown_verdict_field_raises():
     verdict = '{"driver": "X1", "identifiable": true, "adjustment_set": []}'
     with pytest.raises(AnswerParseError, match="invalid answer"):
         parse_answer(f'<answer>{{"verdicts": [{verdict}], "ranking": []}}</answer>')
+
+
+def test_instance_contract_requires_each_candidate_once_in_verdicts_and_ranking():
+    valid = """<answer>{"verdicts": [
+        {"driver": "X1", "adjustment_set": []},
+        {"driver": "X3", "adjustment_set": []}
+    ], "ranking": ["X3", "X1"]}</answer>"""
+    answer = parse_answer_for_instance(valid, ("X1", "X3"))
+    assert answer.ranking == ("X3", "X1")
+
+    missing = '<answer>{"verdicts": [], "ranking": []}</answer>'
+    with pytest.raises(AnswerParseError, match="every candidate"):
+        parse_answer_for_instance(missing, ("X1", "X3"))
+
+    repeated = """<answer>{"verdicts": [
+        {"driver": "X1", "adjustment_set": []},
+        {"driver": "X1", "adjustment_set": []}
+    ], "ranking": ["X1", "X1"]}</answer>"""
+    with pytest.raises(AnswerParseError, match="repeat"):
+        parse_answer_for_instance(repeated, ("X1", "X3"))
+
+
+def test_instance_contract_rejects_invalid_adjustment_columns():
+    unknown_column = """<answer>{"verdicts": [
+        {"driver": "X1", "adjustment_set": ["missing"]},
+        {"driver": "X3", "adjustment_set": []}
+    ], "ranking": ["X1", "X3"]}</answer>"""
+    with pytest.raises(AnswerParseError, match="not present"):
+        parse_answer_for_instance(unknown_column, ("X1", "X3"), columns=("X1", "X2", "X3", "Y"), outcome="Y")
+
+    outcome_in_adjustment = """<answer>{"verdicts": [
+        {"driver": "X1", "adjustment_set": ["Y"]},
+        {"driver": "X3", "adjustment_set": []}
+    ], "ranking": ["X1", "X3"]}</answer>"""
+    with pytest.raises(AnswerParseError, match="outcome"):
+        parse_answer_for_instance(
+            outcome_in_adjustment,
+            ("X1", "X3"),
+            columns=("X1", "X2", "X3", "Y"),
+            outcome="Y",
+        )
