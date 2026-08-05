@@ -1,7 +1,14 @@
 from causalagentbench import build_instance, generate, sample
 from causalagentbench.scoring.gates import generate_gated_procedural
 from causalagentbench.scoring.metrics import kendall_tau_zscore
-from causalagentbench.scoring.score import Quadrant, _gold_abstain, quadrant, score_answer, score_output
+from causalagentbench.scoring.score import (
+    Quadrant,
+    RankingPairs,
+    _gold_abstain,
+    quadrant,
+    score_answer,
+    score_output,
+)
 from causalagentbench.task.answer import Answer, DriverVerdict
 from causalagentbench.task.instance import InstanceKey
 from causalagentbench.task.labeling import LabelProvenance
@@ -167,6 +174,78 @@ def test_quadrant_covers_all_four_cells():
     assert _gold_abstain(key_with(neutral_kind), "B") is False  # never ambiguous, regardless of naming
 
 
+# ---- per-driver breakdown -----------------------------------------------------------------------------
+# The three per-driver maps exist so results can be split below instance grain (agent/eval.py's
+# aggregate_by_driver_cell). `identifiable` is the topology axis; on this fixture A and Dz are the
+# unidentifiable ones (only C is a CONFOUNDER, and C-A / C-Dz are the unoriented edges), B is exogenous.
+
+
+def _pooled_tau(score) -> float:
+    """Recompute tau from the per-driver pair counts, the way an aggregator pools a cell."""
+    concordant = sum(pairs.concordant for pairs in score.ranking_pairs.values())
+    discordant = sum(pairs.discordant for pairs in score.ranking_pairs.values())
+    decided = concordant + discordant
+    return (concordant - discordant) / decided if decided else 1.0
+
+
+def test_pooling_per_driver_pairs_reproduces_ranking_tau_exactly():
+    """The per-driver ranking counts are a decomposition of `ranking_tau`, not a second metric.
+
+    Every pair has two endpoints, so pooling gives (2C-2D)/(2C+2D) = kendall_tau's own (C-D)/(C+D). Asserted
+    over several answer shapes because the two values are computed independently - `ranking_tau` from
+    `kendall_tau`, the counts from `_ranking_tau`'s own loop - so this is what catches them drifting apart.
+    Exact equality, not approx: both sides are the same small-integer ratio, so any gap is a real bug.
+    """
+    key, label = _instance()
+    ranking = tuple(label[node] for node in key.scm.true_ranking())
+    reversed_ranking = tuple(reversed(ranking))
+    answers = [
+        _perfect(key, label),  # fully concordant
+        Answer(verdicts=_perfect(key, label).verdicts, ranking=reversed_ranking),  # fully discordant
+        # One driver correctly abstained - it leaves the comparison, so its pairs must vanish from both sides.
+        Answer(verdicts=(_verdict(label, "A", ("C",)), _verdict(label, "B"), _abstain(label, "Dz")), ranking=ranking),
+    ]
+    for answer in answers:
+        score = score_answer(answer, key)
+        assert _pooled_tau(score) == score.ranking_tau
+
+
+def test_drivers_outside_the_comparison_carry_no_ranking_pairs():
+    key, label = _instance()
+    ranking = tuple(label[node] for node in key.scm.true_ranking())
+    verdicts = (_verdict(label, "A", ("C",)), _verdict(label, "B"), _abstain(label, "Dz"))
+    score = score_answer(Answer(verdicts=verdicts, ranking=ranking), key)
+
+    # Dz abstained correctly, so it is dropped from the comparison - contributing to neither side of a
+    # pooled ratio, rather than being scored as if it had been ranked wrongly.
+    assert score.ranking_pairs["Dz"] == RankingPairs(0, 0)
+    assert score.ranking_pairs["A"].concordant + score.ranking_pairs["A"].discordant == 1  # only against B
+
+
+def test_identifiable_flags_the_topologically_ambiguous_drivers():
+    key, _ = _instance()
+    # An instance property read off the graph, so it is answer-independent - see the parse-failure test.
+    assert score_answer(_perfect(key, dict(key.node_to_label)), key).identifiable == {
+        "A": False,
+        "B": True,
+        "Dz": False,
+    }
+
+
+def test_parse_failure_still_records_identifiability_and_a_consistent_key_space():
+    key, _ = _instance()
+    score = score_output("no answer block here", key)
+
+    assert score.parse_ok is False
+    assert score.identifiable == {"A": False, "B": True, "Dz": False}  # graph fact, not an answer fact
+    assert score.abstention_correct == dict.fromkeys(("A", "B", "Dz"), False)
+    assert score.ranking_pairs == dict.fromkeys(("A", "B", "Dz"), RankingPairs(0, 0))
+    # The key-space contract aggregate_by_driver_cell indexes on: AnswerScore is built at two separate
+    # sites, and a driver present in one map but missing from another would only surface at aggregation.
+    assert score.adjustment_valid.keys() == score.abstention_correct.keys()
+    assert score.abstention_correct.keys() == score.identifiable.keys() == score.ranking_pairs.keys()
+
+
 # ---- abstention ---------------------------------------------------------------------------------------
 # The fixture scaffold + abstract_labels (no naming manipulation at all, so nothing is ever "aligned"): A and Dz are
 # gold-abstain-correct (their edges are genuinely unidentifiable, `unidentifiable_drivers`), B is not
@@ -227,6 +306,11 @@ def test_missing_verdict_scores_no_abstention_credit():
     answer = Answer(verdicts=(_abstain(label, "A"), _abstain(label, "Dz")), ranking=())
     score = score_answer(answer, key)
     assert score.abstention_accuracy == 2 / 3  # A, Dz correct; B (missing) is not
+    assert score.abstention_correct == {"A": True, "B": False, "Dz": True}
+    # Exactly why abstention_correct has to be stored rather than derived from adjustment_valid: B's
+    # missing verdict makes adjustment_valid False (not None), so "abstained?" read off that map says
+    # "no" - which matches gold for identifiable B and would wrongly derive True.
+    assert score.adjustment_valid["B"] is False
 
 
 def test_abstaining_on_every_driver_leaves_adjustment_accuracy_vacuously_perfect():

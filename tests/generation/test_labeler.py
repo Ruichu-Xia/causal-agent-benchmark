@@ -126,6 +126,24 @@ def test_uniform_level_ignores_magnitude_only_sign_matters():
     assert quarter.node_to_label[outcome] == "cardiovascular_risk"
 
 
+def test_alignment_level_alone_determines_whether_a_driver_is_aligned():
+    """Naming is uniform per level, so a driver's "aligned" bit is exactly ``level > 0``.
+
+    Load-bearing well beyond this module: it is why the driver-grain report
+    (``agent/eval.py::aggregate_by_driver_cell``) crosses identifiability with ``alignment`` instead of
+    storing a ``Quadrant`` per driver - the naming half of a quadrant would be a second copy of ``alignment``.
+    If partial-flip naming ever returns, this fails loudly instead of that report silently mislabeling cells.
+    """
+    scm = _scm()
+    trip = _triples(scm)
+    outcome = scm.scaffold.outcome
+    for level in GRID:
+        node_kind = construct_labeling(trip, scm, level, "p").provenance.node_kind
+        for node in scm.scaffold.node_names:
+            if node != outcome:  # the outcome is always aligned, and is never a candidate driver
+                assert (node_kind[node] == "aligned") == (level > 0)
+
+
 # ---- pre-checks -------------------------------------------------------------------------------------
 
 

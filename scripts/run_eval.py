@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import TextIO
 
 from causalagentbench.agent.clients import LiteLLMClient
-from causalagentbench.agent.eval import AlignmentSummary, aggregate_by_alignment, run_evaluation
+from causalagentbench.agent.eval import (
+    AlignmentSummary,
+    DriverCellSummary,
+    aggregate_by_alignment,
+    aggregate_by_driver_cell,
+    run_evaluation,
+)
 from causalagentbench.agent.loop import MAX_TURNS, ToolCall, TurnTrace, TurnTranscript
 from causalagentbench.generation.clients import load_env
 from causalagentbench.scm.sample import sample
@@ -62,6 +68,20 @@ def _print_summaries(summaries: list[AlignmentSummary]) -> None:
     _print()
 
 
+def _print_cells(cells: list[DriverCellSummary]) -> None:
+    """Print the driver-grain breakdown; `n` counts drivers here, not instances (unlike _print_summaries)."""
+    _print("-" * 64)
+    for cell in cells:
+        level = "name-blind" if cell.alignment is None else f"alpha={cell.alignment:+.1f}"
+        kind = "identifiable" if cell.identifiable else "unidentifiable"
+        _print(
+            f"  {kind:<15}{level:<12} n={cell.n:<4} graded={cell.n_graded:<4} "
+            f"adj_acc={cell.mean_adjustment_accuracy:.3f} abstain_acc={cell.mean_abstention_accuracy:.3f} "
+            f"ranking_tau={cell.ranking_tau:+.3f} (pairs={cell.n_ranking_pairs})"
+        )
+    _print()
+
+
 def _score_record(n_drivers: int, score: AnswerScore) -> dict[str, object]:
     return {
         "n_drivers": n_drivers,
@@ -72,6 +92,19 @@ def _score_record(n_drivers: int, score: AnswerScore) -> dict[str, object]:
         "adjustment_accuracy": score.adjustment_accuracy,
         "abstention_accuracy": score.abstention_accuracy,
         "parse_ok": score.parse_ok,
+        # Raw per-driver rows, so a completed run can be re-sliced offline (by decoy status, archetype,
+        # anything) without paying for it again. Keyed by hidden node name, which leaks roles - fine in an
+        # output artifact, which is never model input.
+        "drivers": {
+            driver: {
+                "identifiable": identifiable,
+                "adjustment_valid": score.adjustment_valid[driver],
+                "abstention_correct": score.abstention_correct[driver],
+                "concordant": score.ranking_pairs[driver].concordant,
+                "discordant": score.ranking_pairs[driver].discordant,
+            }
+            for driver, identifiable in score.identifiable.items()
+        },
     }
 
 
@@ -197,6 +230,19 @@ def _summary_record(summary: AlignmentSummary) -> dict[str, object]:
         "mean_adjustment_accuracy": summary.mean_adjustment_accuracy,
         "mean_abstention_accuracy": summary.mean_abstention_accuracy,
         "parse_rate": summary.parse_rate,
+    }
+
+
+def _cell_record(cell: DriverCellSummary) -> dict[str, object]:
+    return {
+        "identifiable": cell.identifiable,
+        "alignment": cell.alignment,
+        "n": cell.n,
+        "n_graded": cell.n_graded,
+        "mean_adjustment_accuracy": cell.mean_adjustment_accuracy,
+        "mean_abstention_accuracy": cell.mean_abstention_accuracy,
+        "n_ranking_pairs": cell.n_ranking_pairs,
+        "ranking_tau": cell.ranking_tau,
     }
 
 
@@ -503,8 +549,10 @@ def _run_models(
         scored_n_drivers = [n_drivers for _, n_drivers, _ in scored]
         scored_scores = [score for _, _, score in scored]
         summaries = aggregate_by_alignment(scored_scores)
+        cells = aggregate_by_driver_cell(scored_scores)
         _print_scores(model, scored_n_drivers, scored_scores)
         _print_summaries(summaries)
+        _print_cells(cells)
         record["kind"] = "model_summary"
         record["total_seconds"] = time.monotonic() - start
         record["evaluation_config"] = {
@@ -527,6 +575,7 @@ def _run_models(
         ]
         record["per_instance"] = [_score_record(n_drivers, score) for _, n_drivers, score in scored]
         record["summaries"] = [_summary_record(summary) for summary in summaries]
+        record["driver_cells"] = [_cell_record(cell) for cell in cells]
         if costs:
             _print(f"  [{model}] estimated_cost_usd=${sum(costs):.6f} across {len(costs)} model call(s)")
         else:

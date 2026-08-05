@@ -4,6 +4,10 @@ The headline metric this benchmark measures is score *as a function of* naming a
 should stay flat across the grid, a reciter should degrade as names go neutral or misaligned.
 ``run_evaluation`` produces one ``AnswerScore`` per instance (each already carries its own
 ``alignment``); ``aggregate_by_alignment`` groups and summarizes them.
+
+``aggregate_by_driver_cell`` reports the same run one level down, at *driver* grain, crossing naming
+alignment with whether a driver's effect is identifiable from data at all - an instance-level mean
+otherwise conflates failing at something the data supports with failing at something it provably does not.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from causalagentbench.agent.loop import MAX_TURNS, ToolCallingClient, TurnTrace, TurnTranscript, run_agent
-from causalagentbench.scoring.score import AnswerScore, score_output
+from causalagentbench.scoring.score import AnswerScore, RankingPairs, score_output
 from causalagentbench.task.instance import Instance, InstanceKey
 
 logger = logging.getLogger(__name__)
@@ -107,3 +111,71 @@ def aggregate_by_alignment(scores: list[AnswerScore]) -> list[AlignmentSummary]:
         for alignment, group in groups.items()
     ]
     return sorted(summaries, key=lambda s: (s.alignment is None, s.alignment))
+
+
+@dataclass(frozen=True)
+class DriverCellSummary:
+    """Pooled per-driver scores for one identifiability x naming-alignment cell.
+
+    ``n`` counts *driver observations*, not instances - the unit change from ``AlignmentSummary``, and the
+    point of the breakdown: one instance contributes as many rows here as it has candidate drivers.
+    Decoys are included, because ``adjustment_accuracy``/``abstention_accuracy`` already grade every
+    candidate driver; excluding them would make the two tables incomparable.
+
+    Averaging is pooled (micro), so per-cell means will *not* exactly reconcile with ``AlignmentSummary``'s
+    mean-of-instance-means at the same alignment - instances differ in driver count, and here every driver
+    weighs the same. ``n_graded`` and ``n_ranking_pairs`` are the denominators behind the two means, kept
+    visible because both can shrink silently: a cell's ``mean_adjustment_accuracy`` rises if the agent
+    simply abstained on its hard drivers, and ``ranking_tau`` says little over a handful of pairs.
+    ``parse_rate`` is deliberately absent - parse failure is per-instance and ``AlignmentSummary`` reports
+    it; note that a parse failure contributes no ranking pairs at all, so it is invisible in ``ranking_tau``
+    here while still pulling the instance-level mean down.
+    """
+
+    identifiable: bool
+    alignment: float | None
+    n: int  # driver observations in this cell, NOT instances
+    n_graded: int  # of those, the ones graded on adjustment (the rest were abstained on)
+    mean_adjustment_accuracy: float
+    mean_abstention_accuracy: float
+    n_ranking_pairs: int  # non-tied comparisons involving a driver in this cell
+    ranking_tau: float  # pooled (concordant - discordant) / (concordant + discordant) over those pairs
+
+
+def _driver_cell_summary(
+    cell: tuple[bool, float | None], group: list[tuple[bool | None, bool, RankingPairs]]
+) -> DriverCellSummary:
+    """Summarize one cell's ``(adjustment_valid, abstention_correct, ranking_pairs)`` observations."""
+    identifiable, alignment = cell
+    graded = [valid for valid, _, _ in group if valid is not None]
+    concordant = sum(pairs.concordant for _, _, pairs in group)
+    discordant = sum(pairs.discordant for _, _, pairs in group)
+    decided = concordant + discordant
+    return DriverCellSummary(
+        identifiable=identifiable,
+        alignment=alignment,
+        n=len(group),
+        n_graded=len(graded),
+        # Nothing to grade is vacuously accurate, the convention score_answer and kendall_tau both already
+        # use for an empty comparison - not a zero, which would read as a failure the agent never had.
+        mean_adjustment_accuracy=sum(graded) / len(graded) if graded else 1.0,
+        mean_abstention_accuracy=sum(correct for _, correct, _ in group) / len(group),
+        n_ranking_pairs=decided,
+        ranking_tau=(concordant - discordant) / decided if decided else 1.0,
+    )
+
+
+def aggregate_by_driver_cell(scores: list[AnswerScore]) -> list[DriverCellSummary]:
+    """Group every driver observation by (identifiability, alignment); identifiable first, name-blind last."""
+    groups: dict[tuple[bool, float | None], list[tuple[bool | None, bool, RankingPairs]]] = {}
+    for score in scores:
+        for driver, identifiable in score.identifiable.items():
+            groups.setdefault((identifiable, score.alignment), []).append(
+                (score.adjustment_valid[driver], score.abstention_correct[driver], score.ranking_pairs[driver])
+            )
+
+    summaries = [_driver_cell_summary(cell, group) for cell, group in groups.items()]
+    # Identifiability leads so the table reads as two blocks, each ordered like aggregate_by_alignment's.
+    # The `alignment is None` component is still needed for the same reason it is there: it splits None
+    # from float *before* any `<` is applied, so a None alignment is only ever compared for equality.
+    return sorted(summaries, key=lambda s: (not s.identifiable, s.alignment is None, s.alignment))

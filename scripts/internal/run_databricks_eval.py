@@ -59,7 +59,13 @@ import time
 from pathlib import Path
 
 from causalagentbench.agent.clients import DatabricksClient
-from causalagentbench.agent.eval import AlignmentSummary, aggregate_by_alignment, run_evaluation
+from causalagentbench.agent.eval import (
+    AlignmentSummary,
+    DriverCellSummary,
+    aggregate_by_alignment,
+    aggregate_by_driver_cell,
+    run_evaluation,
+)
 from causalagentbench.agent.loop import MAX_TURNS, TurnTrace
 from causalagentbench.generation.clients import load_env
 from causalagentbench.scoring.score import AnswerScore
@@ -116,6 +122,20 @@ def _print_summaries(summaries: list[AlignmentSummary]) -> None:
     _print()
 
 
+def _print_cells(cells: list[DriverCellSummary]) -> None:
+    """Print the driver-grain breakdown; `n` counts drivers here, not instances (unlike _print_summaries)."""
+    _print("-" * 64)
+    for cell in cells:
+        level = "name-blind" if cell.alignment is None else f"alpha={cell.alignment:+.1f}"
+        kind = "identifiable" if cell.identifiable else "unidentifiable"
+        _print(
+            f"  {kind:<15}{level:<12} n={cell.n:<4} graded={cell.n_graded:<4} "
+            f"adj_acc={cell.mean_adjustment_accuracy:.3f} abstain_acc={cell.mean_abstention_accuracy:.3f} "
+            f"ranking_tau={cell.ranking_tau:+.3f} (pairs={cell.n_ranking_pairs})"
+        )
+    _print()
+
+
 def _score_record(n_drivers: int, score: AnswerScore) -> dict:
     return {
         "n_drivers": n_drivers,
@@ -126,6 +146,17 @@ def _score_record(n_drivers: int, score: AnswerScore) -> dict:
         "adjustment_accuracy": score.adjustment_accuracy,
         "abstention_accuracy": score.abstention_accuracy,
         "parse_ok": score.parse_ok,
+        # Raw per-driver rows, so a completed run can be re-sliced offline without paying for it again.
+        "drivers": {
+            driver: {
+                "identifiable": identifiable,
+                "adjustment_valid": score.adjustment_valid[driver],
+                "abstention_correct": score.abstention_correct[driver],
+                "concordant": score.ranking_pairs[driver].concordant,
+                "discordant": score.ranking_pairs[driver].discordant,
+            }
+            for driver, identifiable in score.identifiable.items()
+        },
     }
 
 
@@ -179,6 +210,19 @@ def _summary_record(summary: AlignmentSummary) -> dict:
         "mean_adjustment_accuracy": summary.mean_adjustment_accuracy,
         "mean_abstention_accuracy": summary.mean_abstention_accuracy,
         "parse_rate": summary.parse_rate,
+    }
+
+
+def _cell_record(cell: DriverCellSummary) -> dict:
+    return {
+        "identifiable": cell.identifiable,
+        "alignment": cell.alignment,
+        "n": cell.n,
+        "n_graded": cell.n_graded,
+        "mean_adjustment_accuracy": cell.mean_adjustment_accuracy,
+        "mean_abstention_accuracy": cell.mean_abstention_accuracy,
+        "n_ranking_pairs": cell.n_ranking_pairs,
+        "ranking_tau": cell.ranking_tau,
     }
 
 
@@ -301,10 +345,13 @@ def main() -> None:
             record["total_seconds"] = time.monotonic() - start
             record["instance_seconds"] = durations
             summaries = aggregate_by_alignment(scores)
+            cells = aggregate_by_driver_cell(scores)
             _print_scores(model, n_drivers, scores)
             _print_summaries(summaries)
+            _print_cells(cells)
             record["per_instance"] = [_score_record(n, s) for n, s in zip(n_drivers, scores, strict=True)]
             record["summaries"] = [_summary_record(s) for s in summaries]
+            record["driver_cells"] = [_cell_record(c) for c in cells]
             results_file.write(json.dumps(record) + "\n")
             results_file.flush()
 

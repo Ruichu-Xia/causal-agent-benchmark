@@ -25,6 +25,14 @@ whole point of the naming axis.
 ``_gold_abstain`` is just its "abstain is correct" cell - single source of truth, not two independently
 maintained checks of the same underlying fact.
 
+Three per-driver maps (``adjustment_valid``, ``abstention_correct``, ``ranking_pairs``) plus
+``identifiable`` exist so results can be stratified *below* instance grain - an instance-level mean hides
+whether a failure fell on a driver whose effect the data can actually resolve. ``identifiable`` and
+``alignment`` are the two stratification axes (``agent/eval.py::aggregate_by_driver_cell``); the naming
+axis is deliberately carried by ``alignment`` rather than a stored ``Quadrant``, because
+``construct_labeling`` applies a level uniformly to every non-outcome node, making a driver's "aligned"
+bit exactly ``alignment > 0`` (``procedural_scaffold_plan.md`` §11.8).
+
 ``alignment`` carries the naming-alignment level for stratified analysis. A parse failure or a malformed
 ranking scores zero rather than raising. New metrics are added by extending ``AnswerScore`` and
 ``score_answer``; nothing else needs to change.
@@ -35,6 +43,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from typing import NamedTuple
 
 import networkx as nx
 
@@ -45,6 +54,24 @@ from causalagentbench.task.instance import InstanceKey
 from causalagentbench.types import Scaffold
 
 
+class RankingPairs(NamedTuple):
+    """Concordant/discordant pair counts involving one driver (ties excluded, as in ``kendall_tau``).
+
+    Pooling these counts over every driver of an answer recovers that answer's ``ranking_tau`` exactly:
+    each pair has two endpoints, so ``sum(concordant) == 2C`` and ``sum(discordant) == 2D``, and
+    ``(2C - 2D) / (2C + 2D)`` is ``kendall_tau``'s own ``(C - D) / (C + D)``. That makes a per-driver
+    ranking score a true *decomposition* of the reported tau rather than a second, differently-defined
+    metric - and it keeps cross-cell pairs (an identifiable driver compared against an unidentifiable one)
+    contributing to both drivers, which restricting the ranking to one cell's drivers would delete.
+
+    Counts, not a ratio: the unweighted mean of per-driver ``(c - d) / (c + d)`` does *not* recover tau
+    once drivers differ in how many tied pairs they have, so only the raw counts pool correctly.
+    """
+
+    concordant: int
+    discordant: int
+
+
 @dataclass(frozen=True)
 class AnswerScore:
     """The score of one answer. Metrics are on [0, 1] except ``ranking_tau`` which is on [-1, 1]."""
@@ -53,9 +80,12 @@ class AnswerScore:
     ranking_tau: float  # Kendall tau vs the true order; 1.0 perfect, 0.0 malformed/unparsed
     n_compared: int  # candidates actually fed into ranking_tau (drivers minus correctly-abstained ones)
     ranking_tau_z: float | None  # ranking_tau standardized against chance at this n_compared; None if < 2
+    ranking_pairs: Mapping[str, RankingPairs]  # per-driver pair counts; pooling them reproduces ranking_tau
     adjustment_accuracy: float  # fraction of graded (non-abstained) drivers with a valid backdoor set
     adjustment_valid: Mapping[str, bool | None]  # per-driver validity; None if the agent abstained
     abstention_accuracy: float  # fraction of drivers whose abstain/commit choice matches the gold rule
+    abstention_correct: Mapping[str, bool]  # per-driver abstain/commit match; not derivable from the above
+    identifiable: Mapping[str, bool]  # per-driver: effect identified from data alone, for stratification
     alignment: float | None  # naming-alignment level, for stratification
 
 
@@ -101,18 +131,37 @@ def _gold_abstain(key: InstanceKey, driver: str) -> bool:
     return quadrant(key, driver) == Quadrant.UNIDENTIFIABLE_NOT_ALIGNED
 
 
+def _identifiable_drivers(key: InstanceKey) -> Mapping[str, bool]:
+    """Every candidate driver, flagged with whether its effect is identified from data alone.
+
+    The topology half of what ``quadrant`` reads, recorded per driver so results can be stratified by it.
+    Resolves ``unidentifiable_drivers`` once rather than per driver as ``quadrant`` does - that call rebuilds
+    the whole CPDAG each time. Answer-independent, so it is filled the same way on a parse failure.
+    """
+    unidentifiable = set(unidentifiable_drivers(key.scm.scaffold))
+    return {driver: driver not in unidentifiable for driver in key.scm.scaffold.drivers}
+
+
 def _verdict_for(answer: Answer, key: InstanceKey, driver: str) -> DriverVerdict | None:
     """The agent's verdict for ``driver`` (by its display label), or ``None`` if it gave none."""
     label = key.node_to_label[driver]
     return next((v for v in answer.verdicts if v.driver == label), None)
 
 
-def _ranking_tau(answer: Answer, key: InstanceKey) -> tuple[float, int]:
+def _ranking_tau(answer: Answer, key: InstanceKey) -> tuple[float, int, Mapping[str, RankingPairs]]:
     """Kendall agreement of the agent's ranking with the true order; 0.0 unless it is a clean permutation.
 
-    Returns ``(tau, n_compared)`` - ``n_compared`` is the real denominator behind ``tau``, needed to
+    Returns ``(tau, n_compared, pairs)`` - ``n_compared`` is the real denominator behind ``tau``, needed to
     standardize it (``kendall_tau_zscore``): raw tau isn't comparable across instances of different
     ``n_compared``, since both its achievable granularity and its variance under chance depend on it.
+
+    ``pairs`` attributes each comparison to both of its endpoints (``RankingPairs``), so the ranking metric
+    can be stratified per driver. It is counted here, off the same magnitudes and positions ``kendall_tau``
+    is handed, so the concordance convention cannot drift between the two; ``tau`` itself is still taken
+    from ``kendall_tau`` rather than derived from these counts, leaving the two independently computed for
+    the test that pins their agreement. Drivers with no comparison - correctly abstained, or any driver at
+    all when the ranking is malformed - get ``RankingPairs(0, 0)``, which contributes to neither side of a
+    pooled ratio.
 
     Drivers correctly abstained on are dropped from the pairwise comparison before scoring - ``kendall_tau``
     already returns 1.0 (vacuously) if that leaves fewer than two drivers to compare.
@@ -124,9 +173,10 @@ def _ranking_tau(answer: Answer, key: InstanceKey) -> tuple[float, int]:
     genuine tie - no correct order exists - into an arbitrary, gradeable coin flip.
     """
     drivers = key.scm.scaffold.drivers
+    empty = dict.fromkeys(drivers, RankingPairs(0, 0))
     agent_nodes = [key.label_to_node.get(label) for label in answer.ranking]
     if len(agent_nodes) != len(drivers) or set(agent_nodes) != set(drivers):
-        return 0.0, len(drivers)  # not a well-formed ranking of exactly the candidate drivers
+        return 0.0, len(drivers), empty  # not a well-formed ranking of exactly the candidate drivers
     correctly_abstained = {
         d for d in drivers if (v := _verdict_for(answer, key, d)) is not None and v.abstain and _gold_abstain(key, d)
     }
@@ -136,7 +186,21 @@ def _ranking_tau(answer: Answer, key: InstanceKey) -> tuple[float, int]:
     true_magnitude = {node: -abs(key.scm.total_effect_on_outcome(node)) for node in drivers}
     agent_position = {node: i for i, node in enumerate(agent_nodes)}
     tau = kendall_tau([true_magnitude[d] for d in compared], [agent_position[d] for d in compared])
-    return tau, len(compared)
+
+    concordant = dict.fromkeys(drivers, 0)
+    discordant = dict.fromkeys(drivers, 0)
+    for i, first in enumerate(compared):
+        for second in compared[i + 1 :]:
+            # Same product test kendall_tau applies, so a tied pair (product 0) is counted for neither.
+            product = (true_magnitude[first] - true_magnitude[second]) * (
+                agent_position[first] - agent_position[second]
+            )
+            side = concordant if product > 0 else discordant if product < 0 else None
+            if side is not None:
+                side[first] += 1
+                side[second] += 1
+    pairs = {d: RankingPairs(concordant[d], discordant[d]) for d in drivers}
+    return tau, len(compared), pairs
 
 
 def _adjustment_valid(answer: Answer, key: InstanceKey, driver: str) -> bool | None:
@@ -172,16 +236,19 @@ def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
     # Every driver abstained on: nothing to grade, not a failure - vacuously accurate, same convention
     # kendall_tau already uses for "fewer than two items to compare" (scoring/metrics.py).
     adjustment_accuracy = sum(graded) / len(graded) if graded else 1.0
-    abstention_correct = [_abstention_correct(answer, key, driver) for driver in drivers]
-    ranking_tau, n_compared = _ranking_tau(answer, key)
+    abstention_correct = {driver: _abstention_correct(answer, key, driver) for driver in drivers}
+    ranking_tau, n_compared, ranking_pairs = _ranking_tau(answer, key)
     return AnswerScore(
         parse_ok=True,
         ranking_tau=ranking_tau,
         n_compared=n_compared,
         ranking_tau_z=kendall_tau_zscore(ranking_tau, n_compared),
+        ranking_pairs=ranking_pairs,
         adjustment_accuracy=adjustment_accuracy,
         adjustment_valid=valid,
-        abstention_accuracy=sum(abstention_correct) / len(abstention_correct),
+        abstention_accuracy=sum(abstention_correct.values()) / len(abstention_correct),
+        abstention_correct=abstention_correct,
+        identifiable=_identifiable_drivers(key),
         alignment=key.provenance.alignment,
     )
 
@@ -203,9 +270,15 @@ def score_output(text: str, key: InstanceKey) -> AnswerScore:
             ranking_tau=0.0,
             n_compared=len(drivers),
             ranking_tau_z=kendall_tau_zscore(0.0, len(drivers)),
+            # No ranking was produced, so no pair was observed - not a sweep of discordant ones, which would
+            # invent data. Consequence: parse failures are absent from pooled per-driver ranking tallies
+            # while still dragging the instance-level mean tau toward 0; `parse_rate` is where to see them.
+            ranking_pairs=dict.fromkeys(drivers, RankingPairs(0, 0)),
             adjustment_accuracy=0.0,
             adjustment_valid=dict.fromkeys(drivers, False),
             abstention_accuracy=0.0,
+            abstention_correct=dict.fromkeys(drivers, False),
+            identifiable=_identifiable_drivers(key),  # a property of the instance, not of the answer
             alignment=key.provenance.alignment,
         )
     return score_answer(answer, key)

@@ -106,6 +106,12 @@ def test_multi_model_sweep_records_litellm_turn_instance_and_summary(monkeypatch
     assert all(record["model"] in {"openai/model-a", "anthropic/model-b"} for record in records)
     assert all(record.get("provider") == "litellm" for record in records if record["kind"] == "model_summary")
     assert all(record.get("estimated_cost_usd") == 0.001 for record in records if record["kind"] == "model_summary")
+    # The driver-grain breakdown reaches the output file, not just the console.
+    summaries = [record for record in records if record["kind"] == "model_summary"]
+    assert all(record["driver_cells"] for record in summaries)
+    cells = [cell for record in summaries for cell in record["driver_cells"]]
+    assert all("identifiable" in cell and "ranking_tau" in cell for cell in cells)
+    assert all(record["per_instance"][0]["drivers"] for record in summaries)  # raw per-driver rows too
     transcript_records = [json.loads(line) for line in transcript_out.read_text(encoding="utf-8").splitlines()]
     assert len(transcript_records) == 2
     assert all(record["kind"] == "transcript" for record in transcript_records)
