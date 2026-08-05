@@ -126,44 +126,34 @@ trade away the exact verifier for v1. Decide against real agent-eval needs, not 
 
 ---
 
-## 4. CANONICAL's fixed topology: an identifiability floor (a feature) and a memorization risk (not yet a problem)
+## 4. The identifiability floor: a feature, and a constraint on how results may be read
 
-**Current state.** Verified empirically (2026-07-21, real 200k-sample regressions on `generate_gated(0)`):
-on `CANONICAL`, the edges `C-A`, `A-M`, and `C-Dz` are genuinely **unoriented from observational data
-alone** (no v-structure/Meek-rule forces them). Consequence: `A`'s total effect is 0.275 (adjust `{C}`, if
-`C->A`) or 0.403 (adjust `{}`, if `A->C`); `Dz`'s is ~0 (adjust `{C}`, if `C->Dz`) or -0.377 (adjust `{}`,
-if `Dz->C`). Both readings fit the identical covariance. Only `B` is identified from data alone.
+**Current state.** Every instance contains at least one driver whose incoming confounder edge is genuinely
+**unoriented from observational data alone** (no v-structure/Meek rule forces it) — guaranteed by
+construction, not by luck: `procedural_scaffold` reserves one driver slot as forced-ambiguous and one as
+forced-resolved (`procedural_scaffold_plan.md` §11.3/§11.6), and the outcome is read back per instance off
+`unoriented_edges`, never declared.
 
-**This is a feature, not a bug** — it is exactly what makes the naming axis load-bearing for `A`/`Dz`
-(if data alone resolved everything, names would be decorative and the benchmark would collapse to "just
-run PC", the concern raised and resolved earlier this session). But it has two consequences worth keeping
-on record:
+**This is a feature, not a bug** — it is exactly what makes the naming axis load-bearing. If data alone
+resolved everything, names would be decorative and the benchmark would collapse to "just run PC". But the
+consequence for reporting is permanent and must be stated in any write-up:
 
-1. **Interpretation floor.** At neutral/name-blind alignment there is an honest information-theoretic
-   ceiling below 1.0 on `A`/`Dz`'s `adjustment_accuracy`/`ranking_tau` — no amount of good reasoning from
-   data alone can beat it. This is expected, not evidence of poor reasoning; the informative signal is the
-   **slope** aligned-to-misaligned, not the absolute score at neutral. Any write-up of results must state
-   this, or a flat-looking dip at neutral could be misread as a reasoning failure.
-2. **Structural-position memorization risk.** Because `CANONICAL` is one fixed scaffold, every node's
-   degree/adjacency pattern (`Y`=4, `A`=3, `C`=3, `M`=2, `Dz`=1, `B`=1) is a naming-independent fingerprint
-   fully recoverable from the skeleton (which CI testing *does* recover exactly — only the 3 edges above
-   are ambiguous). Combined with the prompt always revealing the outcome and candidate-driver set, an
-   agent can always identify *which column plays which structural role* from data alone, regardless of
-   names. The convention "structural position X is always the confounder" never varies across instances,
-   so an agent with **cross-instance memory** (a training/RL loop reusing `CANONICAL`, or a long
-   multi-instance conversation) could learn this as benchmark trivia rather than reasoning per instance.
-   UUMC already defeats a *different* shortcut (marginal-variance ordering); it cannot defeat this one,
-   since adjacency is fixed before any weights are sampled.
+**Interpretation floor.** At neutral/name-blind alignment there is an honest information-theoretic ceiling
+below 1.0 on the ambiguous drivers' `adjustment_accuracy` — no amount of good reasoning from data alone can
+beat it. This is expected, not evidence of poor reasoning; the informative signal is the **slope**
+aligned-to-misaligned, not the absolute score at neutral. Omit this and a flat-looking dip at neutral reads
+as a reasoning failure when it is the design working. `abstention_accuracy` is the metric that credits the
+correct behavior in that regime (abstaining), and `ranking_tau` excludes correctly-abstained drivers, so a
+low neutral score is not double-counted against the agent — but the floor on adjustment is real.
 
-**Why it doesn't block the current step.** A stateless, one-instance-per-call eval (fresh context per
-instance, no cross-instance memory) gives the shortcut nothing to exploit. It matters once we (a) reuse
-`CANONICAL` at training/RL scale, or (b) let one agent context span multiple instances.
+**Resolved (2026-07-28): the structural-position memorization risk.** Earlier revisions of this item
+recorded a second consequence — `CANONICAL` being one fixed scaffold meant every node's degree/adjacency
+signature was a naming-independent fingerprint, learnable as benchmark trivia by an agent with
+cross-instance memory (an RL loop, or one context spanning several instances). That no longer applies:
+`CANONICAL` and `scm/scaffold.py` are deleted, and every instance now composes its own topology with
+variable driver count, archetype mix, and decoy count. The risk was the concrete motivation for the
+procedural generator; it is closed, not deferred.
 
-**Options.** (a) For now: state the interpretation floor when reporting results; don't over-invest in
-`n_scms` scale as if it buys structural diversity (it buys statistical power on one fixed test, not
-protection against memorization). (b) Before any repeated-exposure/RL use of this scaffold: randomize
-topology (this is now concrete evidence for, not just a nice-to-have — see the "randomize instead of
-fixed" direction raised 2026-07-21).
-
-**Related:** `scm/scaffold.py` (`CANONICAL`), `scm/generate.py` (UUMC), `scoring/score.py`
-(`ranking_tau`/`adjustment_accuracy`), `generation/labeler.py` (the α grid).
+**Related:** `scm/gadgets.py` (`procedural_scaffold`), `scm/identifiability.py` (`unoriented_edges`,
+`unidentifiable_drivers`), `scoring/score.py` (`quadrant`, `abstention_accuracy`),
+`generation/labeler.py` (the α grid), `procedural_scaffold_plan.md` §11.

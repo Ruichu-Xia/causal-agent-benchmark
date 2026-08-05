@@ -1,6 +1,6 @@
 # CausalAgentBench
 
-A synthetic causal-reasoning benchmark on one fixed, exactly-solvable graph.
+A synthetic causal-reasoning benchmark on procedurally-composed, exactly-solvable graphs.
 
 Data is generated from a **hidden linear-Gaussian structural causal model (SCM)**, so the SCM is the
 exact answer key. An agent sees a labeled observational table and must rank the candidate drivers of an
@@ -9,12 +9,16 @@ changes what's identifiable or what the gold answer is — what varies is whethe
 agree with, are neutral to, or actively mislead about the true causal structure. That's the axis the
 benchmark measures: does the agent reason from the data, or parrot the name it was given?
 
-The current scaffold is a single canonical 6-node graph with an engineered confounder, a mediator
-(bad-control trap), and a wired-zero decoy; exact effects via `τ = (I − W)⁻¹ − I`; UUMC weight sampling
-so marginal variance carries no causal-order signal; and a reject loop whose soundness gates guarantee
-every instance requires genuine causal reasoning (naive correlation *and* "adjust-for-everything" both
-provably fail). See [`backlog.md`](backlog.md) for open design questions and known characteristics of
-this setup (in particular §4, on what is and isn't identifiable from data alone on this graph).
+Every instance composes its own topology from a small gadget catalog (clean, confounded, multi-confounder,
+and instrumented drivers, plus confounder-fed decoys), so driver count, archetype mix, and per-driver
+identifiability all vary by seed. Exact effects come from `τ = (I − W)⁻¹ − I`; UUMC weight sampling keeps
+marginal variance free of causal-order signal; driver effects, mediated shares, and confounding margins are
+*constructed* rather than sampled-and-hoped-for; and a reject loop's soundness gates guarantee every
+instance requires genuine causal reasoning (naive correlation *and* "adjust-for-everything" both provably
+fail). Each instance is guaranteed at least one driver whose confounder edge is unresolvable from data
+alone and one that is resolvable — which is what makes the naming axis load-bearing rather than decorative.
+See [`backlog.md`](backlog.md) for open design questions and known characteristics of this setup (in
+particular §4, on the interpretation floor that identifiability ambiguity imposes on any results write-up).
 
 ## Quickstart
 
@@ -29,11 +33,10 @@ uv run causalagentbench-smoke   # generate gated instances and print acceptance/
 Building an instance needs nothing beyond this package — no LLM, key, or download:
 
 ```python
-from causalagentbench import generate_gated, sample, build_instance, score_output
+from causalagentbench import generate_gated_procedural, build_instance, score_output
 
-scm, _ = generate_gated(seed=0)          # a sound instance, gated for real confounding/mediation
-data = sample(scm, n_samples=1000, seed=0)
-instance, key = build_instance(scm, data, seed=0)   # abstract labels (X1..Xk) by default
+scm, report = generate_gated_procedural(seed=0)   # a sound instance: composed topology + gated effects
+instance, key = build_instance(scm, report.data, seed=0)   # abstract labels (X1..Xk) by default
 
 instance.prompt            # what the agent sees (context + schema + question)
 instance.to_csv()          # the data table
@@ -41,9 +44,13 @@ key.scm.true_ranking()      # hidden gold ranking, computed on the SCM (label-in
 
 # ... an agent reads instance.prompt/instance.to_csv() and replies with an <answer> block ...
 score = score_output(agent_reply_text, key)
-score.ranking_tau           # Kendall agreement with the true ranking
-score.adjustment_accuracy   # fraction of drivers with a valid backdoor set
+score.ranking_tau           # Kendall agreement with the true ranking (correct abstentions excluded)
+score.adjustment_accuracy   # fraction of graded drivers with a valid backdoor set
+score.abstention_accuracy   # fraction whose abstain/commit choice matches the gold rule
 ```
+
+`report.data` is the exact table the oracle gate certified — reuse it rather than drawing a fresh sample,
+since gate acceptance is tied to that one draw (`procedural_scaffold_plan.md` §12.2).
 
 ## Generating naming-alignment data (optional)
 
@@ -64,7 +71,8 @@ cp .env.example .env         # then edit .env: add your API key(s) and the Cause
 #    and set CAUSENET_DUMP in .env to its path
 ```
 
-Naming alignment is a fixed discrete grid `{−1, −0.5, 0, +0.5, +1}` (plus a name-blind control),
+Naming alignment is a fixed discrete grid `{−1, 0, +1}` — misaligned / neutral / aligned, applied
+uniformly to every non-outcome node — plus a name-blind control, so a full sweep is 4 views per SCM. It is
 **constructed** per instance from per-node aligned / neutral / misaligned name triples — one generator
 call (+ an optional correctness critic) per SCM. `alpha_sweep` builds every level of one SCM from a
 single proposal (paired skins, `.env` loaded automatically):
@@ -103,15 +111,14 @@ column names) plus a model-agnostic tool-calling loop. The agent never sees the 
 it must call a tool to learn anything about the data, then answer:
 
 ```python
-from causalagentbench import generate_gated, sample, build_instance
+from causalagentbench import generate_gated_procedural, build_instance
 from causalagentbench.agent.clients import LiteLLMClient      # needs the `generation` extra + an LLM key
 from causalagentbench.agent.eval import run_evaluation, aggregate_by_alignment
 
 instances = []
 for seed in range(5):
-    scm, _ = generate_gated(seed)
-    data = sample(scm, n_samples=1000, seed=seed)
-    instances.append(build_instance(scm, data, seed=seed))
+    scm, report = generate_gated_procedural(seed)
+    instances.append(build_instance(scm, report.data, seed=seed))
 
 scores = run_evaluation(instances, LiteLLMClient(model="anthropic/claude-opus-4-8"))
 for summary in aggregate_by_alignment(scores):   # mean ranking_tau / adjustment_accuracy per alignment level
@@ -171,6 +178,12 @@ Every `model_summary` record includes the evaluation configuration, final `estim
 number of successfully scored and provider-failed instances. A provider failure is written as an
 `instance_error` record and excluded from score averages, rather than being reported as a parse failure.
 
+Alongside `summaries` (per naming-alignment level, one row per instance), each `model_summary` carries
+`driver_cells`: the same run pooled at *driver* grain, crossing alignment with whether a driver's effect is
+identifiable from data at all — so a failure on a driver the data cannot resolve is no longer averaged
+together with one it can. Each instance record also keeps raw per-driver rows under `drivers`, so a
+completed run can be re-sliced offline without re-running it.
+
 For a fast provider smoke comparison without building names, omit `--dataset`; one generated abstract-label
 batch is shared by every model in that invocation:
 
@@ -209,8 +222,10 @@ src/causalagentbench/
   config.py         GeneratorConfig
   smoke.py          acceptance-rate / gate-statistics report
   scm/              build & simulate the hidden SCM
-    scaffold.py       the canonical 6-node role graph
+    gadgets.py        the gadget catalog + procedural_scaffold (a fresh topology per seed)
+    identifiability.py  CPDAG/Meek-rule discovery of which edges data alone cannot orient
     generate.py       UUMC structural generation (unit-variance, neutral sortability)
+    target_effects.py direct construction of driver effects, mediated shares, confounding margins
     effects.py        total-effect matrix τ and marginal covariance Σ
     sample.py         draw a data table from an SCM
     sortability.py    varsortability / R²-sortability diagnostics
@@ -218,11 +233,12 @@ src/causalagentbench/
     instance.py       Instance (public) / InstanceKey (hidden) + prompt
     labeling.py       Labeler seam + abstract-label placeholder
     answer.py         the Pydantic Answer contract + parser
+    dataset.py        load a pre-built dataset back into (Instance, InstanceKey) pairs
   scoring/          verification against the hidden SCM
-    gates.py          soundness gates + rejection-sampling generator
+    gates.py          soundness gates + the construct-then-gate generator
     baselines.py      oracle / correlation / full-adjustment reference solvers
     metrics.py        ranking metrics (Kendall-τ)
-    score.py          score an agent's Answer against the hidden SCM
+    score.py          score an agent's Answer against the hidden SCM; Quadrant classification
   generation/       optional, LLM-backed naming (needs the `generation` extra)
     grounding.py      CauseNet dump loading + role-candidate menu sampling
     labeler.py        propose → critique → revise naming triples; construct the alpha grid
@@ -239,10 +255,23 @@ Tests mirror this layout under `tests/{scm,task,scoring,generation,agent}/`.
 
 ## Design docs
 
+Four docs, each still accurate as of the last commit:
+
+* [`procedural_scaffold_plan.md`](procedural_scaffold_plan.md) — **the authoritative account of how
+  instances are generated**: the gadget catalog, identifiability discovery, direct effect construction,
+  the gate loop, and the abstain/quadrant scoring rules. Read this first.
+* [`variance_budget_plan.md`](variance_budget_plan.md) — why mediated effects and confounding margins scale
+  with driver count. §6 is the one **open** item in these docs: the target-effect ladder still grows as
+  `√n`, which is what caps usable driver counts at ~9 (n=10 accepts at 4.8%). Fixing it is coupled to a
+  sample-size raise (`N ≳ n³`), not an independent change.
+* [`semantic_labeler_plan.md`](semantic_labeler_plan.md) — the naming layer: three poles per node, the
+  propose→critique→revise loop, and the constructed α grid.
+* [`realistic_data_presentation_plan.md`](realistic_data_presentation_plan.md) — why the data is
+  standardized-and-disclosed rather than dressed in realistic per-node ranges.
+
 `backlog.md` is the living record of open design questions and known characteristics — read it before
-extending the SCM/naming/scoring layers. `stage0_plan.md`, `stage1_plan.md`, `semantic_labeler_plan.md`,
-and `orientation_ambiguity_plan.md` are historical specs from earlier design stages (the last one
-describes an abstention scaffold that was built, then deliberately cut from v1 scope — kept for context,
-not as an active plan).
+extending the SCM/naming/scoring layers. `experiments/` holds dated write-ups of measured runs; note that
+anything measured before the variance-budget change (2026-07-31) was generated by a different construction
+and is not comparable to current output.
 
 License: Apache-2.0.

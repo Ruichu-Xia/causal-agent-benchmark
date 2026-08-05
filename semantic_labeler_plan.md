@@ -1,6 +1,10 @@
 # CausalAgentBench — Semantic Labeler Plan (three-pole discrete alignment, constructed)
 
-> **Audience: the implementing coding agent (e.g. Codex).** Self-contained spec. **Supersedes** the
+> **Status: implemented** (`generation/labeler.py`, `generation/grounding.py`, `task/labeling.py`) and the
+> authoritative description of the naming layer, with **one amendment**: the α grid was later collapsed
+> from five values to three, applied uniformly — §3.2, §8 and §9 below carry the correction inline. See
+> `procedural_scaffold_plan.md` §11.8 for that decision and `backlog.md` §1 for the history.
+> **Supersedes** the
 > earlier LLM-generate→judge→select design (see "§10 What this replaces"). Package `causalagentbench`
 > (src layout, Python 3.12, uv, hatchling; ruff + mypy strict + pytest; line-length 120; concise ASCII
 > docstrings).
@@ -90,14 +94,20 @@ The critic is optional (`critic_model=None` runs pre-checks only).
 
 ### 3.2 Constructing the discrete levels
 
-**Discrete grid** `α ∈ {−1, −0.5, 0, +0.5, +1}` built by **fraction through neutral**:
-- Let the K non-outcome nodes be ordered by load-bearing importance: **decoy, strongest driver,
-  confounder, mediator, clean driver** (the outcome always keeps its real aligned name).
-- `n_informative = round(|α|·K)`. The first `n_informative` nodes in that order use their **aligned**
-  name if `α > 0`, their **misaligned** name if `α < 0`; the remaining nodes use their **neutral** name.
-- So `α = +1` → all aligned; `α = 0` → all neutral; `α = −1` → all misaligned; `α = +0.5` → the top
-  load-bearing nodes aligned, the rest neutral; `α = −0.5` → the top nodes misaligned, the rest neutral.
-- Deterministic (load-bearing-first); reproducible. (Seeded subset selection is a later refinement.)
+**Discrete grid** `α ∈ {−1, 0, +1}`, applied **uniformly** (`GRID`, `construct_labeling`):
+- Only α's **sign** is read. Every non-outcome node takes the same kind: **aligned** if `α > 0`,
+  **misaligned** if `α < 0`, **neutral** if `α = 0`. The outcome always keeps its real aligned name.
+- So `α = +1` → all aligned; `α = 0` → all neutral; `α = −1` → all misaligned.
+- Deterministic and reproducible; no per-node ordering or subset selection is involved.
+
+> **Amended 2026-07-27.** This section originally specified a five-value grid `{−1, −0.5, 0, +0.5, +1}`
+> built by "fraction through neutral", where the two midpoints flipped only the top `round(|α|·K)` nodes
+> of a hand-tuned load-bearing order (`_informative_order`: decoy, strongest driver, confounder, mediator,
+> clean driver). That order conflated two unrelated justifications — quadrant coverage and score
+> sensitivity — with no single principle, and the endpoints never needed it (every node already flipped
+> there). Dropping the midpoints removed the question instead of re-answering it; `_informative_order` was
+> deleted, not left unused. Trade-off taken deliberately: the dose-response middle of the curve is given
+> up for a directly comparable per-quadrant contrast. See `procedural_scaffold_plan.md` §11.8.
 
 **Name-blind (`X1..Xk`) is a separate control** — "no names at all," distinct from `α = 0`'s "real but
 uninformative names." Keep `abstract_labels` as the off-axis anchor.
@@ -114,8 +124,9 @@ class LabelProvenance:
     n_aligned: int               # constructed composition, for auditing
     n_neutral: int
     n_misaligned: int
+    node_kind: Mapping[str, str] # node -> "aligned"/"neutral"/"misaligned"; read by the abstain gold rule
     domain: str | None
-    producer: str                # "abstract" | "llm:<gen-model>"
+    producer: str                # "abstract" | "llm:<gen-model>+critic:<critic-model>"
 
 @dataclass(frozen=True)
 class Labeling:                   # unchanged public shape
@@ -126,8 +137,16 @@ class Labeling:                   # unchanged public shape
 ```
 
 `Instance` carries `context` + `column_schema`; `InstanceKey` carries `provenance`. `abstract_labels`
-returns a name-blind `Labeling` (`alignment=None`). Reward is computed on the hidden SCM via
-`label_to_node`, so it is **invariant** to the level — naming is a pure presentation transform.
+returns a name-blind `Labeling` (`alignment=None`). The **ranking and adjustment** gold is computed on the
+hidden SCM via `label_to_node`, so it is **invariant** to the level — naming is a pure presentation
+transform for those two axes.
+
+**One deliberate exception, added later:** the **abstain** gold rule is *not* level-invariant, and cannot
+be. A driver whose confounder edge is unresolvable from data alone is answerable only if its own name
+truthfully resolves it, so `_gold_abstain` reads `provenance.node_kind[driver]` alongside the topology
+(`procedural_scaffold_plan.md` §6/§7). This is the mechanism that makes naming load-bearing rather than
+decorative; it is per-driver, not per-instance, which is why `node_kind` exists as a field rather than the
+aggregate counts being sufficient.
 
 ## 5. The LLM output contract
 
@@ -154,10 +173,13 @@ never narrating the causal graph.
 
 ## 7. Two modes
 
-- **Fixed shipped test set.** For a set of gated SCM seeds, produce the triple set once per SCM and
-  **materialize all grid levels + name-blind** (paired skins). Ship full instances (data in `.npz`, SCM
-  params + naming card in `.json`); `load_testset()` is pure I/O. Incremental write (`.partial/`) for
-  crash-safety. Consuming needs **no LLM, key, or CauseNet**.
+- **Built-on-demand dataset.** For a set of gated SCM seeds, produce the triple set once per SCM and
+  **materialize all grid levels + name-blind** (paired skins). `scripts/build_testset.py` writes full
+  instances (data in `.npz`, SCM params + naming card in `.json`); `load_dataset()` is pure I/O.
+  Incremental write for crash-safety. Consuming needs **no LLM, key, or CauseNet**. Note: nothing is
+  *shipped* in-repo — the packaged `testset_v1.json`/`.npz` that this section originally described was a
+  hand-authored placeholder predating the real pipeline, and was deleted rather than documented around.
+  Every dataset is now built by running the pipeline.
 - **Generate from scratch.** `generate_instance(seed, level, labeler=LLMLabeler(...))` /
   `alpha_sweep(seed, levels, ...)` run the pipeline live; store nothing. `level` is a grid value.
 
@@ -170,15 +192,15 @@ critic_model: openai/gpt-5     # correctness critic (null to skip; same model is
 max_revisions: 2               # propose -> critique -> revise iterations before skipping an SCM
 n_scms: 20                     # base SCM seeds; each yields all grid levels (+ name-blind) as paired skins
 ```
-Secrets + CauseNet dump path stay in `.env`. Grid is fixed `{−1,−0.5,0,+0.5,+1}`.
+Secrets + CauseNet dump path stay in `.env`. Grid is fixed `{−1, 0, +1}` (+ name-blind), so a full sweep is
+4 views per SCM.
 
 ## 9. Verification (definition of done)
 
 `ruff check`, `ruff format --check`, `mypy src`, `pytest` clean/green. Tests use a **stub proposer** (no
 network in CI):
 - **Level construction (pure):** given a fixed triple set, `α=+1` uses all aligned names, `α=−1` all
-  misaligned, `α=0` all neutral, `±0.5` the load-bearing-first split; `provenance` composition counts
-  match; deterministic.
+  misaligned, `α=0` all neutral; `provenance` composition counts and `node_kind` match; deterministic.
 - **`LLMLabeler` with a stub proposer:** parses triples → valid `Labeling` at a requested level;
   descriptions/names pass the continuous/snake_case/distinct checks.
 - **Quality loop (stub proposer + stub critic):** deterministic pre-checks reject a planted placeholder
@@ -188,8 +210,9 @@ network in CI):
 - **`build_instance`:** columns are the chosen names; context/schema populated; `provenance.alignment ==
   level`; `label_to_node` bijection. Name-blind → `alignment is None`.
 - **Paired skins / reward-invariance:** one SCM across all grid levels shares column order + node-space
-  gold (`true_ranking` identical); only names differ.
-- **`load_testset`:** rebuilds the shipped set; gold matches the SCM; the set contains all grid levels.
+  gold (`true_ranking` identical); only names differ. (Ranking/adjustment only — the abstain gold rule is
+  level-dependent by design, §4.)
+- **`load_dataset`:** rebuilds a built dataset; gold matches the SCM; the set contains all grid levels.
 - Grounding (`load_causenet`/`sample_menus`) against the synthetic fixture (unchanged).
 
 ## 10. What this replaces (remove)
@@ -200,7 +223,7 @@ network in CI):
 - Continuous drawn α / `alpha ~ U(-1,1)` → the fixed discrete grid, constructed.
 
 Kept: SCM generator + gates, sampler, `Instance`/`InstanceKey`, the `Labeler` seam, `abstract_labels`,
-CauseNet grounding, LiteLLM client + retries, incremental materialize + `load_testset`, `alpha_sweep`.
+CauseNet grounding, LiteLLM client + retries, incremental materialize + `load_dataset`, `alpha_sweep`.
 
 ## 11. The identifiability × naming matrix (design target) & roadmap
 
@@ -221,11 +244,22 @@ behavior per cell defines the scoring:
   for caution (abstain). A confident wrong answer in the bottom row is the failure to catch.
 
 Scoring rewards **appropriate reliance + calibrated abstention** across this matrix (per-driver
-`identifiable` is how the agent concedes).
+`abstain: bool` is how the agent concedes — the field was named `identifiable` when this section was
+written; it was inverted and renamed with the abstain mechanism).
 
-- **Near-term build:** add genuinely non-identifiable instances (a **latent/unobserved-confounder**
-  scaffold) so the bottom row — and abstention — is exercised and scored; today's canonical scaffold is
-  fully observed. The naming layer (per-node triples) already works for any scaffold.
-- **Roadmap also:** finer α grids toward a smooth curve; seeded intra-level subset diversity; more
-  scaffolds (colliders/instruments); the three-axis scorer stratified by `alignment × identifiability`;
-  discrete/mixed-type data (backlog #3).
+**Built since.** The matrix is live, collapsed to the 2×2 in `procedural_scaffold_plan.md` §6 (neutral and
+misaligned share the "not aligned" column, per explicit instruction 2026-07-23 — the distinction between a
+merely-uninformative and an actively-wrong name on an unidentifiable driver is deferred, not resolved).
+`scoring/score.py`'s `Quadrant`/`quadrant()` is the first-class implementation, and `abstention_accuracy`
+is the metric. The bottom row is exercised on every instance: `procedural_scaffold` reserves one
+forced-ambiguous driver slot, so non-identifiability comes from **orientation ambiguity** (an unoriented
+confounder edge), discovered exactly via `unoriented_edges`.
+
+- **Ruled out, not deferred:** the latent/unobserved-confounder scaffold this section originally proposed
+  as the near-term build. Unobserved confounding is undetectable from data, so naming could never
+  *legitimately* resolve it, and the bottom row would test credulity rather than reasoning. Orientation
+  ambiguity gives the same non-identifiability while staying detectable from the data — the agent can know
+  it is stuck. See `procedural_scaffold_plan.md` §0/§9.
+- **Roadmap still open:** finer α grids toward a smooth dose-response curve (deliberately given up in
+  §11.8 — would have to be re-argued, not just re-enabled); seeded intra-level subset diversity; more
+  gadget archetypes (colliders); discrete/mixed-type data (backlog §3).

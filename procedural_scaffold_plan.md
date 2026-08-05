@@ -1,13 +1,16 @@
 # CausalAgentBench — Procedural Scaffold Generation Plan (v1)
 
-> **Status: §1-§11.6 all implemented, tested, and re-verified end-to-end.** §11's fix is confirmed by
+> **Status: §1-§12 all implemented, tested, and re-verified end-to-end.** This is the authoritative
+> description of how instances are generated today. §11's fix is confirmed by
 > measurement (§11.5): per-role ambiguity now genuinely splits (49.7%/51.1%, not the old 100%/0%), 0/100
 > accepted instances have zero identifiable non-clean drivers (was 30%). §11.6 then made two of the
 > retry loop's four rejection sources deterministic (topology and confounding construction), raising
 > combined acceptance from 23.5% to 41.6% with no collapse at high driver count -
 > `scripts/run_eval.py`/`build_testset.py` both wired to `generate_gated_procedural`. Builds on the shipped SCM layer (`scm/`), scoring layer
-> (`scoring/`), task layer (`task/`), and the semantic labeler (`generation/labeler.py`). Generalizes and
-> supersedes the abstain direction in `orientation_ambiguity_plan.md` (see §0). Conventions: package
+> (`scoring/`), task layer (`task/`), and the semantic labeler (`generation/labeler.py`). Superseded in
+> turn on the effect-construction thresholds by `variance_budget_plan.md` (R1/R1b), which replaced
+> §5a's fixed `MIN_MEDIATED_EFFECT` and confounding margin with driver-count-scaled equivalents.
+> Conventions: package
 > `causalagentbench` (src layout, Python 3.12, uv, hatchling; ruff + mypy strict + pytest; line-length 120;
 > concise ASCII docstrings). Dataclasses `frozen=True`.
 
@@ -17,7 +20,7 @@
 
 `CANONICAL` (`scm/scaffold.py`) is one hand-built, fixed topology: exactly three candidate drivers (`A`
 confounded, `B` clean, `Dz` decoy), one confounder, one mediator. It was the right first move — it let the
-soundness gates and the naming-trap design (§03/§08 of `benchmark_design.html`) get verified against one
+soundness gates and the naming-trap design (§03/§08 of `causalagentbench-4.html`) get verified against one
 known-good structure before generalizing. Two costs of staying there, both already on record
 (`backlog.md` §4, deck §08):
 
@@ -43,15 +46,16 @@ multi-confounder, instrumented), decoys — while preserving every guarantee `CA
   under UUMC's variance conservation, which silently collapsed gate acceptance to 0% at 7+ drivers until
   fixed.
 
-**Relationship to `orientation_ambiguity_plan.md`.** That plan built one hand-authored 4-node scaffold with
+**Relationship to the earlier orientation-ambiguity plan** (`orientation_ambiguity_plan.md`, deleted
+2026-08-04 once fully superseded). That plan built one hand-authored 4-node scaffold with
 a binary silent/resolved contrast on a single node. This plan generalizes the same underlying idea —
-data-unresolvable edges are the fair thing to test abstention on, not unobserved confounders (see that
-plan's own scoping rationale) — into something discovered per driver, per procedurally-generated instance,
-at scale. Treat that document as superseded for the abstain-scaffold direction; its core identifiability
-reasoning is correct and is reused directly.
+data-unresolvable edges are the fair thing to test abstention on, not unobserved confounders — into
+something discovered per driver, per procedurally-generated instance,
+at scale. Its core identifiability reasoning was correct and is reused directly here; the scaffold itself
+was built, then cut from v1 scope.
 
 **What this deliberately does not touch:** nonlinear SCMs (Tier C, a separate later change — see
-`benchmark_design.html` §08) and unobserved confounders (ruled out — undetectable from data, so naming can
+`causalagentbench-4.html` §08) and unobserved confounders (ruled out — undetectable from data, so naming can
 never legitimately resolve it; see chat log 2026-07-23 for the full argument, not reproduced here).
 
 **Correction on record (same day)**: an intermediate review pass cut the multi-confounder and instrument
@@ -145,8 +149,10 @@ every driver archetype from §2; this is what determines, per instance, which of
 
 **Required regression test before this is trusted for anything**: `unoriented_edges(CANONICAL)` must
 return exactly `{(C,A), (A,M), (C,Dz)}` and nothing else — the one fact this whole benchmark already depends on,
-previously verified only by hand (`backlog.md` §4, one-off 200k-sample regression). This ties the new
+previously verified only by hand (one-off 200k-sample regression). This ties the new
 automated check to the existing manual finding and is the load-bearing correctness test for this module.
+*(Shipped as `test_example_has_exactly_the_known_unoriented_edges`; once `CANONICAL` was deleted per §8a,
+the test kept the same graph as a local `Scaffold` literal rather than importing a production constant.)*
 
 ## 5. End-to-end generation loop (`scoring/gates.py`, modified) and weight sampling
 
