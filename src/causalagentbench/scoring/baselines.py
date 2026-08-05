@@ -58,6 +58,36 @@ def ranking(effects: dict[str, float]) -> tuple[str, ...]:
     return tuple(sorted(effects, key=lambda name: abs(effects[name]), reverse=True))
 
 
+def effect_scale(scm: SCM) -> float:
+    """The instance's own effect magnitude, the denominator that makes estimation error comparable.
+
+    Median |true effect| over the candidate drivers. Effects shrink as ``1/sqrt(N)`` against the outcome's
+    fixed variance budget, so an absolute error floor would mean something different at every driver count.
+    Falls back to 1.0 on a degenerate all-decoy instance (which the gates reject) rather than dividing by
+    zero.
+    """
+    magnitudes = [abs(scm.total_effect_on_outcome(d)) for d in scm.scaffold.drivers]
+    scale = float(np.median(magnitudes)) if magnitudes else 0.0
+    return scale if scale > 0.0 else 1.0
+
+
+def normalized_effect_error(scm: SCM, estimates: dict[str, float]) -> float:
+    """Mean over drivers of ``|estimate - true| / effect_scale``, each clipped at 1.
+
+    The single definition of "how wrong are these estimates", shared by ``scoring/gates.py``'s causal-load
+    gate and ``scoring/score.py``'s ``effect_accuracy`` so the property certified and the property scored
+    cannot drift. They previously differed: the gate divided after averaging while the scorer clipped per
+    driver first, which agreed only while nothing clipped - measured to disagree (0.554 vs 0.471) as soon as
+    one driver did.
+
+    Clipped per driver so a single absurd estimate cannot swamp an instance, and so 1.0 has a fixed meaning:
+    "no better than asserting no effect".
+    """
+    scale = effect_scale(scm)
+    errors = [min(abs(estimates[d] - scm.total_effect_on_outcome(d)) / scale, 1.0) for d in scm.scaffold.drivers]
+    return float(np.mean(errors)) if errors else 0.0
+
+
 def population_coefficient(scm: SCM, treatment: str, adjust: Sequence[str] = ()) -> float:
     """OLS coefficient on ``treatment`` regressing the outcome on ``treatment`` + ``adjust``, at n -> inf.
 

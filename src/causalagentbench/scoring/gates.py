@@ -51,7 +51,13 @@ from causalagentbench.scm.target_effects import (
     with_constructed_confounding,
     with_constructed_effects,
 )
-from causalagentbench.scoring.baselines import full_adjustment_effects, oracle_effects, ranking, shortcut_effects
+from causalagentbench.scoring.baselines import (
+    full_adjustment_effects,
+    normalized_effect_error,
+    oracle_effects,
+    ranking,
+    shortcut_effects,
+)
 from causalagentbench.scoring.metrics import kendall_tau
 from causalagentbench.types import SCM, FloatArray, Role, Scaffold, SeedLike
 
@@ -197,15 +203,10 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
     # Closed-form (population, not sampled - `scoring/baselines.py::population_coefficient`), so it runs
     # here with the other structural gates and rejects before the expensive sampling step below.
     true_effects = [effect[d] for d in sc.drivers]
-    signed_effect = {d: scm.total_effect_on_outcome(d) for d in sc.drivers}
-    # Relative to the instance's own effect scale, like every other threshold here: an absolute error floor
-    # would mean something different at each driver count, since effects shrink as `1/sqrt(N)`.
-    effect_scale = float(np.median([abs(v) for v in signed_effect.values()]))
     shortcuts = shortcut_effects(scm)
-    min_shortcut_error = min(
-        float(np.mean([abs(estimates[d] - signed_effect[d]) for d in sc.drivers])) / effect_scale
-        for estimates in shortcuts.values()
-    )
+    # `normalized_effect_error` is the same function `scoring/score.py` grades an agent with, so the
+    # property certified here is exactly the property scored there - not a second, similar-looking one.
+    min_shortcut_error = min(normalized_effect_error(scm, estimates) for estimates in shortcuts.values())
     shortcut_defeated = min_shortcut_error >= SHORTCUT_ERROR_THRESHOLD
     # Diagnostic only, deliberately not gated: blind policies rank well no matter how the generator is
     # tuned (see `SHORTCUT_ERROR_THRESHOLD`), so this records how weak a readout the ranking is rather

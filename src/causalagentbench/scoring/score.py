@@ -54,9 +54,9 @@ from enum import Enum
 from typing import NamedTuple
 
 import networkx as nx
-import numpy as np
 
 from causalagentbench.scm.identifiability import unidentifiable_drivers
+from causalagentbench.scoring.baselines import effect_scale
 from causalagentbench.scoring.metrics import kendall_tau, kendall_tau_zscore
 from causalagentbench.task.answer import Answer, AnswerParseError, DriverVerdict, parse_answer_for_instance
 from causalagentbench.task.instance import InstanceKey
@@ -192,26 +192,13 @@ def _estimate(verdict: DriverVerdict | None) -> float:
     return verdict.effect
 
 
-def _effect_scale(key: InstanceKey) -> float:
-    """The instance's own effect magnitude, used to make estimation error comparable across instances.
-
-    Median |true effect| over the candidate drivers, matching ``scoring/gates.py``'s normalization exactly so
-    the gate's causal-load certificate ("no blind policy gets within 15%") and the score measure one
-    quantity. Effects shrink as ``1/sqrt(N)`` against the outcome's fixed variance budget, so an absolute
-    error would mean something different at every driver count. Falls back to 1.0 on a degenerate all-decoy
-    instance, which the gates already reject, rather than dividing by zero.
-    """
-    magnitudes = [abs(key.scm.total_effect_on_outcome(d)) for d in key.scm.scaffold.drivers]
-    scale = float(np.median(magnitudes)) if magnitudes else 0.0
-    return scale if scale > 0.0 else 1.0
-
-
 def _effect_error(answer: Answer, key: InstanceKey, driver: str, scale: float) -> float | None:
     """Normalized estimation error for ``driver``; ``None`` only when abstaining was the *correct* call.
 
-    On ``[0, 1]``: ``|estimate - true| / scale``, clipped at 1. Clipped so one absurd number cannot swamp an
-    instance's mean, and so the ceiling has a meaning - 1.0 is "no better than asserting no effect", which is
-    exactly what a missing estimate scores. Ungraded is reserved for a correct abstention, the same exclusion
+    On ``[0, 1]``: ``|estimate - true| / scale``, clipped at 1 - the per-driver term of
+    ``scoring/baselines.py::normalized_effect_error``, which is what the causal-load gate certifies no blind
+    policy can beat. One definition, so what is certified and what is scored cannot drift. Ungraded is
+    reserved for a correct abstention, the same exclusion
     rule ``_adjustment_valid`` and ``_ranking_tau`` use: where the effect is not point-identified there is no
     true value to have hit, but a *wrong* abstention is still a failure to estimate, not an exemption.
     """
@@ -319,7 +306,7 @@ def _abstention_correct(answer: Answer, key: InstanceKey, driver: str) -> bool:
 def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
     """Score a parsed ``answer`` against the true SCM in ``key``."""
     drivers = key.scm.scaffold.drivers
-    scale = _effect_scale(key)
+    scale = effect_scale(key.scm)
     errors = {driver: _effect_error(answer, key, driver, scale) for driver in drivers}
     graded_errors = [e for e in errors.values() if e is not None]
     valid = {driver: _adjustment_valid(answer, key, driver) for driver in drivers}
