@@ -30,8 +30,19 @@ OUTCOME = "Y"
 
 #: Stage 0 invariants (mirrors the constants already in ``scoring/gates.py``); migrate to
 #: ``GeneratorConfig`` once tunable difficulty is wired up.
-DRIVER_COUNT_RANGE = (3, 8)
-DECOY_COUNT_RANGE = (0, 2)
+CANDIDATE_COUNT_RANGE = (4, 9)
+"""Total candidate columns per instance - gadget drivers *plus* decoys, i.e. the task size the agent sees."""
+DECOY_COUNT_RANGE = (1, 2)
+"""Decoys carved out of the candidate budget, never added on top of it.
+
+At least one, so the correlation trap exists in every instance: measured under the old ``(0, 2)``, 39-42%
+of accepted instances contained no decoy at all, leaving the "a strong correlate can have zero effect"
+lesson absent from two of every five tasks.
+
+Carved out rather than added because task size must not vary with the draw. A varying candidate count makes
+``ranking_tau`` incomparable across instances (its achievable granularity and its chance variance both
+depend on the count) and gives an RL policy a varying action-space size. Varying the *split* instead keeps
+the size fixed while leaving the decoy count unmemorizable."""
 FREE_ARCHETYPES = ("clean", "confounded", "multi_confounder", "instrumented")
 #: Chance that a confounder-/instrument-bearing driver gets its ambiguity resolved (§11.1/§11.2). One coin
 #: flip per driver, not per confounder - a multi-confounder driver's two confounders are always resolved
@@ -160,7 +171,7 @@ _AMBIGUITY_CAPABLE_ARCHETYPES = _RESOLVABLE_CONFOUNDED_ARCHETYPES
 
 
 def procedural_scaffold(
-    seed: SeedLike, n_drivers: int | None = None, resolve_probability: float = RESOLVE_PROBABILITY
+    seed: SeedLike, n_candidates: int | None = None, resolve_probability: float = RESOLVE_PROBABILITY
 ) -> Scaffold:
     """Compose a fresh ``Scaffold`` deterministically from ``seed``.
 
@@ -173,31 +184,36 @@ def procedural_scaffold(
     afterward, on the composed graph as a whole (a decoy sharing a resolved confounder resolves too, for
     free, via the same Meek-rule propagation - no separate decoy-resolution mechanism needed).
 
-    ``n_drivers`` defaults to a random count in ``DRIVER_COUNT_RANGE`` drawn from ``seed``; pass it
-    explicitly to fix the count instead (e.g. for a difficulty sweep). Must be at least 2 - one slot for
-    each reserved guarantee. A drawn decoy count is only realized if at least one confounder exists to
-    attach it to (always true now that one confounder-bearing driver is guaranteed).
+    ``n_candidates`` is the *total* candidate count the agent sees, decoys included; it defaults to a random
+    value in ``CANDIDATE_COUNT_RANGE`` drawn from ``seed``. Decoys are drawn first and the remainder become
+    gadget drivers, so fixing ``n_candidates`` fixes task size exactly while the decoy count still varies.
+    Must leave at least 2 gadget drivers - one slot for each reserved guarantee - so the minimum is
+    ``DECOY_COUNT_RANGE[1] + 2``.
 
     ``resolve_probability`` only affects the free slots - the two reserved ones are always forced either
     way, so the "at least one ambiguous, one resolved" guarantee holds at any value. ``0.0``/``1.0`` push
     every free slot to the same extreme (mostly ambiguous / mostly resolved) for a controlled ambiguity
     sweep; the default ``0.5`` reproduces the original, unparameterized behavior exactly.
     """
-    if n_drivers is not None and n_drivers < 2:
+    minimum = DECOY_COUNT_RANGE[1] + 2
+    if n_candidates is not None and n_candidates < minimum:
         raise ValueError(
-            f"n_drivers must be at least 2 (one forced-ambiguous, one forced-resolved driver, §11.3), got {n_drivers}"
+            f"n_candidates must be at least {minimum} - up to {DECOY_COUNT_RANGE[1]} decoys plus one "
+            f"forced-ambiguous and one forced-resolved driver (§11.3), got {n_candidates}"
         )
     if not 0.0 <= resolve_probability <= 1.0:
         raise ValueError(f"resolve_probability must be in [0, 1], got {resolve_probability}")
     rng = np.random.default_rng(seed)
-    if n_drivers is None:
-        n_drivers = int(rng.integers(DRIVER_COUNT_RANGE[0], DRIVER_COUNT_RANGE[1] + 1))
+    if n_candidates is None:
+        n_candidates = int(rng.integers(CANDIDATE_COUNT_RANGE[0], CANDIDATE_COUNT_RANGE[1] + 1))
+    # Decoys first, drivers from what is left: the total is what must stay fixed, not the split.
     n_decoys = int(rng.integers(DECOY_COUNT_RANGE[0], DECOY_COUNT_RANGE[1] + 1))
+    n_gadget_drivers = n_candidates - n_decoys
 
-    resolved_slot, ambiguous_slot = (int(x) for x in rng.choice(n_drivers, size=2, replace=False))
+    resolved_slot, ambiguous_slot = (int(x) for x in rng.choice(n_gadget_drivers, size=2, replace=False))
 
     gadgets = []
-    for i in range(n_drivers):
+    for i in range(n_gadget_drivers):
         if i == resolved_slot:
             archetype = str(rng.choice(_RESOLVABLE_CONFOUNDED_ARCHETYPES))
             gadget = _force_resolve(_BUILDERS[archetype](i), archetype, i)

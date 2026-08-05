@@ -26,10 +26,10 @@ def _procedural_report() -> None:
     is what this report needs. Keep this in sync by hand if the attempt body in ``scoring/gates.py`` changes.
     """
     config = GeneratorConfig()
-    n_candidates = 500
-    by_n: dict[int, list[int]] = {}  # n_drivers -> [candidates, topology_ok, constructed, passed]
+    n_attempts = 500
+    by_n: dict[int, list[int]] = {}  # non-decoy driver count -> [attempts, topology_ok, constructed, passed]
 
-    for child in np.random.SeedSequence(20260715).spawn(n_candidates):
+    for child in np.random.SeedSequence(20260715).spawn(n_attempts):
         topology_seed, weight_seed, target_seed, construction_seed, confounding_seed, sample_seed = child.spawn(6)
         scaffold = procedural_scaffold(topology_seed)
         non_decoy_drivers = scaffold.non_decoy_drivers()
@@ -50,16 +50,18 @@ def _procedural_report() -> None:
         report = evaluate_gates(scm, config, sample_seed)
         bucket[3] += int(report.passed)
 
-    print(f"Procedural health report over {n_candidates} candidates, by driver count (n_samples={config.n_samples})")
+    print(
+        f"Procedural health report over {n_attempts} attempts, by non-decoy driver count (n_samples={config.n_samples})"
+    )
     print("-" * 64)
-    print(f"  {'n_drivers':<10}{'candidates':<12}{'topology_ok':<13}{'constructed':<13}{'passed':<10}")
+    print(f"  {'drivers':<10}{'attempts':<12}{'topology_ok':<13}{'constructed':<13}{'passed':<10}")
     totals = [0, 0, 0, 0]
-    for n_drivers, (candidates, topology_ok, constructed, passed) in sorted(by_n.items()):
-        topology_rate = topology_ok / candidates
-        constructed_rate = constructed / candidates
-        passed_rate = passed / candidates
-        print(f"  {n_drivers:<10}{candidates:<12}{topology_rate:<13.1%}{constructed_rate:<13.1%}{passed_rate:<10.1%}")
-        for i, value in enumerate((candidates, topology_ok, constructed, passed)):
+    for n_drivers, (attempts, topology_ok, constructed, passed) in sorted(by_n.items()):
+        topology_rate = topology_ok / attempts
+        constructed_rate = constructed / attempts
+        passed_rate = passed / attempts
+        print(f"  {n_drivers:<10}{attempts:<12}{topology_rate:<13.1%}{constructed_rate:<13.1%}{passed_rate:<10.1%}")
+        for i, value in enumerate((attempts, topology_ok, constructed, passed)):
             totals[i] += value
     print("-" * 64)
     print(f"  overall accepted: {totals[3] / totals[0]:.1%}  ({totals[3]}/{totals[0]})")

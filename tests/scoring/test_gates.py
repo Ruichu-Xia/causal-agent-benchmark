@@ -119,18 +119,18 @@ def test_gated_procedural_generation_is_deterministic():
     assert np.array_equal(a.W, b.W)
 
 
-def test_gated_procedural_respects_n_drivers():
-    for n_drivers in (3, 5, 8):
-        scm, report = generate_gated_procedural(0, n_drivers=n_drivers)
-        decoys = scm.scaffold.nodes_with_role(Role.DECOY)
-        assert len([d for d in scm.scaffold.drivers if d not in decoys]) == n_drivers
+def test_gated_procedural_respects_n_candidates():
+    """`n_candidates` is total task size - decoys included - so the agent sees exactly that many columns."""
+    for n_candidates in (5, 7, 9):
+        scm, report = generate_gated_procedural(0, n_candidates=n_candidates)
+        assert len(scm.scaffold.drivers) == n_candidates
         assert report.passed
 
 
 def test_gated_procedural_respects_resolve_probability():
     """resolve_probability survives the full gate/retry loop, not just raw composition."""
     for seed in range(5):
-        scm, report = generate_gated_procedural(seed, n_drivers=6, resolve_probability=1.0)
+        scm, report = generate_gated_procedural(seed, n_candidates=6, resolve_probability=1.0)
         ambiguous = set(unidentifiable_drivers(scm.scaffold)) & set(scm.scaffold.non_decoy_drivers())
         assert len(ambiguous) == 1
         assert report.passed

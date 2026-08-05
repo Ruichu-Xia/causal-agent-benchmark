@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 
 from causalagentbench.scm.gadgets import (
+    CANDIDATE_COUNT_RANGE,
     DECOY_COUNT_RANGE,
-    DRIVER_COUNT_RANGE,
     RESOLVE_PROBABILITY,
     _add_upstream_cause,
     _clean_driver,
@@ -34,20 +34,36 @@ def test_every_seed_is_a_valid_dag():
         assert nx.is_directed_acyclic_graph(procedural_scaffold(seed).digraph())
 
 
-def test_driver_and_decoy_counts_stay_in_range():
+def test_candidate_and_decoy_counts_stay_in_range():
     for seed in range(20):
         scaffold = procedural_scaffold(seed)
         n_decoys = len(scaffold.nodes_with_role(Role.DECOY))
-        assert DRIVER_COUNT_RANGE[0] <= len(scaffold.drivers) <= DRIVER_COUNT_RANGE[1] + DECOY_COUNT_RANGE[1]
+        assert CANDIDATE_COUNT_RANGE[0] <= len(scaffold.drivers) <= CANDIDATE_COUNT_RANGE[1]
         assert DECOY_COUNT_RANGE[0] <= n_decoys <= DECOY_COUNT_RANGE[1]
 
 
-def test_n_drivers_can_be_fixed_explicitly():
-    for n_drivers in (2, 5, 12):
-        for seed in range(5):
-            scaffold = procedural_scaffold(seed, n_drivers=n_drivers)
-            n_decoys = len(scaffold.nodes_with_role(Role.DECOY))
-            assert len(scaffold.drivers) - n_decoys == n_drivers
+def test_every_instance_contains_at_least_one_decoy():
+    """The correlation trap has to be present in every task, not most of them.
+
+    Under the old ``(0, 2)`` range, 39-42% of accepted instances contained no decoy at all.
+    """
+    for seed in range(30):
+        assert scaffold_decoys(procedural_scaffold(seed)) >= 1
+
+
+def scaffold_decoys(scaffold) -> int:
+    return len(scaffold.nodes_with_role(Role.DECOY))
+
+
+def test_fixing_n_candidates_fixes_task_size_while_the_split_still_varies():
+    """The total is what must stay constant; how it splits into drivers vs decoys must not be predictable."""
+    for n_candidates in (4, 7, 12):
+        splits = set()
+        for seed in range(12):
+            scaffold = procedural_scaffold(seed, n_candidates=n_candidates)
+            assert len(scaffold.drivers) == n_candidates  # task size exactly as requested, decoys included
+            splits.add(scaffold_decoys(scaffold))
+        assert len(splits) > 1, f"decoy count never varied at n_candidates={n_candidates}"
 
 
 def test_resolve_probability_zero_leaves_only_the_guaranteed_slot_resolved():
@@ -57,7 +73,7 @@ def test_resolve_probability_zero_leaves_only_the_guaranteed_slot_resolved():
     ones landing there by chance.
     """
     for seed in range(20):
-        scaffold = procedural_scaffold(seed, n_drivers=6, resolve_probability=0.0)
+        scaffold = procedural_scaffold(seed, n_candidates=6, resolve_probability=0.0)
         ambiguous = set(unidentifiable_drivers(scaffold))
         non_decoy = scaffold.non_decoy_drivers()
         resolved_confounded = [d for d in non_decoy if d not in ambiguous and scaffold.correct_adjustment.get(d)]
@@ -71,7 +87,7 @@ def test_resolve_probability_one_leaves_only_the_guaranteed_slot_ambiguous():
     there by chance.
     """
     for seed in range(20):
-        scaffold = procedural_scaffold(seed, n_drivers=6, resolve_probability=1.0)
+        scaffold = procedural_scaffold(seed, n_candidates=6, resolve_probability=1.0)
         ambiguous = set(unidentifiable_drivers(scaffold)) & set(scaffold.non_decoy_drivers())
         assert len(ambiguous) == 1
 
@@ -82,14 +98,14 @@ def test_resolve_probability_out_of_range_is_rejected():
             procedural_scaffold(0, resolve_probability=bad)
 
 
-def test_n_drivers_below_two_is_rejected():
+def test_too_few_candidates_to_hold_the_reserved_slots_is_rejected():
     """§11.3 reserves one slot for the forced-ambiguous driver and one for the forced-resolved driver.
 
-    Below 2, there's nowhere to put both.
+    Decoys are carved out of the same budget, so the floor is the largest decoy draw plus those two.
     """
-    for n_drivers in (0, 1):
-        with pytest.raises(ValueError, match="n_drivers"):
-            procedural_scaffold(0, n_drivers=n_drivers)
+    for n_candidates in (0, 1, DECOY_COUNT_RANGE[1] + 1):
+        with pytest.raises(ValueError, match="n_candidates"):
+            procedural_scaffold(0, n_candidates=n_candidates)
 
 
 def test_confounded_driver_gadget_has_the_expected_shape():

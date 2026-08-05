@@ -66,7 +66,7 @@ DECOY_EFFECT_TOL = 1e-9
 """Decoy total effect is a structural zero; tolerate only numerical dust."""
 ORACLE_TAU_THRESHOLD = 0.99
 """Minimum Kendall-tau between the oracle ranking and the truth."""
-SHORTCUT_ERROR_THRESHOLD = 0.15
+SHORTCUT_ERROR_THRESHOLD = 0.25
 """Minimum estimation error any blind policy must still suffer, as a fraction of the instance's median
 |true effect|.
 
@@ -75,16 +75,20 @@ causal reasoning" - now checked against *policies* rather than the per-driver st
 which cannot see it.
 
 Measured against **estimation**, not ranking, because ranking cannot carry the check. Blind policies rank
-far too well to gate on: marginal correlation reaches tau=+0.627 on the shipped set and full adjustment
-reaches +0.71 at every driver count, while random is +0.014. Driving those to chance is infeasible inside
-the outcome's unit-variance budget - attempting it (deeper confounding, wider mediation) cut feasible
-draws from 179/250 to 10/250 at 8 drivers and still left full adjustment at +0.78. Estimation separates
-cleanly where ranking does not: correct adjustment recovers the true effect *exactly* at the population
-level (error 0.0), while the best blind policy is off by 21-34% of a typical effect. That gap is the real
-causal-load certificate, and it needs no calibration to exist.
+far too well to gate on: marginal correlation reaches tau=+0.627 and full adjustment +0.71 at every driver
+count, against random's +0.014, and 66% of instances leave the best blind ranker above tau=0.6 even after
+this gate. Driving those to chance is infeasible inside the outcome's unit-variance budget - attempting it
+(deeper confounding, wider mediation) cut feasible draws from 179/250 to 10/250 at 8 drivers and still left
+full adjustment at +0.78. Estimation separates cleanly where ranking does not, and more importantly it
+separates *reliably*: correct adjustment recovers the true effect exactly at the population level, while
+the best blind policy's error stays above 0.21 even at the 25th percentile.
 
-0.15 rejects the degenerate tail - instances where some blind policy happens to land near the truth
-(observed as low as 2.2%) - while passing 78.8% of feasible draws at 8 drivers, 95.1% at 6."""
+0.25 chosen from the measured distribution at ``n_candidates=7`` (324 structurally-valid instances:
+min 0.09, p05 0.14, p25 0.21, median 0.27). It keeps 62% of them, so roughly one draw in three survives
+this gate and the oracle gate together - cheap, since composition costs milliseconds. The value buys a
+guarantee worth stating: on every published instance, the best policy that does no causal reasoning is
+wrong by at least a quarter of a typical effect, i.e. it cannot score above 0.75 ``effect_accuracy``.
+Loosening to 0.15 would keep 94% but leave instances where that ceiling is 0.85."""
 MAX_ATTEMPTS = 1000
 """Rejection-sampling safety valve."""
 
@@ -279,7 +283,7 @@ def _has_balanced_identifiability(scaffold: Scaffold) -> bool:
 def generate_gated_procedural(
     seed: int,
     config: GeneratorConfig | None = None,
-    n_drivers: int | None = None,
+    n_candidates: int | None = None,
     resolve_probability: float = RESOLVE_PROBABILITY,
 ) -> tuple[SCM, GateReport]:
     """Return the first ``(SCM, GateReport)`` whose composed topology and constructed effects all pass.
@@ -294,7 +298,8 @@ def generate_gated_procedural(
     (``procedural_scaffold_plan.md`` §5). Raises ``RuntimeError`` if no instance passes within
     ``MAX_ATTEMPTS``.
 
-    ``n_drivers`` fixes the driver count instead of leaving it to ``seed`` (see ``procedural_scaffold``).
+    ``n_candidates`` fixes the total candidate count - drivers plus decoys - instead of leaving it to
+    ``seed`` (see ``procedural_scaffold``).
     ``resolve_probability`` controls how much of the composed topology ends up ambiguous vs. resolved,
     for a controlled ambiguity sweep - see ``procedural_scaffold``; the guarantee of at least one of each
     holds at every value.
@@ -307,7 +312,9 @@ def generate_gated_procedural(
     config = config or GeneratorConfig()
     for child in np.random.SeedSequence(seed).spawn(MAX_ATTEMPTS):
         topology_seed, weight_seed, target_seed, construction_seed, confounding_seed, sample_seed = child.spawn(6)
-        scaffold = procedural_scaffold(topology_seed, n_drivers=n_drivers, resolve_probability=resolve_probability)
+        scaffold = procedural_scaffold(
+            topology_seed, n_candidates=n_candidates, resolve_probability=resolve_probability
+        )
         if not _has_balanced_identifiability(scaffold):
             continue
         reference = generate(weight_seed, scaffold)

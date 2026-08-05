@@ -39,7 +39,7 @@ def generate_instance(
     labeler: Labeler,
     *,
     n_samples: int | None = None,
-    n_drivers: int | None = None,
+    n_candidates: int | None = None,
     resolve_probability: float = RESOLVE_PROBABILITY,
     config: GeneratorConfig | None = None,
 ) -> tuple[Instance, InstanceKey]:
@@ -50,7 +50,9 @@ def generate_instance(
     what's returned (`procedural_scaffold_plan.md` §12). Pass an explicit ``n_samples`` to draw a fresh,
     independent sample at that size instead; that sample is not guaranteed to clear the same oracle bar.
     """
-    scm, report = generate_gated_procedural(seed, config, n_drivers=n_drivers, resolve_probability=resolve_probability)
+    scm, report = generate_gated_procedural(
+        seed, config, n_candidates=n_candidates, resolve_probability=resolve_probability
+    )
     if n_samples is None:
         assert report.data is not None  # guaranteed: generate_gated_procedural only returns a passing report
         data = report.data
@@ -65,7 +67,7 @@ def generate_instances(
     *,
     seed: int = 0,
     n_samples: int | None = None,
-    n_drivers: int | None = None,
+    n_candidates: int | None = None,
     resolve_probability: float = RESOLVE_PROBABILITY,
     config: GeneratorConfig | None = None,
 ) -> Iterator[tuple[Instance, InstanceKey]]:
@@ -75,7 +77,7 @@ def generate_instances(
             int(raw),
             labeler,
             n_samples=n_samples,
-            n_drivers=n_drivers,
+            n_candidates=n_candidates,
             resolve_probability=resolve_probability,
             config=config,
         )
@@ -91,7 +93,7 @@ def alpha_sweep_with(
     critic: LabelProposer | None = None,
     max_revisions: int = 2,
     n_samples: int | None = None,
-    n_drivers: int | None = None,
+    n_candidates: int | None = None,
     resolve_probability: float = RESOLVE_PROBABILITY,
 ) -> list[tuple[float, Instance, InstanceKey]]:
     """Build one fixed SCM at each grid ``level`` from a *single* naming proposal - paired skins.
@@ -107,7 +109,7 @@ def alpha_sweep_with(
     (``report.data``); pass an explicit ``n_samples`` to draw a fresh, independent sample instead (not
     guaranteed to clear the same oracle bar - see ``generate_instance``).
     """
-    scm, report = generate_gated_procedural(seed, n_drivers=n_drivers, resolve_probability=resolve_probability)
+    scm, report = generate_gated_procedural(seed, n_candidates=n_candidates, resolve_probability=resolve_probability)
     if n_samples is None:
         assert report.data is not None  # guaranteed: generate_gated_procedural only returns a passing report
         data = report.data
@@ -139,7 +141,7 @@ def alpha_sweep(
     critic_model: str | None = None,
     max_revisions: int = 2,
     n_samples: int | None = None,
-    n_drivers: int | None = None,
+    n_candidates: int | None = None,
     resolve_probability: float = RESOLVE_PROBABILITY,
 ) -> list[tuple[float, Instance, InstanceKey]]:
     """Convenience wrapper over ``alpha_sweep_with``.
@@ -156,6 +158,6 @@ def alpha_sweep(
         critic=LiteLLMProposer(critic_model) if critic_model else None,
         max_revisions=max_revisions,
         n_samples=n_samples,
-        n_drivers=n_drivers,
+        n_candidates=n_candidates,
         resolve_probability=resolve_probability,
     )

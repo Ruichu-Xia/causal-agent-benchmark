@@ -15,7 +15,7 @@ from causalagentbench.scm.target_effects import (
     with_constructed_confounding,
     with_constructed_effects,
 )
-from causalagentbench.types import Role
+from causalagentbench.types import Role, Scaffold
 
 DRIVERS = ("A", "B", "C", "D", "E")
 
@@ -173,8 +173,22 @@ def test_with_constructed_confounding_guarantees_the_margin():
 
 
 def test_with_constructed_confounding_is_a_noop_without_decoys():
-    seed = 14  # confirmed to draw zero decoys at n_drivers=3, and construction succeeds
-    scaffold = procedural_scaffold(seed, n_drivers=3)
+    """Composition always emits at least one decoy now (`DECOY_COUNT_RANGE`), so build the case directly.
+
+    The no-decoy branch is still reachable by any caller assembling a Scaffold itself, and it must stay a
+    no-op rather than an error.
+    """
+    seed = 14
+    composed = procedural_scaffold(seed, n_candidates=5)
+    decoys = set(composed.nodes_with_role(Role.DECOY))
+    scaffold = Scaffold(
+        node_names=tuple(n for n in composed.node_names if n not in decoys),
+        roles={n: r for n, r in composed.roles.items() if n not in decoys},
+        edges=tuple((a, b) for a, b in composed.edges if a not in decoys and b not in decoys),
+        drivers=tuple(d for d in composed.drivers if d not in decoys),
+        outcome=composed.outcome,
+        correct_adjustment={d: a for d, a in composed.correct_adjustment.items() if d not in decoys},
+    )
     assert not scaffold.nodes_with_role(Role.DECOY)
     reference = generate(seed, scaffold)
     targets = target_effects(np.random.default_rng(seed), scaffold.drivers)

@@ -12,7 +12,6 @@ from causalagentbench.generation.labeler import GRID
 from causalagentbench.scm.identifiability import unidentifiable_drivers
 from causalagentbench.scoring.gates import generate_gated_procedural
 from causalagentbench.task.labeling import abstract_labels
-from causalagentbench.types import Role
 
 
 def _stub_triples_json(scm) -> str:
@@ -64,16 +63,15 @@ def test_generate_instance_is_deterministic():
     assert np.array_equal(a.data, b.data)
 
 
-def test_generate_instance_respects_n_drivers():
-    for n_drivers in (3, 5):
-        _instance, key = generate_instance(0, abstract_labels, n_samples=32, n_drivers=n_drivers)
-        decoys = key.scm.scaffold.nodes_with_role(Role.DECOY)
-        assert len([d for d in key.scm.scaffold.drivers if d not in decoys]) == n_drivers
+def test_generate_instance_respects_n_candidates():
+    for n_candidates in (5, 7):
+        _instance, key = generate_instance(0, abstract_labels, n_samples=32, n_candidates=n_candidates)
+        assert len(key.scm.scaffold.drivers) == n_candidates  # total task size, decoys included
 
 
 def test_generate_instance_respects_resolve_probability():
     """Mirrors scoring/gates.py's own resolve_probability test - the parameter survives this call chain too."""
-    _instance, key = generate_instance(0, abstract_labels, n_samples=32, n_drivers=6, resolve_probability=1.0)
+    _instance, key = generate_instance(0, abstract_labels, n_samples=32, n_candidates=6, resolve_probability=1.0)
     ambiguous = set(unidentifiable_drivers(key.scm.scaffold)) & set(key.scm.scaffold.non_decoy_drivers())
     assert len(ambiguous) == 1
 
@@ -132,16 +130,15 @@ def test_alpha_sweep_with_amortizes_one_proposal_call_across_every_level():
     assert len(proposer.calls) == 1  # one call, reused to construct every level (no critic configured)
 
 
-def test_alpha_sweep_with_respects_n_drivers_and_resolve_probability():
-    scm, _ = generate_gated_procedural(0, n_drivers=6, resolve_probability=1.0)
+def test_alpha_sweep_with_respects_n_candidates_and_resolve_probability():
+    scm, _ = generate_gated_procedural(0, n_candidates=6, resolve_probability=1.0)
     proposer = _Stub([_stub_triples_json(scm)])
 
     skins = alpha_sweep_with(
-        0, GRID, proposer=proposer, grounding=_grounding, producer="p", n_drivers=6, resolve_probability=1.0
+        0, GRID, proposer=proposer, grounding=_grounding, producer="p", n_candidates=6, resolve_probability=1.0
     )
 
     key = skins[0][2]
-    decoys = key.scm.scaffold.nodes_with_role(Role.DECOY)
-    assert len([d for d in key.scm.scaffold.drivers if d not in decoys]) == 6
+    assert len(key.scm.scaffold.drivers) == 6  # total task size, decoys included
     ambiguous = set(unidentifiable_drivers(key.scm.scaffold)) & set(key.scm.scaffold.non_decoy_drivers())
     assert len(ambiguous) == 1

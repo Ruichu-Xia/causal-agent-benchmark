@@ -23,18 +23,21 @@ class BuildConfig(BaseModel):
     critic_model: str | None = None  # correctness critic (None skips it); same or a different model
     max_revisions: int = Field(default=2, ge=0)  # propose->critique->revise iterations before skipping
     n_scms: int = Field(default=20, gt=0)  # base SCM seeds; each yields all grid levels (+ name-blind)
-    n_drivers: int | None = Field(default=8, ge=2)
-    """Non-decoy driver count, fixed for every instance in the build.
+    n_candidates: int | None = Field(default=7, ge=4)
+    """Total candidate columns per instance - drivers *and* decoys - fixed for every instance in the build.
 
     A build knob rather than a code default because it is a property *of the produced set*: task size is
-    not comparable across instances (ranking agreement at 3 candidates is a much coarser, noisier quantity
+    not comparable across instances (ranking agreement at 4 candidates is a much coarser, noisier quantity
     than at 9), so a set that mixes sizes cannot be pooled without stratifying. Pinning it makes the
     committed config fully describe the set, which is the reason this file exists.
 
-    ``8`` is the top of ``DRIVER_COUNT_RANGE`` and the largest count the gates still accept affordably
-    (16.4%, vs 8.6% at 9 and 4.8% at 10 - see ``variance_budget_plan.md`` §6 for why that ceiling exists
-    and what raising it is coupled to). ``None`` restores the free per-seed draw, which is fine for a smoke
-    probe but should not be used for a set anything is measured on."""
+    ``7`` from measurement, not preference. Larger tasks are worse on both axes that matter. The oracle
+    itself stops recovering the true ranking as driver count rises, because effect gaps shrink as
+    ``1/sqrt(N)`` while sampling noise at ``n_samples`` does not: 59% oracle recovery at 5 drivers against
+    23% at 8, which is what made large sets expensive to generate. And blind policies get *closer* to the
+    truth as the task grows - best-blind estimation error 31% at 5 drivers, 24% at 8 - so a bigger task
+    discriminates less. ``None`` restores the free per-seed draw, fine for a smoke probe but not for a set
+    anything is measured on."""
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> BuildConfig:

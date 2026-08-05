@@ -394,11 +394,11 @@ def test_abstaining_on_everything_cannot_buy_adjustment_accuracy():
 def test_ranking_tau_does_not_penalize_order_between_exactly_tied_decoys():
     """Two decoys always share exactly the same true effect (0) - there is no correct order between them.
 
-    An agent's guess either way must score identically, not get graded as a coin flip. seed=5/n_drivers=3
+    An agent's guess either way must score identically, not get graded as a coin flip. seed=5/n_candidates=5
     has two decoys (Dz0, Dz1) alongside three real drivers with distinct, non-zero effects (A0, A1, A2) -
     true order is (A1, A0, A2, Dz0, Dz1) with the last pair a genuine tie.
     """
-    scm, _ = generate_gated_procedural(5, n_drivers=3)
+    scm, _ = generate_gated_procedural(5, n_candidates=5)
     data = sample(scm, 64, seed=5)
     _, key = build_instance(scm, data, seed=5)
     label = dict(key.node_to_label)

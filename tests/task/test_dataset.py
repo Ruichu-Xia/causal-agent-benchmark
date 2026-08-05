@@ -103,7 +103,7 @@ def test_load_dataset_round_trips_a_procedural_instance(tmp_path):
 
     A procedural instance's genuinely different node set/edges/drivers must survive the round trip intact.
     """
-    scm, _ = generate_gated_procedural(0, n_drivers=5)
+    scm, _ = generate_gated_procedural(0, n_candidates=5)
     data = sample(scm, 200, seed=0)
     instance, key = build_instance(scm, data, seed=0, labeler=_fake_labeler)
 
