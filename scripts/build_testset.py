@@ -72,6 +72,12 @@ def main() -> None:
     parser.add_argument("--dump", default=os.environ.get("CAUSENET_DUMP"), help="CauseNet dump (or $CAUSENET_DUMP)")
     parser.add_argument("--out", default=_OUT, help="output path stem (.json + .npz)")
     parser.add_argument("-n", "--limit", type=int, default=None, help="override n_scms (for a quick probe)")
+    parser.add_argument(
+        "--n-drivers",
+        type=int,
+        default=None,
+        help="override the config's n_drivers (the count is fixed per build; see BuildConfig)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="log per-call detail (DEBUG)")
     args = parser.parse_args()
     logging.basicConfig(
@@ -83,6 +89,7 @@ def main() -> None:
         parser.error("provide --dump or set CAUSENET_DUMP (e.g. in .env)")
     config = BuildConfig.from_yaml(args.config)
     n_scms = args.limit if args.limit is not None else config.n_scms
+    n_drivers = args.n_drivers if args.n_drivers is not None else config.n_drivers
     out = Path(args.out)
     partial = out.with_name(out.name + ".partial")
     (partial / "data").mkdir(parents=True, exist_ok=True)
@@ -91,17 +98,18 @@ def main() -> None:
     critic = LiteLLMProposer(config.critic_model) if config.critic_model else None
     grounding = grounding_fn(args.dump)
     log.info(
-        "config: gen=%s critic=%s n_scms=%d -> levels %s + name-blind",
+        "config: gen=%s critic=%s n_scms=%d n_drivers=%s -> levels %s + name-blind",
         config.gen_model,
         config.critic_model,
         n_scms,
+        n_drivers if n_drivers is not None else "free draw",
         GRID,
     )
     log.info("writing incrementally to %s; CauseNet loads on first use...", partial)
 
     with (partial / "records.jsonl").open("w", encoding="utf-8") as records_file:
         for seed in range(n_scms):
-            scm, report = generate_gated_procedural(seed)
+            scm, report = generate_gated_procedural(seed, n_drivers=n_drivers)
             assert report.data is not None  # guaranteed: generate_gated_procedural only returns a passing report
             data = report.data
             try:

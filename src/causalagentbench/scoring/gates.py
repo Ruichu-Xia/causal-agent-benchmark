@@ -73,14 +73,24 @@ class GateReport:
     ``varsortability`` and ``r2_sortability`` are reported diagnostics, not gates, but for different
     reasons. UUMC does deliver population-level *variance* neutrality, so per-instance ``varsortability`` is
     ensemble noise around 0.5 (measured mean 0.47) and gating on it would reject on chance alone.
-    ``r2_sortability`` is **not** neutral here and is not claimed to be: UUMC draws each node's signal share
-    as ``r = U(0,1)^(1/d)``, so ``E[R^2] = d/(d+2)`` rises with parent count, and in these scaffolds parent
-    count rises toward the outcome sink - measured mean 0.89 against a 0.5 no-signal baseline (0.70 for the
-    observable regress-on-all-others variant). It is reported so that is visible rather than assumed. Whether
-    it is exploitable *for this task* - ranking effects and choosing adjustment sets, not recovering a causal
-    order - has not been measured; gating on it is not the answer either way, since the pattern is structural
-    rather than a bad draw. Sample-derived fields are ``nan``/``False``/``None`` when structural gates fail
-    and sampling is skipped.
+
+    ``r2_sortability`` is **not** neutral - measured mean 0.89 against a 0.5 no-signal baseline (0.70 for the
+    observable regress-on-all-others variant) - and that is expected rather than a defect. Decomposed over 25
+    instances, almost all of it is irreducible: scoring nodes by the root/non-root split *alone*, with every
+    non-root tied, already yields 0.80. A node with no parents has zero variance explained by its parents by
+    definition, so no generation scheme avoids that - and it is not a simulation artifact either. Real
+    exogenous variables genuinely have low R^2 given the other measured variables, and recovering that is
+    ordinary causal discovery (what a CI test does), not a shortcut. Only the remainder is an artifact of this
+    parameterization: UUMC draws each node's signal share as ``r = U(0,1)^(1/d)``, so ``E[R^2] = d/(d+2)``
+    rises with parent count, and parent count rises toward the outcome sink. Drawing R^2 independent of parent
+    count was measured to move 0.89 -> 0.79, i.e. it buys ~0.09 while leaving the legitimate 0.80 untouched -
+    not worth replacing a published, verified parameterization and invalidating every dataset built so far.
+    So: not gated (the pattern is structural, not a bad draw), reported so it stays visible, and deliberately
+    *not* treated as the peer of varsortability - that one was ~all artifact and fully removable, this one is
+    mostly real structure. Whether the artifactual remainder is exploitable *for this task* - ranking effects
+    and choosing adjustment sets, not recovering a causal order - has not been measured.
+
+    Sample-derived fields are ``nan``/``False``/``None`` when structural gates fail and sampling is skipped.
 
     ``data`` is the *exact* table the oracle gate was validated against - not a recipe for reconstructing
     one (a seed + sample size that a caller must independently get right and keep in sync). A consumer
