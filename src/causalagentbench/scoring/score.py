@@ -1,13 +1,19 @@
 """Score an agent's answer against the true SCM.
 
-The task is: rank the candidate drivers by causal effect, give a valid adjustment set for each, and
-abstain instead of committing where the driver's role is genuinely undetermined. All metrics are computed
+The task is: estimate each candidate driver's total causal effect, give a valid adjustment set for each,
+and abstain instead of committing where the effect is genuinely not identified. All metrics are computed
 on the hidden SCM via ``key.label_to_node``, so the score is invariant to how the columns were named - the
 whole point of the naming axis.
 
-* ``ranking_tau`` - Kendall rank agreement between the agent's order and the true ``|effect|`` order (the
-  headline: a reasoner stays flat across naming alignment, a reciter degrades). Drivers correctly abstained
-  on are excluded from the comparison entirely - ``abstention_accuracy`` alone carries credit for those.
+* ``effect_accuracy`` - **the headline**, and the one metric no shortcut reaches. Measured on the
+  generator, blind policies (marginal correlation, adjust-for-everything) rank the drivers at tau 0.68-0.78
+  but estimate them 21-34% of a typical effect away, while correct adjustment recovers the truth exactly.
+  So an order is cheap and a number is not; ``scoring/gates.py::SHORTCUT_ERROR_THRESHOLD`` certifies that
+  gap per instance, and this measures the same quantity the same way.
+* ``ranking_tau`` - Kendall rank agreement between the agent's order and the true ``|effect|`` order. That
+  order is *derived* from the estimates (``task/answer.py::Answer``) rather than stated separately, so it
+  cannot be earned by ranking on raw correlation independently of them. Drivers correctly abstained on are
+  excluded from the comparison entirely - ``abstention_accuracy`` alone carries credit for those.
 * ``n_compared`` / ``ranking_tau_z`` - task-size context for ``ranking_tau`` and its standardized form.
   Raw tau isn't comparable across instances with different candidate counts (fewer candidates means a
   coarser achievable tau and higher variance under pure chance); ``n_compared`` is the actual candidate
@@ -19,13 +25,13 @@ whole point of the naming axis.
   ungraded - a wrong abstention scores as invalid, the same exclusion rule ``ranking_tau`` uses. Otherwise
   the denominator would be the agent's to choose, and abstaining would raise this score for free.
 * ``abstention_accuracy`` - fraction of drivers where the agent's abstain/commit choice matches the gold
-  rule (``_gold_abstain``): abstaining is correct iff the driver is genuinely unidentifiable from data
-  alone *and* its own displayed name isn't the aligned one (the collapsed v1 rule, `neutral` and
-  `misaligned` treated the same - see ``procedural_scaffold_plan.md`` §6).
+  rule (``_gold_abstain``): abstaining is correct iff the driver's effect is not point-identified from the
+  observational distribution. Naming plays no part - it cannot make a non-identified effect identified.
 
-``Quadrant``/``quadrant()`` classify a driver into one of §6's four naming-vs-identifiability cells;
-``_gold_abstain`` is just its "abstain is correct" cell - single source of truth, not two independently
-maintained checks of the same underlying fact.
+``Quadrant``/``quadrant()`` classify a driver into one of §6's four naming-vs-identifiability cells, and
+are now **reporting axes only**: no gold answer reads them. ``_gold_abstain`` used to be the
+``UNIDENTIFIABLE_NOT_ALIGNED`` cell, which made the same driver on the same data abstain-correct under one
+naming skin and abstain-wrong under another - a distinction no agent can draw from evidence.
 
 Three per-driver maps (``adjustment_valid``, ``abstention_correct``, ``ranking_pairs``) plus
 ``identifiable`` exist so results can be stratified *below* instance grain - an instance-level mean hides
@@ -48,6 +54,7 @@ from enum import Enum
 from typing import NamedTuple
 
 import networkx as nx
+import numpy as np
 
 from causalagentbench.scm.identifiability import unidentifiable_drivers
 from causalagentbench.scoring.metrics import kendall_tau, kendall_tau_zscore
@@ -83,6 +90,8 @@ class AnswerScore:
     n_compared: int  # candidates actually fed into ranking_tau (drivers minus correctly-abstained ones)
     ranking_tau_z: float | None  # ranking_tau standardized against chance at this n_compared; None if < 2
     ranking_pairs: Mapping[str, RankingPairs]  # per-driver pair counts; pooling them reproduces ranking_tau
+    effect_accuracy: float  # 1 - mean normalized estimation error over graded drivers; the causal-load metric
+    effect_error: Mapping[str, float | None]  # per-driver error on [0, 1]; None only if abstaining was correct
     adjustment_accuracy: float  # fraction of graded (non-abstained) drivers with a valid backdoor set
     adjustment_valid: Mapping[str, bool | None]  # per-driver validity; None only if abstaining was correct
     abstention_accuracy: float  # fraction of drivers whose abstain/commit choice matches the gold rule
@@ -118,8 +127,12 @@ def quadrant(key: InstanceKey, driver: str) -> Quadrant:
 
     Identifiable iff not in ``unidentifiable_drivers`` (topology alone, discovered not declared - §4/§11).
     Aligned iff ``driver``'s own displayed name is the "aligned" kind (``node_kind``, §6/§7); neutral and
-    misaligned both collapse into "not aligned" for v1 (the collapsed rule already used for abstain scoring,
-    procedural_scaffold_plan.md §6) - single source of truth for that collapse, not duplicated logic.
+    misaligned both collapse into "not aligned" for v1.
+
+    **Reporting only** - no gold answer depends on this. ``_gold_abstain`` used to read its
+    ``UNIDENTIFIABLE_NOT_ALIGNED`` cell, which is exactly the coupling that made naming decide an
+    unanswerable call; it now reads identifiability directly. Kept because the four cells remain the right
+    axes to *stratify results by* once naming is a manipulation rather than part of the answer key.
     """
     identifiable = driver not in unidentifiable_drivers(key.scm.scaffold)
     aligned = key.provenance.node_kind.get(driver) == "aligned"
@@ -129,8 +142,21 @@ def quadrant(key: InstanceKey, driver: str) -> Quadrant:
 
 
 def _gold_abstain(key: InstanceKey, driver: str) -> bool:
-    """True iff abstaining on ``driver`` is the correct call - the "abstain is correct" cell of `quadrant`."""
-    return quadrant(key, driver) == Quadrant.UNIDENTIFIABLE_NOT_ALIGNED
+    """True iff abstaining on ``driver`` is the correct call: its effect is not point-identified.
+
+    Naming plays no part. The previous rule made abstaining correct only in `quadrant`'s
+    ``UNIDENTIFIABLE_NOT_ALIGNED`` cell, so the *same driver on the same data* had opposite gold under two
+    naming skins - and nothing inside an instance tells the agent which skin it is looking at, since aligned
+    and misaligned names are equally plausible on their face. That made the call unanswerable from evidence:
+    the expected-optimal policy is identical in both conditions, so any rule demanding different behavior
+    scores luck. Measured consequence on a live run: one model abstained on 16 of 17 drivers under neutral
+    names and 0 of 17 under name-blind ones, a mode switch that dominated every metric averaged over it.
+
+    An unoriented confounder edge means two DAGs fit the observational distribution equally well, so the
+    effect genuinely has no point identification - "not identified" is the honest answer, it is derivable
+    from the data alone, and it is the same answer whatever the columns are called.
+    """
+    return driver in unidentifiable_drivers(key.scm.scaffold)
 
 
 def _identifiable_drivers(key: InstanceKey) -> Mapping[str, bool]:
@@ -148,6 +174,52 @@ def _verdict_for(answer: Answer, key: InstanceKey, driver: str) -> DriverVerdict
     """The agent's verdict for ``driver`` (by its display label), or ``None`` if it gave none."""
     label = key.node_to_label[driver]
     return next((v for v in answer.verdicts if v.driver == label), None)
+
+
+def _estimate(verdict: DriverVerdict | None) -> float:
+    """``verdict``'s signed effect estimate, treating "no number given" as an estimate of zero.
+
+    An abstention or a missing verdict is a refusal to commit to a magnitude, and zero is what that refusal
+    asserts: no detectable effect. Scoring it as such keeps both the ranking and the error metric defined for
+    every driver without inventing a value.
+
+    Signed, because the error metric must be: reporting +0.3 where the truth is -0.3 is a wrong answer, not a
+    right one, and ``scoring/gates.py`` measures its blind policies the same way. The ranking takes the
+    magnitude of this separately, since the task ranks by effect size.
+    """
+    if verdict is None or verdict.effect is None:
+        return 0.0
+    return verdict.effect
+
+
+def _effect_scale(key: InstanceKey) -> float:
+    """The instance's own effect magnitude, used to make estimation error comparable across instances.
+
+    Median |true effect| over the candidate drivers, matching ``scoring/gates.py``'s normalization exactly so
+    the gate's causal-load certificate ("no blind policy gets within 15%") and the score measure one
+    quantity. Effects shrink as ``1/sqrt(N)`` against the outcome's fixed variance budget, so an absolute
+    error would mean something different at every driver count. Falls back to 1.0 on a degenerate all-decoy
+    instance, which the gates already reject, rather than dividing by zero.
+    """
+    magnitudes = [abs(key.scm.total_effect_on_outcome(d)) for d in key.scm.scaffold.drivers]
+    scale = float(np.median(magnitudes)) if magnitudes else 0.0
+    return scale if scale > 0.0 else 1.0
+
+
+def _effect_error(answer: Answer, key: InstanceKey, driver: str, scale: float) -> float | None:
+    """Normalized estimation error for ``driver``; ``None`` only when abstaining was the *correct* call.
+
+    On ``[0, 1]``: ``|estimate - true| / scale``, clipped at 1. Clipped so one absurd number cannot swamp an
+    instance's mean, and so the ceiling has a meaning - 1.0 is "no better than asserting no effect", which is
+    exactly what a missing estimate scores. Ungraded is reserved for a correct abstention, the same exclusion
+    rule ``_adjustment_valid`` and ``_ranking_tau`` use: where the effect is not point-identified there is no
+    true value to have hit, but a *wrong* abstention is still a failure to estimate, not an exemption.
+    """
+    verdict = _verdict_for(answer, key, driver)
+    if verdict is not None and verdict.abstain and _gold_abstain(key, driver):
+        return None
+    error = abs(_estimate(verdict) - key.scm.total_effect_on_outcome(driver)) / scale
+    return min(error, 1.0)
 
 
 def _ranking_tau(answer: Answer, key: InstanceKey) -> tuple[float, int, Mapping[str, RankingPairs]]:
@@ -176,9 +248,14 @@ def _ranking_tau(answer: Answer, key: InstanceKey) -> tuple[float, int, Mapping[
     """
     drivers = key.scm.scaffold.drivers
     empty = dict.fromkeys(drivers, RankingPairs(0, 0))
-    agent_nodes = [key.label_to_node.get(label) for label in answer.ranking]
-    if len(agent_nodes) != len(drivers) or set(agent_nodes) != set(drivers):
-        return 0.0, len(drivers), empty  # not a well-formed ranking of exactly the candidate drivers
+    verdicts = {d: _verdict_for(answer, key, d) for d in drivers}
+    if any(verdict is None for verdict in verdicts.values()):
+        return 0.0, len(drivers), empty  # a candidate with no verdict has no estimate, so no position
+    # Derived from the estimates, not stated separately (`task/answer.py::Answer`): ranking credit is then
+    # only reachable through the estimates. `sorted` is stable, so drivers the agent estimated equally keep
+    # canonical scaffold order rather than an arbitrary one - deterministic, and true-side ties are counted
+    # for neither side below regardless.
+    agent_nodes = sorted(drivers, key=lambda d: -abs(_estimate(verdicts[d])))
     correctly_abstained = {
         d for d in drivers if (v := _verdict_for(answer, key, d)) is not None and v.abstain and _gold_abstain(key, d)
     }
@@ -242,6 +319,9 @@ def _abstention_correct(answer: Answer, key: InstanceKey, driver: str) -> bool:
 def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
     """Score a parsed ``answer`` against the true SCM in ``key``."""
     drivers = key.scm.scaffold.drivers
+    scale = _effect_scale(key)
+    errors = {driver: _effect_error(answer, key, driver, scale) for driver in drivers}
+    graded_errors = [e for e in errors.values() if e is not None]
     valid = {driver: _adjustment_valid(answer, key, driver) for driver in drivers}
     graded = [v for v in valid.values() if v is not None]
     # Every driver abstained on: nothing to grade, not a failure - vacuously accurate, same convention
@@ -255,6 +335,9 @@ def score_answer(answer: Answer, key: InstanceKey) -> AnswerScore:
         n_compared=n_compared,
         ranking_tau_z=kendall_tau_zscore(ranking_tau, n_compared),
         ranking_pairs=ranking_pairs,
+        # Same vacuous-when-nothing-graded convention as `adjustment_accuracy` above.
+        effect_accuracy=1.0 - sum(graded_errors) / len(graded_errors) if graded_errors else 1.0,
+        effect_error=errors,
         adjustment_accuracy=adjustment_accuracy,
         adjustment_valid=valid,
         abstention_accuracy=sum(abstention_correct.values()) / len(abstention_correct),
@@ -285,6 +368,10 @@ def score_output(text: str, key: InstanceKey) -> AnswerScore:
             # invent data. Consequence: parse failures are absent from pooled per-driver ranking tallies
             # while still dragging the instance-level mean tau toward 0; `parse_rate` is where to see them.
             ranking_pairs=dict.fromkeys(drivers, RankingPairs(0, 0)),
+            # No estimate was produced for any driver, which the metric already has a meaning for: maximum
+            # error, the same score an explicit "no effect" would get.
+            effect_accuracy=0.0,
+            effect_error=dict.fromkeys(drivers, 1.0),
             adjustment_accuracy=0.0,
             adjustment_valid=dict.fromkeys(drivers, False),
             abstention_accuracy=0.0,

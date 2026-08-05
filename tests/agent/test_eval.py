@@ -25,15 +25,20 @@ class _FixedReplyClient:
 
 
 def _perfect_answer_text(key: InstanceKey) -> str:
-    """A well-formed answer that matches gold exactly (true ranking, gold adjustment sets)."""
+    """A well-formed answer that matches gold exactly (true effects, gold adjustment sets).
+
+    The true effects also derive the true ranking, so one set of numbers makes this perfect on both.
+    """
     label = dict(key.node_to_label)
-    nodes = key.scm.true_ranking()
     verdicts = [
-        {"driver": label[node], "adjustment_set": [label[z] for z in key.scm.scaffold.correct_adjustment.get(node, ())]}
-        for node in nodes
+        {
+            "driver": label[node],
+            "adjustment_set": [label[z] for z in key.scm.scaffold.correct_adjustment.get(node, ())],
+            "effect": key.scm.total_effect_on_outcome(node),
+        }
+        for node in key.scm.true_ranking()
     ]
-    ranking = [label[node] for node in nodes]
-    return f"<answer>{json.dumps({'verdicts': verdicts, 'ranking': ranking})}</answer>"
+    return f"<answer>{json.dumps({'verdicts': verdicts})}</answer>"
 
 
 class _RaisesOnFirstCallClient:
@@ -106,14 +111,25 @@ def test_aggregate_computes_means_correctly():
 # (the real pipeline ties "aligned" to alignment > 0, and abstract labels always give alignment=None).
 
 
-def _score(alignment: float | None, drivers: dict[str, tuple[bool, bool | None, bool, RankingPairs]]) -> AnswerScore:
-    """One score from ``{driver: (identifiable, adjustment_valid, abstention_correct, pairs)}``."""
+def _score(alignment: float | None, drivers: dict[str, tuple]) -> AnswerScore:
+    """One score from ``{driver: (identifiable, adjustment_valid, abstention_correct, pairs[, effect_error])}``.
+
+    ``effect_error`` is optional and defaults to mirroring ``adjustment_valid``'s graded/ungraded state,
+    which is the invariant ``score_answer`` maintains: both are ``None`` exactly when abstaining was correct,
+    so both share ``n_graded`` as their denominator.
+    """
+
+    def error(v: tuple) -> float | None:
+        return v[4] if len(v) > 4 else (None if v[1] is None else 0.0)
+
     return AnswerScore(
         parse_ok=True,
         ranking_tau=0.0,
         n_compared=len(drivers),
         ranking_tau_z=None,
         ranking_pairs={d: v[3] for d, v in drivers.items()},
+        effect_accuracy=0.0,
+        effect_error={d: error(v) for d, v in drivers.items()},
         adjustment_accuracy=0.0,
         adjustment_valid={d: v[1] for d, v in drivers.items()},
         abstention_accuracy=0.0,
@@ -121,6 +137,26 @@ def _score(alignment: float | None, drivers: dict[str, tuple[bool, bool | None, 
         identifiable={d: v[0] for d, v in drivers.items()},
         alignment=alignment,
     )
+
+
+def test_driver_cells_pool_effect_error_over_the_same_graded_denominator():
+    """The estimation metric is the shortcut-resistant one, so it must pool per driver like the others."""
+    scores = [
+        _score(
+            0.0,
+            {
+                "a": (True, True, True, RankingPairs(0, 0), 0.25),
+                "b": (True, True, True, RankingPairs(0, 0), 0.75),
+            },
+        ),
+        # A correctly-abstained driver is ungraded on estimation exactly as it is on adjustment.
+        _score(0.0, {"c": (False, None, True, RankingPairs(0, 0), None)}),
+    ]
+    identifiable, unidentifiable = aggregate_by_driver_cell(scores)
+    assert identifiable.n_graded == 2
+    assert identifiable.mean_effect_accuracy == 1.0 - 0.5  # (0.25 + 0.75) / 2
+    assert unidentifiable.n_graded == 0
+    assert unidentifiable.mean_effect_accuracy == 1.0  # vacuous, matching the adjustment convention
 
 
 def test_driver_cells_split_identifiable_from_unidentifiable_within_each_alignment():

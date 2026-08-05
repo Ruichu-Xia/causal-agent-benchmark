@@ -42,19 +42,33 @@ def _instance() -> tuple[InstanceKey, dict[str, str]]:
     return key, dict(key.node_to_label)  # node -> label
 
 
-def _verdict(label: dict[str, str], node: str, adjust: tuple[str, ...] = ()) -> DriverVerdict:
-    return DriverVerdict(driver=label[node], adjustment_set=tuple(label[z] for z in adjust))
+def _verdict(label: dict[str, str], node: str, adjust: tuple[str, ...] = (), effect: float = 0.0) -> DriverVerdict:
+    return DriverVerdict(driver=label[node], adjustment_set=tuple(label[z] for z in adjust), effect=effect)
 
 
 def _abstain(label: dict[str, str], node: str) -> DriverVerdict:
     return DriverVerdict(driver=label[node], adjustment_set=(), abstain=True)
 
 
+def _ordered(label: dict[str, str], nodes: tuple[str, ...]) -> Answer:
+    """Verdicts whose estimates place ``nodes`` in exactly that order, strongest first.
+
+    The ranking is derived from the estimates now (``task/answer.py::Answer``), so a test that wants a
+    particular order states it as decreasing magnitudes rather than as a separate ranking field.
+    """
+    return Answer(verdicts=tuple(_verdict(label, node, effect=1.0 - i / 10) for i, node in enumerate(nodes)))
+
+
 def _perfect(key: InstanceKey, label: dict[str, str]) -> Answer:
-    # True order in labels, and each driver's gold adjustment (A<-C so {C}; B exogenous so {}; Dz via C).
-    ranking = tuple(label[node] for node in key.scm.true_ranking())
-    verdicts = (_verdict(label, "A", ("C",)), _verdict(label, "B"), _verdict(label, "Dz", ("C",)))
-    return Answer(verdicts=verdicts, ranking=ranking)
+    # Each driver's true effect and its gold adjustment (A<-C so {C}; B exogenous so {}; Dz via C). The true
+    # effects also derive the true order, so this is simultaneously a perfect ranking and perfect estimates.
+    return Answer(
+        verdicts=(
+            _verdict(label, "A", ("C",), key.scm.total_effect_on_outcome("A")),
+            _verdict(label, "B", (), key.scm.total_effect_on_outcome("B")),
+            _verdict(label, "Dz", ("C",), key.scm.total_effect_on_outcome("Dz")),
+        )
+    )
 
 
 def test_perfect_answer_scores_one():
@@ -63,6 +77,9 @@ def test_perfect_answer_scores_one():
     assert score.ranking_tau == 1.0
     assert score.adjustment_accuracy == 1.0
     assert all(score.adjustment_valid.values())
+    # Exact true effects were reported, so there is no estimation error anywhere.
+    assert score.effect_accuracy == 1.0
+    assert set(score.effect_error.values()) == {0.0}
     # n_compared is the candidate count actually behind ranking_tau (all 3: A, B, Dz - nothing abstained).
     assert score.n_compared == 3
     assert score.ranking_tau_z == kendall_tau_zscore(1.0, 3)
@@ -70,9 +87,30 @@ def test_perfect_answer_scores_one():
 
 def test_reversed_ranking_scores_minus_one():
     key, label = _instance()
-    answer = _perfect(key, label)
-    reversed_ranking = tuple(reversed(answer.ranking))
-    assert score_answer(Answer(verdicts=answer.verdicts, ranking=reversed_ranking), key).ranking_tau == -1.0
+    reversed_order = tuple(reversed(key.scm.true_ranking()))
+    assert score_answer(_ordered(label, reversed_order), key).ranking_tau == -1.0
+
+
+def test_estimating_no_effect_anywhere_scores_zero_effect_accuracy():
+    """The metric's ceiling has a meaning: 1.0 error is "no better than asserting no effect"."""
+    key, label = _instance()
+    score = score_answer(Answer(verdicts=tuple(_verdict(label, n) for n in ("A", "B", "Dz"))), key)
+    # Dz's true effect really is 0, so a zero estimate is exactly right there and costs nothing.
+    assert score.effect_error["Dz"] == 0.0
+    # A and B carry real effects; estimating zero is the maximum penalty the clip allows for the median
+    # driver, and A is the fixture's strongest so its raw error exceeds the scale outright.
+    assert score.effect_error["A"] == 1.0
+    assert 0.0 < score.effect_accuracy < 1.0
+
+
+def test_a_sign_error_is_scored_as_an_error_not_a_success():
+    """Ranking reads magnitude, but estimation must not: +0.3 where the truth is -0.3 is a wrong answer."""
+    key, label = _instance()
+    flipped = tuple(_verdict(label, n, effect=-key.scm.total_effect_on_outcome(n)) for n in ("A", "B", "Dz"))
+    score = score_answer(Answer(verdicts=flipped), key)
+    assert score.ranking_tau == 1.0  # magnitudes are unchanged, so the derived order is still perfect
+    assert score.effect_error["A"] > 0.0
+    assert score.effect_accuracy < 1.0
 
 
 def test_backdoor_validity_accepts_supersets_rejects_bad_sets():
@@ -80,7 +118,7 @@ def test_backdoor_validity_accepts_supersets_rejects_bad_sets():
 
     # A's valid backdoor set is {C}; {C, B} is also valid (superset); {} and {M} (a mediator) are not.
     def acc(node, adjust):
-        answer = Answer(verdicts=(_verdict(label, node, adjust),), ranking=())
+        answer = Answer(verdicts=(_verdict(label, node, adjust),))
         return score_answer(answer, key).adjustment_valid[node]
 
     assert acc("A", ("C",)) is True
@@ -92,13 +130,13 @@ def test_backdoor_validity_accepts_supersets_rejects_bad_sets():
 
 def test_unknown_adjustment_column_is_invalid():
     key, label = _instance()
-    answer = Answer(verdicts=(DriverVerdict(driver=label["A"], adjustment_set=("nope",)),), ranking=())
+    answer = Answer(verdicts=(DriverVerdict(driver=label["A"], adjustment_set=("nope",), effect=0.1),))
     assert score_answer(answer, key).adjustment_valid["A"] is False
 
 
 def test_malformed_ranking_scores_zero():
     key, label = _instance()
-    partial = Answer(verdicts=(), ranking=(label["A"],))  # omits B and Dz
+    partial = Answer(verdicts=(_verdict(label, "A"),))  # omits B and Dz
     score = score_answer(partial, key)
     assert score.ranking_tau == 0.0
     # Nothing was actually compared (the ranking itself is invalid) - n_compared falls back to every
@@ -120,7 +158,7 @@ def test_parse_failure_state():
 
 def test_incomplete_but_json_shaped_answer_is_a_parse_failure():
     key, _ = _instance()
-    score = score_output('<answer>{"verdicts": [], "ranking": []}</answer>', key)
+    score = score_output('<answer>{"verdicts": []}</answer>', key)
 
     assert score.parse_ok is False
 
@@ -131,11 +169,13 @@ def test_alignment_is_carried_through():
     assert score_answer(_perfect(key, label), key).alignment is None
 
 
-def test_gold_abstain_flips_with_the_drivers_own_naming():
-    """The core §6/§7 distinction.
+def test_gold_abstain_ignores_naming_entirely():
+    """A name cannot make a non-identified effect identified, so it must not move the gold.
 
-    The same unidentifiable driver (A) is abstain-correct when naming doesn't resolve it, but not when
-    its own displayed name happens to be the aligned one.
+    This pinned the opposite before. Under the old rule the same unidentifiable driver on the same data was
+    abstain-correct under neutral names and abstain-*wrong* under aligned ones - but nothing inside an
+    instance distinguishes an aligned skin from a misaligned one, so the agent could only guess. Measured
+    consequence: one model abstained on 16 of 17 drivers under neutral names and 0 of 17 under name-blind.
     """
     scm = generate(0, _SCAFFOLD)
     neutral_kind = dict.fromkeys(scm.scaffold.node_names, "neutral")
@@ -147,15 +187,16 @@ def test_gold_abstain_flips_with_the_drivers_own_naming():
         )
         return InstanceKey(scm=scm, label_to_node={}, node_to_label={}, provenance=provenance)
 
-    assert _gold_abstain(key_with(neutral_kind), "A") is True  # unidentifiable, naming doesn't resolve it
-    assert _gold_abstain(key_with(aligned_a_kind), "A") is False  # same driver, now its own name IS aligned
+    # A is unidentifiable either way, so abstaining is correct either way - the naming is irrelevant.
+    assert _gold_abstain(key_with(neutral_kind), "A") is True
+    assert _gold_abstain(key_with(aligned_a_kind), "A") is True
 
 
 def test_quadrant_covers_all_four_cells():
-    """`_gold_abstain` is just `quadrant`'s "abstain is correct" cell (§11.4).
+    """`quadrant` survives as a *reporting* axis, no longer as the source of any gold answer.
 
     Directly verify all four cells classify as §6's table says, using the fixture's known-unidentifiable A
-    and known-identifiable B.
+    and known-identifiable B. `_gold_abstain` no longer reads any of them - see the naming test above.
     """
     scm = generate(0, _SCAFFOLD)
     neutral_kind = dict.fromkeys(scm.scaffold.node_names, "neutral")
@@ -197,13 +238,18 @@ def test_pooling_per_driver_pairs_reproduces_ranking_tau_exactly():
     Exact equality, not approx: both sides are the same small-integer ratio, so any gap is a real bug.
     """
     key, label = _instance()
-    ranking = tuple(label[node] for node in key.scm.true_ranking())
-    reversed_ranking = tuple(reversed(ranking))
+    effect = key.scm.total_effect_on_outcome
     answers = [
         _perfect(key, label),  # fully concordant
-        Answer(verdicts=_perfect(key, label).verdicts, ranking=reversed_ranking),  # fully discordant
+        _ordered(label, tuple(reversed(key.scm.true_ranking()))),  # fully discordant
         # One driver correctly abstained - it leaves the comparison, so its pairs must vanish from both sides.
-        Answer(verdicts=(_verdict(label, "A", ("C",)), _verdict(label, "B"), _abstain(label, "Dz")), ranking=ranking),
+        Answer(
+            verdicts=(
+                _verdict(label, "A", ("C",), effect("A")),
+                _verdict(label, "B", (), effect("B")),
+                _abstain(label, "Dz"),
+            )
+        ),
     ]
     for answer in answers:
         score = score_answer(answer, key)
@@ -212,9 +258,13 @@ def test_pooling_per_driver_pairs_reproduces_ranking_tau_exactly():
 
 def test_drivers_outside_the_comparison_carry_no_ranking_pairs():
     key, label = _instance()
-    ranking = tuple(label[node] for node in key.scm.true_ranking())
-    verdicts = (_verdict(label, "A", ("C",)), _verdict(label, "B"), _abstain(label, "Dz"))
-    score = score_answer(Answer(verdicts=verdicts, ranking=ranking), key)
+    effect = key.scm.total_effect_on_outcome
+    verdicts = (
+        _verdict(label, "A", ("C",), effect("A")),
+        _verdict(label, "B", (), effect("B")),
+        _abstain(label, "Dz"),
+    )
+    score = score_answer(Answer(verdicts=verdicts), key)
 
     # Dz abstained correctly, so it is dropped from the comparison - contributing to neither side of a
     # pooled ratio, rather than being scored as if it had been ranked wrongly.
@@ -254,9 +304,12 @@ def test_parse_failure_still_records_identifiability_and_a_consistent_key_space(
 
 def test_correctly_abstaining_on_every_unidentifiable_driver_scores_full_credit():
     key, label = _instance()
-    ranking = tuple(label[node] for node in key.scm.true_ranking())  # abstained drivers still get a slot
-    verdicts = (_abstain(label, "A"), _verdict(label, "B"), _abstain(label, "Dz"))
-    score = score_answer(Answer(verdicts=verdicts, ranking=ranking), key)
+    verdicts = (
+        _abstain(label, "A"),
+        _verdict(label, "B", (), key.scm.total_effect_on_outcome("B")),
+        _abstain(label, "Dz"),
+    )
+    score = score_answer(Answer(verdicts=verdicts), key)
 
     assert score.abstention_accuracy == 1.0
     # A and Dz excluded from the pairwise comparison entirely - only B is left, vacuously perfect.
@@ -288,24 +341,30 @@ def test_wrongly_abstaining_on_an_identifiable_driver_is_graded_not_excluded():
     # B - exogenous, never ambiguous - wrongly abstains. If a bug excluded *any* abstained driver (not just
     # correct ones), B would drop out too, leaving only A - too few items for kendall_tau to catch the
     # swap below.
-    verdicts = (_verdict(label, "A", ("C",)), _abstain(label, "B"), _abstain(label, "Dz"))
-    swapped_ranking = tuple(label[node] for node in ("B", "A", "Dz"))  # A and B reversed vs. true order
-    score = score_answer(Answer(verdicts=verdicts, ranking=swapped_ranking), key)
+    verdicts = (
+        _verdict(label, "A", ("C",), key.scm.total_effect_on_outcome("A")),
+        _abstain(label, "B"),
+        _abstain(label, "Dz"),
+    )
+    score = score_answer(Answer(verdicts=verdicts), key)
 
     assert score.abstention_accuracy == 1 / 3  # only Dz's abstention call is correct
-    # Both metrics now use the same exclusion rule - only a *correct* abstention is exempt. B is
-    # identifiable, so declining to answer is a failed adjustment, not an ungraded one.
+    # All three metrics now use the same exclusion rule - only a *correct* abstention is exempt. B is
+    # identifiable, so declining to answer is a failed adjustment and a failed estimate, not an ungraded one.
     assert score.adjustment_valid["B"] is False
     assert score.adjustment_accuracy == 1 / 2  # A valid, B failed; only Dz (correctly abstained) is exempt
-    # A and B are both still compared (B's wrong abstention doesn't exempt it) - reversed relative to the
-    # true order, so this must come out fully discordant, not the vacuous 1.0 a masked bug would give.
-    assert score.ranking_tau == -1.0
+    assert score.effect_error["B"] is not None  # graded on estimation too, at the "asserted no effect" cost
+    assert score.effect_error["Dz"] is None  # ...whereas the correct abstention genuinely is exempt
+    # A and B are both still compared. Only Dz leaves, so the comparison is over two drivers, not one -
+    # which is what a bug that exempted *every* abstention would produce.
+    assert score.n_compared == 2
+    assert score.ranking_pairs["B"] == RankingPairs(1, 0)
 
 
 def test_missing_verdict_scores_no_abstention_credit():
     key, label = _instance()
     # A and Dz correctly abstained; B has no verdict at all (not "correctly didn't abstain").
-    answer = Answer(verdicts=(_abstain(label, "A"), _abstain(label, "Dz")), ranking=())
+    answer = Answer(verdicts=(_abstain(label, "A"), _abstain(label, "Dz")))
     score = score_answer(answer, key)
     assert score.abstention_accuracy == 2 / 3  # A, Dz correct; B (missing) is not
     assert score.abstention_correct == {"A": True, "B": False, "Dz": True}
@@ -325,7 +384,7 @@ def test_abstaining_on_everything_cannot_buy_adjustment_accuracy():
     """
     key, label = _instance()
     verdicts = tuple(_abstain(label, node) for node in ("A", "B", "Dz"))
-    score = score_answer(Answer(verdicts=verdicts, ranking=()), key)
+    score = score_answer(Answer(verdicts=verdicts), key)
     assert score.adjustment_valid["A"] is None  # correctly abstained - genuinely unanswerable, so ungraded
     assert score.adjustment_valid["Dz"] is None
     assert score.adjustment_valid["B"] is False  # wrongly abstained - graded, and failed
@@ -343,9 +402,7 @@ def test_ranking_tau_does_not_penalize_order_between_exactly_tied_decoys():
     data = sample(scm, 64, seed=5)
     _, key = build_instance(scm, data, seed=5)
     label = dict(key.node_to_label)
-    verdicts = tuple(_verdict(label, node) for node in ("A0", "A1", "A2", "Dz0", "Dz1"))
-
-    dz0_first = Answer(verdicts=verdicts, ranking=tuple(label[n] for n in ("A1", "A0", "A2", "Dz0", "Dz1")))
-    dz1_first = Answer(verdicts=verdicts, ranking=tuple(label[n] for n in ("A1", "A0", "A2", "Dz1", "Dz0")))
+    dz0_first = _ordered(label, ("A1", "A0", "A2", "Dz0", "Dz1"))
+    dz1_first = _ordered(label, ("A1", "A0", "A2", "Dz1", "Dz0"))
 
     assert score_answer(dz0_first, key).ranking_tau == score_answer(dz1_first, key).ranking_tau == 1.0

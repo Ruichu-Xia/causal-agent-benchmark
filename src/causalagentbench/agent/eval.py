@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from causalagentbench.agent.loop import MAX_TURNS, ToolCallingClient, TurnTrace, TurnTranscript, run_agent
 from causalagentbench.scoring.score import AnswerScore, RankingPairs, score_output
@@ -135,21 +136,34 @@ class DriverCellSummary:
     identifiable: bool
     alignment: float | None
     n: int  # driver observations in this cell, NOT instances
-    n_graded: int  # of those, the ones graded on adjustment (the rest were abstained on)
+    n_graded: int  # of those, the ones graded (the rest were correctly abstained on)
+    mean_effect_accuracy: float  # 1 - mean normalized estimation error; the shortcut-resistant metric
     mean_adjustment_accuracy: float
     mean_abstention_accuracy: float
     n_ranking_pairs: int  # non-tied comparisons involving a driver in this cell
     ranking_tau: float  # pooled (concordant - discordant) / (concordant + discordant) over those pairs
 
 
-def _driver_cell_summary(
-    cell: tuple[bool, float | None], group: list[tuple[bool | None, bool, RankingPairs]]
-) -> DriverCellSummary:
-    """Summarize one cell's ``(adjustment_valid, abstention_correct, ranking_pairs)`` observations."""
+class _DriverObservation(NamedTuple):
+    """One driver's contribution to a cell.
+
+    ``adjustment_valid`` and ``effect_error`` are both ``None`` exactly when abstaining was correct, so
+    ``n_graded`` is the denominator for both.
+    """
+
+    adjustment_valid: bool | None
+    abstention_correct: bool
+    ranking_pairs: RankingPairs
+    effect_error: float | None
+
+
+def _driver_cell_summary(cell: tuple[bool, float | None], group: list[_DriverObservation]) -> DriverCellSummary:
+    """Summarize one cell's per-driver observations."""
     identifiable, alignment = cell
-    graded = [valid for valid, _, _ in group if valid is not None]
-    concordant = sum(pairs.concordant for _, _, pairs in group)
-    discordant = sum(pairs.discordant for _, _, pairs in group)
+    graded = [o.adjustment_valid for o in group if o.adjustment_valid is not None]
+    errors = [o.effect_error for o in group if o.effect_error is not None]
+    concordant = sum(o.ranking_pairs.concordant for o in group)
+    discordant = sum(o.ranking_pairs.discordant for o in group)
     decided = concordant + discordant
     return DriverCellSummary(
         identifiable=identifiable,
@@ -158,8 +172,9 @@ def _driver_cell_summary(
         n_graded=len(graded),
         # Nothing to grade is vacuously accurate, the convention score_answer and kendall_tau both already
         # use for an empty comparison - not a zero, which would read as a failure the agent never had.
+        mean_effect_accuracy=1.0 - sum(errors) / len(errors) if errors else 1.0,
         mean_adjustment_accuracy=sum(graded) / len(graded) if graded else 1.0,
-        mean_abstention_accuracy=sum(correct for _, correct, _ in group) / len(group),
+        mean_abstention_accuracy=sum(o.abstention_correct for o in group) / len(group),
         n_ranking_pairs=decided,
         ranking_tau=(concordant - discordant) / decided if decided else 1.0,
     )
@@ -167,11 +182,16 @@ def _driver_cell_summary(
 
 def aggregate_by_driver_cell(scores: list[AnswerScore]) -> list[DriverCellSummary]:
     """Group every driver observation by (identifiability, alignment); identifiable first, name-blind last."""
-    groups: dict[tuple[bool, float | None], list[tuple[bool | None, bool, RankingPairs]]] = {}
+    groups: dict[tuple[bool, float | None], list[_DriverObservation]] = {}
     for score in scores:
         for driver, identifiable in score.identifiable.items():
             groups.setdefault((identifiable, score.alignment), []).append(
-                (score.adjustment_valid[driver], score.abstention_correct[driver], score.ranking_pairs[driver])
+                _DriverObservation(
+                    score.adjustment_valid[driver],
+                    score.abstention_correct[driver],
+                    score.ranking_pairs[driver],
+                    score.effect_error[driver],
+                )
             )
 
     summaries = [_driver_cell_summary(cell, group) for cell, group in groups.items()]

@@ -23,6 +23,18 @@ class BuildConfig(BaseModel):
     critic_model: str | None = None  # correctness critic (None skips it); same or a different model
     max_revisions: int = Field(default=2, ge=0)  # propose->critique->revise iterations before skipping
     n_scms: int = Field(default=20, gt=0)  # base SCM seeds; each yields all grid levels (+ name-blind)
+    n_drivers: int | None = Field(default=8, ge=2)
+    """Non-decoy driver count, fixed for every instance in the build.
+
+    A build knob rather than a code default because it is a property *of the produced set*: task size is
+    not comparable across instances (ranking agreement at 3 candidates is a much coarser, noisier quantity
+    than at 9), so a set that mixes sizes cannot be pooled without stratifying. Pinning it makes the
+    committed config fully describe the set, which is the reason this file exists.
+
+    ``8`` is the top of ``DRIVER_COUNT_RANGE`` and the largest count the gates still accept affordably
+    (16.4%, vs 8.6% at 9 and 4.8% at 10 - see ``variance_budget_plan.md`` §6 for why that ceiling exists
+    and what raising it is coupled to). ``None`` restores the free per-seed draw, which is fine for a smoke
+    probe but should not be used for a set anything is measured on."""
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> BuildConfig:

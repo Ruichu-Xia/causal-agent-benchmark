@@ -93,18 +93,19 @@ The dataset also contains other columns; it is part of the task to work out what
 
 For each candidate driver, decide which columns form a valid adjustment set for estimating its total
 causal effect on the outcome (some candidates may have little or no causal effect; the adjustment set may
-be empty). Then rank all candidate drivers from strongest to weakest causal effect.
+be empty), then report "effect": your estimate of that total causal effect, as a number. Because every
+column is standardized, this is the expected change in the outcome, in standard deviations, per one
+standard deviation increase in the driver. The drivers are ranked by the size of these estimates, so their
+relative magnitudes matter as well as each one's accuracy.
 
 Some drivers may be impossible to resolve from this data alone - two different underlying explanations
-could fit the same observations equally well. When that happens for a driver, set "abstain": true instead
-of guessing; still give it your best-guess position in the ranking, since a wrong committed answer is
-worse than an honest abstention.
+could fit the same observations equally well. When that happens for a driver, set "abstain": true and omit
+"effect", since a wrong committed answer is worse than an honest abstention.
 
 Work through the problem step by step, inspecting the data as needed. When your analysis is complete,
 give your final answer as JSON inside a single <answer>...</answer> block, with this shape:
 <answer>
-{{"verdicts": [{{"driver": "<name>", "adjustment_set": ["<column>"], "abstain": false}}],
- "ranking": ["<driver>", "..."]}}
+{{"verdicts": [{{"driver": "<name>", "adjustment_set": ["<column>"], "effect": 0.0, "abstain": false}}]}}
 </answer>
 Only the content of the last <answer> block is scored, so it must reflect your final conclusions."""
 

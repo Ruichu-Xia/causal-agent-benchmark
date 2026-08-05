@@ -22,8 +22,11 @@ def _instance():
 
 
 def _valid_answer(instance) -> str:
-    verdicts = [{"driver": driver, "adjustment_set": [], "abstain": False} for driver in instance.candidate_drivers]
-    return f"<answer>{json.dumps({'verdicts': verdicts, 'ranking': list(instance.candidate_drivers)})}</answer>"
+    verdicts = [
+        {"driver": driver, "adjustment_set": [], "effect": 0.0, "abstain": False}
+        for driver in instance.candidate_drivers
+    ]
+    return f"<answer>{json.dumps({'verdicts': verdicts})}</answer>"
 
 
 class _ScriptedClient:
@@ -153,9 +156,7 @@ def test_invalid_tool_free_reply_gets_one_tool_free_format_repair():
 def test_incomplete_json_answer_gets_a_format_repair():
     instance = _instance()
     answer = _valid_answer(instance)
-    client = _ScriptedClient(
-        [ModelTurn(content='<answer>{"verdicts": [], "ranking": []}</answer>'), ModelTurn(content=answer)]
-    )
+    client = _ScriptedClient([ModelTurn(content='<answer>{"verdicts": []}</answer>'), ModelTurn(content=answer)])
 
     assert run_agent(instance, client) == answer
     assert client.calls[1][0][-1] == {"role": "user", "content": _FORMAT_REPAIR_REMINDER}
