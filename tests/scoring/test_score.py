@@ -281,7 +281,7 @@ def test_committing_instead_of_abstaining_is_graded_normally_but_scores_no_abste
     assert score.abstention_accuracy == 1 / 3  # only B (not gold-abstain) was called correctly
 
 
-def test_wrongly_abstaining_on_an_identifiable_driver_is_excluded_but_not_forgiven():
+def test_wrongly_abstaining_on_an_identifiable_driver_is_graded_not_excluded():
     key, label = _instance()
     # true_ranking is (A, B, Dz). Only Dz correctly abstains (excluded); A commits (also gold-abstain-
     # correct here, so this commit is itself an abstention miss - see the "committing instead" test above);
@@ -293,8 +293,10 @@ def test_wrongly_abstaining_on_an_identifiable_driver_is_excluded_but_not_forgiv
     score = score_answer(Answer(verdicts=verdicts, ranking=swapped_ranking), key)
 
     assert score.abstention_accuracy == 1 / 3  # only Dz's abstention call is correct
-    assert score.adjustment_valid["B"] is None  # not graded on content, right or wrong
-    assert score.adjustment_accuracy == 1.0  # only A is graded (Dz and B both abstained), and it's valid
+    # Both metrics now use the same exclusion rule - only a *correct* abstention is exempt. B is
+    # identifiable, so declining to answer is a failed adjustment, not an ungraded one.
+    assert score.adjustment_valid["B"] is False
+    assert score.adjustment_accuracy == 1 / 2  # A valid, B failed; only Dz (correctly abstained) is exempt
     # A and B are both still compared (B's wrong abstention doesn't exempt it) - reversed relative to the
     # true order, so this must come out fully discordant, not the vacuous 1.0 a masked bug would give.
     assert score.ranking_tau == -1.0
@@ -313,12 +315,21 @@ def test_missing_verdict_scores_no_abstention_credit():
     assert score.adjustment_valid["B"] is False
 
 
-def test_abstaining_on_every_driver_leaves_adjustment_accuracy_vacuously_perfect():
+def test_abstaining_on_everything_cannot_buy_adjustment_accuracy():
+    """Blanket abstention must not score well: the denominator is not the agent's to choose.
+
+    This pinned the opposite before, and a live run showed why it mattered - a model abstained on 22 of 48
+    identifiable drivers (gold commits on every one) and scored a *perfect* 1.000 in a cell where it
+    abstained on all 12, beating its own 0.583 in the cell it answered in full. Only a correct abstention
+    (A and Dz here) is ungraded; B is identifiable, so abstaining on it is a failure to supply a set.
+    """
     key, label = _instance()
     verdicts = tuple(_abstain(label, node) for node in ("A", "B", "Dz"))
     score = score_answer(Answer(verdicts=verdicts, ranking=()), key)
-    assert score.adjustment_accuracy == 1.0
-    assert all(v is None for v in score.adjustment_valid.values())
+    assert score.adjustment_valid["A"] is None  # correctly abstained - genuinely unanswerable, so ungraded
+    assert score.adjustment_valid["Dz"] is None
+    assert score.adjustment_valid["B"] is False  # wrongly abstained - graded, and failed
+    assert score.adjustment_accuracy == 0.0
 
 
 def test_ranking_tau_does_not_penalize_order_between_exactly_tied_decoys():

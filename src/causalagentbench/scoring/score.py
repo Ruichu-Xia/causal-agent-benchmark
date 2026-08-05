@@ -14,8 +14,10 @@ whole point of the naming axis.
   count behind ``ranking_tau`` (not ``n_drivers`` - decoys are candidates too, and correctly-abstained
   drivers are excluded), and ``ranking_tau_z`` standardizes ``ranking_tau`` against chance at that size
   (``scoring/metrics.py::kendall_tau_zscore``) so scores across differently-sized tasks are comparable.
-* ``adjustment_accuracy`` - fraction of *graded* drivers (excludes any the agent abstained on) whose
-  proposed set is a valid backdoor adjustment set, judged by the backdoor criterion against the true graph.
+* ``adjustment_accuracy`` - fraction of *graded* drivers whose proposed set is a valid backdoor adjustment
+  set, judged by the backdoor criterion against the true graph. Only *correctly* abstained drivers are
+  ungraded - a wrong abstention scores as invalid, the same exclusion rule ``ranking_tau`` uses. Otherwise
+  the denominator would be the agent's to choose, and abstaining would raise this score for free.
 * ``abstention_accuracy`` - fraction of drivers where the agent's abstain/commit choice matches the gold
   rule (``_gold_abstain``): abstaining is correct iff the driver is genuinely unidentifiable from data
   alone *and* its own displayed name isn't the aligned one (the collapsed v1 rule, `neutral` and
@@ -82,7 +84,7 @@ class AnswerScore:
     ranking_tau_z: float | None  # ranking_tau standardized against chance at this n_compared; None if < 2
     ranking_pairs: Mapping[str, RankingPairs]  # per-driver pair counts; pooling them reproduces ranking_tau
     adjustment_accuracy: float  # fraction of graded (non-abstained) drivers with a valid backdoor set
-    adjustment_valid: Mapping[str, bool | None]  # per-driver validity; None if the agent abstained
+    adjustment_valid: Mapping[str, bool | None]  # per-driver validity; None only if abstaining was correct
     abstention_accuracy: float  # fraction of drivers whose abstain/commit choice matches the gold rule
     abstention_correct: Mapping[str, bool]  # per-driver abstain/commit match; not derivable from the above
     identifiable: Mapping[str, bool]  # per-driver: effect identified from data alone, for stratification
@@ -204,12 +206,21 @@ def _ranking_tau(answer: Answer, key: InstanceKey) -> tuple[float, int, Mapping[
 
 
 def _adjustment_valid(answer: Answer, key: InstanceKey, driver: str) -> bool | None:
-    """Valid backdoor set for ``driver``, or ``None`` if the agent abstained (not graded on content)."""
+    """Valid backdoor set for ``driver``; ``None`` only when abstaining was the *correct* call.
+
+    Ungraded is reserved for a *correct* abstention, matching ``_ranking_tau``'s exclusion rule exactly - a
+    wrong abstention is a failure to supply a valid set, not an exemption from being asked. Excluding every
+    abstention (the previous behavior) made abstaining free on this metric and let the denominator be chosen
+    by the agent: measured live, one model abstained on 22 of 48 identifiable drivers - gold commits on all
+    of them - and scored 1.000 in a cell where it abstained on all 12, i.e. a perfect score for answering
+    nothing, while the one cell it answered in full scored 0.583. Two models that looked far apart were
+    identical (0.583) wherever both actually answered.
+    """
     verdict = _verdict_for(answer, key, driver)
     if verdict is None:
         return False
     if verdict.abstain:
-        return None
+        return None if _gold_abstain(key, driver) else False
     mapped = [key.label_to_node.get(z) for z in verdict.adjustment_set]
     if any(node is None for node in mapped):
         return False  # references a column that does not exist
