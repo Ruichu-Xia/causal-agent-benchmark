@@ -54,11 +54,21 @@ Labeler = Callable[[SCM, np.random.Generator], Labeling]
 """Maps a hidden SCM to a ``Labeling``. The extensibility seam for naming strategies."""
 
 
+#: Context and per-column description used for abstract labels. Deliberately uniform and contentless: the
+#: point is that the *prompt shape* matches a named condition (same `Context:` line, same `Columns:` block
+#: from `task/instance.py::build_prompt`) while the text carries no domain, role, or structural hint. Without
+#: them, a name-blind instance also loses that scaffolding, so it would differ from a named one by layout as
+#: well as by naming - and the naming axis is only interpretable if naming is the sole thing that varies.
+_ABSTRACT_CONTEXT = "An observational dataset with anonymized columns; all variables are continuous and standardized."
+_ABSTRACT_DESCRIPTION = "A standardized continuous measurement; its real-world meaning is not disclosed."
+
+
 def abstract_labels(scm: SCM, rng: np.random.Generator) -> Labeling:
-    """Assign role-free labels ``X1..Xk`` in a random order; no context or schema.
+    """Assign role-free labels ``X1..Xk`` in a random order, with contentless context and descriptions.
 
     Leaks no structure and carries no naming prior, so it anchors the naming axis off to one side and
-    serves as the reasoning-vs-recitation control.
+    serves as the reasoning-vs-recitation control. Every column gets the *same* description, so the schema
+    block adds shape without adding information - see ``_ABSTRACT_CONTEXT`` for why it is there at all.
     """
     names = scm.scaffold.node_names
     order = rng.permutation(len(names))
@@ -72,4 +82,9 @@ def abstract_labels(scm: SCM, rng: np.random.Generator) -> Labeling:
         domain=None,
         producer="abstract",
     )
-    return Labeling(node_to_label=node_to_label, context="", column_schema={}, provenance=provenance)
+    return Labeling(
+        node_to_label=node_to_label,
+        context=_ABSTRACT_CONTEXT,
+        column_schema=dict.fromkeys(node_to_label.values(), _ABSTRACT_DESCRIPTION),
+        provenance=provenance,
+    )

@@ -34,10 +34,18 @@ class LiteLLMProposer:
 
     model: str
     temperature: float = 0.7
+    max_tokens: int = 32_000
+    """Sized for the whole naming payload, for the same reason ``DatabricksProposer`` sets it.
+
+    One naming call emits three names *plus* a description for every node at once, so the response grows
+    with graph size, and a truncated response is invalid JSON that fails the schema check and costs the
+    whole SCM - silently, and only on the larger graphs, which biases a built dataset toward small ones.
+    Left unset, the ceiling is whatever the provider defaults to: unbounded enough for OpenAI, but LiteLLM
+    supplies 4096 for Anthropic models, which an 8-driver (28-node) scaffold was measured to overshoot."""
 
     def propose(self, prompt: str) -> str:
         """Complete ``prompt`` with the configured model via LiteLLM."""
-        return _complete(self.model, prompt, self.temperature)
+        return _complete(self.model, prompt, self.temperature, self.max_tokens)
 
 
 @functools.lru_cache(maxsize=1)
@@ -48,11 +56,12 @@ def load_env() -> None:
     load_dotenv()
 
 
-def _complete(model: str, prompt: str, temperature: float) -> str:
+def _complete(model: str, prompt: str, temperature: float, max_tokens: int) -> str:
     """Single-turn completion via LiteLLM (lazy imports keep the extra optional).
 
     ``temperature`` is a preference: LiteLLM honors it where supported and drops it where not (e.g. gpt-5
-    accepts only its default), via ``drop_params``. Transient errors are retried with backoff.
+    accepts only its default), via ``drop_params`` - which equally translates or drops ``max_tokens`` per
+    provider (e.g. to ``max_completion_tokens`` for reasoning models). Transient errors are retried.
     """
     import litellm
 
@@ -62,6 +71,7 @@ def _complete(model: str, prompt: str, temperature: float) -> str:
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
+        max_tokens=max_tokens,
         num_retries=_NUM_RETRIES,
     )
     return response.choices[0].message.content or ""
