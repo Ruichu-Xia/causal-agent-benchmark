@@ -98,9 +98,18 @@ column is standardized, this is the expected change in the outcome, in standard 
 standard deviation increase in the driver. The drivers are ranked by the size of these estimates, so their
 relative magnitudes matter as well as each one's accuracy.
 
-Some drivers may be impossible to resolve from this data alone - two different underlying explanations
-could fit the same observations equally well. When that happens for a driver, set "abstain": true and omit
-"effect", since a wrong committed answer is worse than an honest abstention.
+Some drivers cannot be resolved from this data alone - two different underlying explanations fit the same
+observations equally well, and no amount of analysis distinguishes them.
+
+Where that happens, the column names are your only remaining evidence. They come from a domain source that
+may be accurate or may be misleading, and nothing states which. You can find out: the data settles most of
+the structure, so you can check whether the names agree with what you were able to establish. Names that
+are consistent with the structure you recovered can be relied on for the parts the data left open; names
+that contradict it cannot be relied on anywhere.
+
+So for each unresolved driver: commit if the names have proven trustworthy and yours identifies the driver's
+role, and otherwise set "abstain": true and omit "effect". A wrong committed answer is worse than an honest
+abstention, but abstaining where the evidence did settle the answer is also wrong.
 
 Work through the problem step by step, inspecting the data as needed. When your analysis is complete,
 give your final answer as JSON inside a single <answer>...</answer> block, with this shape:

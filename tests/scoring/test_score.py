@@ -169,13 +169,13 @@ def test_alignment_is_carried_through():
     assert score_answer(_perfect(key, label), key).alignment is None
 
 
-def test_gold_abstain_ignores_naming_entirely():
-    """A name cannot make a non-identified effect identified, so it must not move the gold.
+def test_gold_abstain_flips_with_the_drivers_own_naming():
+    """The capability under test: fall back on the name only where the data ran out.
 
-    This pinned the opposite before. Under the old rule the same unidentifiable driver on the same data was
-    abstain-correct under neutral names and abstain-*wrong* under aligned ones - but nothing inside an
-    instance distinguishes an aligned skin from a misaligned one, so the agent could only guess. Measured
-    consequence: one model abstained on 16 of 17 drivers under neutral names and 0 of 17 under name-blind.
+    The same unidentifiable driver (A) is abstain-correct when naming doesn't resolve it, and abstain-*wrong*
+    when its own displayed name is the aligned one - because then the name settles the orientation the data
+    left open. That the agent can tell those two worlds apart is what `build_prompt` makes true: naming is
+    uniform, so it checks the names against the structure discovery does pin down.
     """
     scm = generate(0, _SCAFFOLD)
     neutral_kind = dict.fromkeys(scm.scaffold.node_names, "neutral")
@@ -187,9 +187,8 @@ def test_gold_abstain_ignores_naming_entirely():
         )
         return InstanceKey(scm=scm, label_to_node={}, node_to_label={}, provenance=provenance)
 
-    # A is unidentifiable either way, so abstaining is correct either way - the naming is irrelevant.
-    assert _gold_abstain(key_with(neutral_kind), "A") is True
-    assert _gold_abstain(key_with(aligned_a_kind), "A") is True
+    assert _gold_abstain(key_with(neutral_kind), "A") is True  # unidentifiable, naming doesn't resolve it
+    assert _gold_abstain(key_with(aligned_a_kind), "A") is False  # same driver, now its own name IS aligned
 
 
 def test_quadrant_covers_all_four_cells():

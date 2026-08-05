@@ -25,13 +25,14 @@ whole point of the naming axis.
   ungraded - a wrong abstention scores as invalid, the same exclusion rule ``ranking_tau`` uses. Otherwise
   the denominator would be the agent's to choose, and abstaining would raise this score for free.
 * ``abstention_accuracy`` - fraction of drivers where the agent's abstain/commit choice matches the gold
-  rule (``_gold_abstain``): abstaining is correct iff the driver's effect is not point-identified from the
-  observational distribution. Naming plays no part - it cannot make a non-identified effect identified.
+  rule (``_gold_abstain``): abstaining is correct iff the data cannot orient the driver's confounder edge
+  *and* its own displayed name isn't the aligned one.
 
 ``Quadrant``/``quadrant()`` classify a driver into one of §6's four naming-vs-identifiability cells, and
-are now **reporting axes only**: no gold answer reads them. ``_gold_abstain`` used to be the
-``UNIDENTIFIABLE_NOT_ALIGNED`` cell, which made the same driver on the same data abstain-correct under one
-naming skin and abstain-wrong under another - a distinction no agent can draw from evidence.
+those cells are the capability under test rather than a reporting convenience: trust data where data
+decides, fall back on a name only where data cannot and the name has proven consistent with the structure
+data *did* pin down, abstain when neither settles it. ``_gold_abstain`` is the last of those four cells -
+single source of truth, not two independently maintained checks of the same fact.
 
 Three per-driver maps (``adjustment_valid``, ``abstention_correct``, ``ranking_pairs``) plus
 ``identifiable`` exist so results can be stratified *below* instance grain - an instance-level mean hides
@@ -129,10 +130,12 @@ def quadrant(key: InstanceKey, driver: str) -> Quadrant:
     Aligned iff ``driver``'s own displayed name is the "aligned" kind (``node_kind``, §6/§7); neutral and
     misaligned both collapse into "not aligned" for v1.
 
-    **Reporting only** - no gold answer depends on this. ``_gold_abstain`` used to read its
-    ``UNIDENTIFIABLE_NOT_ALIGNED`` cell, which is exactly the coupling that made naming decide an
-    unanswerable call; it now reads identifiability directly. Kept because the four cells remain the right
-    axes to *stratify results by* once naming is a manipulation rather than part of the answer key.
+    These four cells are the capability being tested, not a reporting convenience. Each demands a different
+    decision: trust the data where data decides (``IDENTIFIABLE_*``, whatever the name says), fall back on
+    the name only where data cannot decide *and* the name has proven trustworthy
+    (``UNIDENTIFIABLE_ALIGNED``), and abstain when neither source settles it
+    (``UNIDENTIFIABLE_NOT_ALIGNED``). ``_gold_abstain`` is that last cell - single source of truth, not two
+    independently maintained checks of the same fact.
     """
     identifiable = driver not in unidentifiable_drivers(key.scm.scaffold)
     aligned = key.provenance.node_kind.get(driver) == "aligned"
@@ -142,21 +145,21 @@ def quadrant(key: InstanceKey, driver: str) -> Quadrant:
 
 
 def _gold_abstain(key: InstanceKey, driver: str) -> bool:
-    """True iff abstaining on ``driver`` is the correct call: its effect is not point-identified.
+    """True iff abstaining on ``driver`` is the correct call - `quadrant`'s "abstain is correct" cell.
 
-    Naming plays no part. The previous rule made abstaining correct only in `quadrant`'s
-    ``UNIDENTIFIABLE_NOT_ALIGNED`` cell, so the *same driver on the same data* had opposite gold under two
-    naming skins - and nothing inside an instance tells the agent which skin it is looking at, since aligned
-    and misaligned names are equally plausible on their face. That made the call unanswerable from evidence:
-    the expected-optimal policy is identical in both conditions, so any rule demanding different behavior
-    scores luck. Measured consequence on a live run: one model abstained on 16 of 17 drivers under neutral
-    names and 0 of 17 under name-blind ones, a mode switch that dominated every metric averaged over it.
+    Abstaining is right only when *both* sources fail: the data cannot orient the driver's confounder edge,
+    and its own displayed name is not the aligned one. Where the name *is* aligned, it settles the
+    orientation the data left open, so committing is the correct call and abstaining is over-caution.
 
-    An unoriented confounder edge means two DAGs fit the observational distribution equally well, so the
-    effect genuinely has no point identification - "not identified" is the honest answer, it is derivable
-    from the data alone, and it is the same answer whatever the columns are called.
+    This is answerable from evidence, which is the property it has to have. Naming is applied uniformly to
+    every node, and ~29 of an instance's ~35 edges are orientable from data - so an aligned skin is
+    consistent with the structure the agent can recover, and a misaligned one contradicts it. The agent
+    establishes which world it is in by checking names against what discovery pins down, then relies on them
+    only for the ~6 edges data cannot settle. ``task/instance.py::build_prompt`` states that evidence model
+    explicitly; without it the task said "abstain when the data cannot resolve it" while the gold expected
+    the name to be used, and a model that abstained was following the instructions and being marked wrong.
     """
-    return driver in unidentifiable_drivers(key.scm.scaffold)
+    return quadrant(key, driver) == Quadrant.UNIDENTIFIABLE_NOT_ALIGNED
 
 
 def _identifiable_drivers(key: InstanceKey) -> Mapping[str, bool]:
