@@ -186,12 +186,39 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "discover",
+            "description": (
+                "Run the PC causal-discovery algorithm over every column and return the CPDAG it recovers. "
+                "Reports edges it could orient ('A -> B') separately from edges whose direction the data "
+                "does not determine ('A -- B'). PC is not exact at finite sample size: it can miss a real "
+                "edge or orient one wrongly, so treat the output as evidence to check, not as ground truth."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "alpha": {
+                        "type": "number",
+                        "description": "significance level for the independence tests, between 0 and 1",
+                        "default": 0.01,
+                    }
+                },
+            },
+        },
+    },
 )
 
 
 def _dispatch(tools: CausalTools) -> dict[str, Callable[..., str]]:
     """Return the name -> tool-method mapping for executing a model's tool calls."""
-    return {"preview": tools.preview, "correlate": tools.correlate, "regress": tools.regress}
+    return {
+        "preview": tools.preview,
+        "correlate": tools.correlate,
+        "regress": tools.regress,
+        "discover": tools.discover,
+    }
 
 
 def run_agent(

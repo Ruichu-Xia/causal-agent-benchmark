@@ -44,7 +44,8 @@ key.scm.true_ranking()      # hidden gold ranking, computed on the SCM (label-in
 
 # ... an agent reads instance.prompt/instance.to_csv() and replies with an <answer> block ...
 score = score_output(agent_reply_text, key)
-score.ranking_tau           # Kendall agreement with the true ranking (correct abstentions excluded)
+score.effect_accuracy       # 1 - mean normalized error of the per-driver effect estimates (the headline)
+score.ranking_tau           # Kendall agreement with the true ranking, derived from those estimates
 score.adjustment_accuracy   # fraction of graded drivers with a valid backdoor set
 score.abstention_accuracy   # fraction whose abstain/commit choice matches the gold rule
 ```
@@ -106,8 +107,9 @@ models against the identical frozen instances via `scripts/run_eval.py --dataset
 ## Evaluating a tool-using agent
 
 `causalagentbench.agent` is a minimal tool-using agent: a fixed, safe causal toolset (`preview`,
-`correlate`, `regress` — no arbitrary code execution, so there is no sandboxing surface beyond validating
-column names) plus a model-agnostic tool-calling loop. The agent never sees the raw table in its prompt;
+`correlate`, `regress`, and `discover` — PC causal discovery, the tool a practitioner would actually reach
+for; no arbitrary code execution, so there is no sandboxing surface beyond validating column names) plus a
+model-agnostic tool-calling loop. The agent never sees the raw table in its prompt;
 it must call a tool to learn anything about the data, then answer:
 
 ```python
@@ -245,7 +247,7 @@ src/causalagentbench/
     clients.py        provider-agnostic LLM seam (LiteLLM default)
     config.py         versioned build configuration
   agent/            a minimal tool-using agent
-    tools.py          the fixed causal toolset (preview, correlate, regress)
+    tools.py          the fixed causal toolset (preview, correlate, regress, discover)
     loop.py           model-agnostic tool-calling loop (ToolCallingClient Protocol)
     clients.py        the real LiteLLM-backed ToolCallingClient (needs the `generation` extra)
     eval.py           batch the loop over instances; aggregate scores by naming alignment

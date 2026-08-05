@@ -1,8 +1,8 @@
-"""The agent's causal-analysis toolset: preview, partial correlation, adjusted regression.
+"""The agent's causal-analysis toolset: preview, partial correlation, adjusted regression, PC discovery.
 
-Three tools, each a safe, parameterized numeric function over the instance's own data - never arbitrary
-code execution, so there is no sandboxing surface to build: inputs are validated column names, outputs
-are floats or CSV, and every failure mode returns a clear error string instead of raising, so the agent
+Each is a safe, parameterized numeric function over the instance's own data - never arbitrary code
+execution, so there is no sandboxing surface to build: inputs are validated column names, outputs are
+floats, text or CSV, and every failure mode returns a clear error string instead of raising, so the agent
 can read the mistake and retry (exactly like a real tool-calling API).
 
 * ``preview`` - a first look at the table (sanity-check scale/format).
@@ -11,11 +11,19 @@ can read the mistake and retry (exactly like a real tool-calling API).
 * ``regress`` - the OLS coefficient of a treatment on the fixed outcome, adjusting for a given set; lets
   the agent test any adjustment set it hypothesizes, the same backdoor-adjusted regression the scorer
   itself validates against.
+* ``discover`` - the PC algorithm over every column, returning the CPDAG it recovers. Present because a
+  practitioner facing this problem runs a discovery algorithm; without it the task silently becomes
+  "reimplement constraint-based discovery from individual CI tests inside a turn budget", which measures
+  stamina rather than causal reasoning and transfers nowhere.
+
+``discover`` needs the optional ``discovery`` extra (causal-learn) and is imported lazily, so the rest of
+the toolset works without it.
 """
 
 from __future__ import annotations
 
 import io
+import itertools
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -26,6 +34,12 @@ from causalagentbench.task.instance import Instance
 from causalagentbench.types import FloatArray
 
 _MAX_PREVIEW_ROWS = 20
+_DEFAULT_ALPHA = 0.01
+"""Significance level for ``discover``'s conditional-independence tests.
+
+Documented and exposed rather than hidden: it is the one knob that materially changes what PC returns, and
+a discovery baseline whose hyperparameters are unstated is not reproducible. Tighter than the usual 0.05
+because these tables are large (n=2000+), where 0.05 admits noticeably more spurious edges."""
 
 
 def _row_count_error(value: object) -> str | None:
@@ -121,6 +135,52 @@ class CausalTools:
         adjust_desc = f"{{{', '.join(adjust)}}}" if adjust else "{}"
         uncertainty = _regression_uncertainty(coef, standard_error, len(self.instance.data), len(adjust) + 2)
         return f"regress({outcome} ~ {treatment} | adjust={adjust_desc}) = {coef:+.4f} ({uncertainty})"
+
+    def discover(self, alpha: object = _DEFAULT_ALPHA) -> str:
+        """Run PC over every column and return the CPDAG it recovers, as an edge list.
+
+        The tool a data scientist would actually reach for, rather than making the agent hand-simulate
+        constraint-based discovery out of individual ``correlate`` calls - which measures turn budget more
+        than causal skill. It does not hand over the answer: PC returns a *CPDAG*, so edges it cannot orient
+        come back undirected, and turning that into an adjustment set (and deciding what is not identified
+        at all) is left to the agent. Nor is it exact at finite n - measured on a generated instance at
+        n=3000 it missed one true edge and mis-oriented another - so its output is evidence to check, not
+        ground truth to copy.
+        """
+        if isinstance(alpha, bool) or not isinstance(alpha, int | float) or not 0.0 < float(alpha) < 1.0:
+            return "Error: alpha must be a number strictly between 0 and 1 (e.g. 0.01)."
+        try:
+            from causallearn.search.ConstraintBased.PC import pc
+        except ImportError:  # pragma: no cover - depends on whether the `discovery` extra is installed
+            return "Error: the causal discovery tool is not available in this environment."
+
+        graph = pc(self.instance.data, alpha=float(alpha), show_progress=False).G.graph
+        columns = self.instance.columns
+        oriented: list[str] = []
+        undecided: list[str] = []
+        for i, j in itertools.combinations(range(len(columns)), 2):
+            # causal-learn's encoding, verified against known graphs: (-1, 1) is i->j, (1, -1) is j->i, and
+            # (-1, -1) is an edge whose direction the observational data cannot pin down.
+            head, tail = int(graph[i][j]), int(graph[j][i])
+            if head == -1 and tail == -1:
+                undecided.append(f"  {columns[i]} -- {columns[j]}")
+            elif head == -1 and tail == 1:
+                oriented.append(f"  {columns[i]} -> {columns[j]}")
+            elif head == 1 and tail == -1:
+                oriented.append(f"  {columns[j]} -> {columns[i]}")
+        if not oriented and not undecided:
+            return f"PC (alpha={float(alpha):g}, n={len(self.instance.data)}) found no edges between any columns."
+        return "\n".join(
+            [
+                f"PC (Fisher-z, alpha={float(alpha):g}, n={len(self.instance.data)} rows).",
+                '"A -> B" is an edge PC oriented; "A -- B" is an edge present in the data whose direction is '
+                "not determined by it.",
+                f"Oriented ({len(oriented)}):",
+                *(oriented or ["  (none)"]),
+                f"Undirected ({len(undecided)}):",
+                *(undecided or ["  (none)"]),
+            ]
+        )
 
     def _validate(self, given: list[str], **named: str) -> str | None:
         """Return an error string if any referenced column is unknown, else None."""

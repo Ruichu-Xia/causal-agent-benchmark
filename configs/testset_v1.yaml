@@ -6,3 +6,4 @@ gen_model: openai/gpt-5        # generator (proposes per-node aligned/neutral/mi
 critic_model: openai/gpt-5     # correctness critic (null to skip; same model is fine, or a different one)
 max_revisions: 2               # propose -> critique -> revise iterations before skipping an SCM
 n_scms: 20                     # base SCM seeds; each yields all grid levels (+ name-blind) as paired skins
+n_drivers: 8                   # non-decoy drivers per instance, fixed - task size must not vary within a set

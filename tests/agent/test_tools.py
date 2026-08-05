@@ -162,3 +162,49 @@ def test_omitted_column_sets_still_default_to_empty():
     assert "Error" not in tools.correlate(label["A"], label["B"])
     assert "Error" not in tools.regress(label["A"])
     assert "Error" not in tools.preview()
+
+
+# ---- causal discovery ---------------------------------------------------------------------------------
+
+
+def _edges(result: str) -> list[tuple[str, str, str]]:
+    """Parse `discover`'s edge lines into (left, operator, right) triples."""
+    return [
+        (m.group(1), m.group(2), m.group(3))
+        for m in (re.match(r"\s+(\S+) (->|--) (\S+)$", line) for line in result.splitlines())
+        if m is not None
+    ]
+
+
+def test_discover_returns_a_cpdag_over_display_columns_only():
+    tools, _ = _tools()
+    result = tools.discover()
+    edges = _edges(result)
+    assert edges, result
+    columns = set(tools.instance.columns)
+    # Hidden node names must never reach the agent - the tool reads the public table, like every other one.
+    assert all({left, right} <= columns for left, _, right in edges)
+    assert "Oriented" in result and "Undirected" in result
+
+
+def test_discover_recovers_true_edges_without_inventing_any():
+    """Measured behaviour, so the agent can be told what to trust: precise, but incomplete.
+
+    Across six generated instances at n=2000 PC never proposed an edge that is not in the true graph
+    (precision 1.00) while recovering 68-93% of them. The thresholds here sit below the observed range
+    rather than on it, so ordinary sampling variation does not turn this into a flake.
+    """
+    tools, node_to_label = _tools()
+    label_to_node = {label: node for node, label in node_to_label.items()}
+    found = {frozenset((label_to_node[left], label_to_node[right])) for left, _, right in _edges(tools.discover())}
+    true_skeleton = {frozenset(edge) for edge in _SCAFFOLD.edges}
+
+    assert found <= true_skeleton  # no invented edge
+    assert len(found & true_skeleton) / len(true_skeleton) >= 0.6
+
+
+def test_discover_rejects_an_alpha_outside_the_unit_interval():
+    tools, _ = _tools()
+    assert tools.discover(alpha=1.5).startswith("Error:")
+    assert tools.discover(alpha=0.0).startswith("Error:")
+    assert tools.discover(alpha="0.01").startswith("Error:")  # a string is reported, never coerced

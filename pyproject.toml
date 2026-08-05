@@ -22,6 +22,9 @@ generation = ["litellm>=1.50", "python-dotenv>=1.0", "tenacity>=8.0"]
 # Only for causalagentbench.agent.clients.DatabricksClient - comparing the agent against a model served
 # behind a Databricks AI Gateway. Not part of the default path; most users only need `generation`.
 databricks = ["openai>=1.50", "python-dotenv>=1.0"]
+discovery = [
+    "causal-learn>=0.1.4.8",
+]
 
 [project.urls]
 Homepage = "https://github.com/causal-agent-benchmark/causalagentbench"
@@ -95,7 +98,7 @@ disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["networkx.*", "litellm.*", "dotenv.*", "yaml.*"]
+module = ["networkx.*", "litellm.*", "dotenv.*", "yaml.*", "causallearn.*"]
 ignore_missing_imports = true
 
 # --- pytest --------------------------------------------------------------------

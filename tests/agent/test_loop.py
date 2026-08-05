@@ -5,12 +5,15 @@ from causalagentbench.agent.loop import (
     _FINAL_TURN_REMINDER,
     _FORMAT_REPAIR_REMINDER,
     _SYSTEM_PROMPT,
+    _TOOL_SCHEMAS,
     ModelTurn,
     ToolCall,
     TurnTrace,
     TurnTranscript,
+    _dispatch,
     run_agent,
 )
+from causalagentbench.agent.tools import CausalTools
 from causalagentbench.scoring.gates import generate_gated_procedural
 
 
@@ -234,3 +237,17 @@ def test_on_transcript_captures_full_request_and_response():
     assert transcript.content == answer
     assert transcript.prompt_tokens == 10
     assert transcript.completion_tokens == 5
+
+
+def test_discover_is_exposed_to_the_model_and_dispatchable():
+    """A tool the model is never told about is a tool it cannot use, so schema and dispatch must agree."""
+    instance = _instance()
+    schema_names = {schema["function"]["name"] for schema in _TOOL_SCHEMAS}
+    assert schema_names == set(_dispatch(CausalTools(instance)))
+    assert "discover" in schema_names
+
+    call = ToolCall(id="1", name="discover", arguments={"alpha": 0.01})
+    answer = _valid_answer(instance)
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=answer)])
+    assert run_agent(instance, client) == answer
+    assert "Oriented" in client.calls[1][0][-1]["content"]
