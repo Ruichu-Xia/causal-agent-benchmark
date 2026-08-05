@@ -12,6 +12,8 @@ Interpreting a coefficient as a standardized effect relies on ~unit-variance dat
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
 from causalagentbench.scoring.metrics import regression_coefficient
@@ -54,3 +56,50 @@ def full_adjustment_effects(data: FloatArray, scm: SCM) -> dict[str, float]:
 def ranking(effects: dict[str, float]) -> tuple[str, ...]:
     """Order driver names by descending absolute effect."""
     return tuple(sorted(effects, key=lambda name: abs(effects[name]), reverse=True))
+
+
+def population_coefficient(scm: SCM, treatment: str, adjust: Sequence[str] = ()) -> float:
+    """OLS coefficient on ``treatment`` regressing the outcome on ``treatment`` + ``adjust``, at n -> inf.
+
+    Read off the SCM's own marginal covariance instead of a sampled table: for regressor set ``S``, the
+    coefficient vector is ``Sigma[S, S]^-1 @ Sigma[S, outcome]``, and ``treatment`` is placed first so its
+    coefficient is entry 0. No intercept term - every variable is mean-zero by construction.
+
+    Exact, so a gate built on this is a property of the *SCM* rather than of one draw, and it costs no
+    sampling - which is what lets the shortcut gate run before ``scoring/gates.py``'s expensive sampling
+    step rather than after it.
+    """
+    index = scm.scaffold.index
+    regressors = [index(treatment), *(index(z) for z in adjust)]
+    coefficients, *_ = np.linalg.lstsq(
+        scm.sigma[np.ix_(regressors, regressors)], scm.sigma[regressors, index(scm.scaffold.outcome)], rcond=None
+    )
+    return float(coefficients[0])
+
+
+def shortcut_effects(scm: SCM) -> dict[str, dict[str, float]]:
+    """Each blind policy's per-driver effect estimate, at the population level.
+
+    "Blind" here means the policy reads no column names and needs no causal graph - it is reachable by
+    regression alone, with no orientation and no adjustment-set reasoning. If any of these ranks the drivers
+    well, the instance does not require causal reasoning to rank, which is exactly what
+    ``scoring/gates.py::evaluate_gates`` rejects on.
+
+    Deliberately *not* including an "adjust for all non-descendants of the treatment" policy: it is a valid
+    backdoor set for every driver in any causally sufficient DAG, but applying it requires knowing which
+    columns are descendants, and deriving that is orientation - genuine causal work, and the skill the
+    benchmark means to reward. Gating against it would reject instances for being solvable by the intended
+    method.
+    """
+    scaffold = scm.scaffold
+    covariates = tuple(n for n in scaffold.node_names if n != scaffold.outcome)
+    return {
+        # The measured 0.63-tau shortcut: one marginal regression per candidate, no graph at all.
+        "correlation": {d: population_coefficient(scm, d) for d in scaffold.drivers},
+        "full_adjustment": {
+            d: population_coefficient(scm, d, [c for c in covariates if c != d]) for d in scaffold.drivers
+        },
+        "candidate_adjustment": {
+            d: population_coefficient(scm, d, [c for c in scaffold.drivers if c != d]) for d in scaffold.drivers
+        },
+    }

@@ -1,15 +1,24 @@
 """Soundness gates and the rejection-sampling generator.
 
 The gates are the generator's contract: an instance is accepted only if it demonstrably requires causal
-reasoning. Two shortcuts must fail on this scaffold - naive correlation ("no adjustment") and regressing
-on every covariate ("adjust for everything", which conditions on the mediator) - while the oracle,
-using correct adjustment sets, recovers the truth. The gates double as the property-test suite.
+reasoning. That claim is enforced at two different levels, and the distinction matters.
 
-Framing: these are construction-validity checks for the confounded scaffold - they verify the intended
-structure was realized (confounding strong enough, mediated effect material). They are NOT a claim that
-"correlation always fails" as a law: future unconfounded scaffolds will have correlation succeed, with
-gold answer "do not adjust". The full benchmark measures appropriate reliance by scoring a mix of
-scaffolds stratified per scaffold, not by filtering a mixed distribution. Here we validate one scaffold.
+*Structural* gates (``structure_valid``, ``confounding_realized``, ``mediation_realized``) verify that the
+intended structure was realized - drivers separated, confounding present, mediated path material. They are
+per-driver properties, and they are NOT a claim that "correlation always fails" as a law: future
+unconfounded scaffolds will have correlation succeed, with gold answer "do not adjust".
+
+The *policy* gate (``shortcut_defeated``) checks the proposition the structural ones only proxy for: can a
+blind policy - one reading no column names and needing no graph - actually score well here? It is checked
+on **estimation error**, not ranking, and that is a finding rather than a preference. Blind policies rank
+well no matter how the generator is tuned (marginal correlation reaches tau=+0.627, full adjustment +0.71
+at every driver count, against random's +0.014), and forcing those toward chance is infeasible inside the
+outcome's unit-variance budget. Estimation separates cleanly instead: correct adjustment recovers the true
+effect exactly at the population level, while the best blind policy stays 21-34% of a typical effect away.
+See ``SHORTCUT_ERROR_THRESHOLD``. ``max_shortcut_tau`` records the ranking weakness as a diagnostic so it
+stays visible rather than implicit.
+
+The gates double as the property-test suite.
 
 ``evaluate_gates`` locates nodes by ``Role`` and checks every instance of each role, not just the first - a
 procedurally-composed scaffold (``scm/gadgets.py``) can have several, or none, of a given kind (an
@@ -42,7 +51,7 @@ from causalagentbench.scm.target_effects import (
     with_constructed_confounding,
     with_constructed_effects,
 )
-from causalagentbench.scoring.baselines import full_adjustment_effects, oracle_effects, ranking
+from causalagentbench.scoring.baselines import full_adjustment_effects, oracle_effects, ranking, shortcut_effects
 from causalagentbench.scoring.metrics import kendall_tau
 from causalagentbench.types import SCM, FloatArray, Role, Scaffold, SeedLike
 
@@ -51,6 +60,25 @@ DECOY_EFFECT_TOL = 1e-9
 """Decoy total effect is a structural zero; tolerate only numerical dust."""
 ORACLE_TAU_THRESHOLD = 0.99
 """Minimum Kendall-tau between the oracle ranking and the truth."""
+SHORTCUT_ERROR_THRESHOLD = 0.15
+"""Minimum estimation error any blind policy must still suffer, as a fraction of the instance's median
+|true effect|.
+
+The gate this module's docstring always claimed to enforce - "accepted only if it demonstrably requires
+causal reasoning" - now checked against *policies* rather than the per-driver structural proxies above,
+which cannot see it.
+
+Measured against **estimation**, not ranking, because ranking cannot carry the check. Blind policies rank
+far too well to gate on: marginal correlation reaches tau=+0.627 on the shipped set and full adjustment
+reaches +0.71 at every driver count, while random is +0.014. Driving those to chance is infeasible inside
+the outcome's unit-variance budget - attempting it (deeper confounding, wider mediation) cut feasible
+draws from 179/250 to 10/250 at 8 drivers and still left full adjustment at +0.78. Estimation separates
+cleanly where ranking does not: correct adjustment recovers the true effect *exactly* at the population
+level (error 0.0), while the best blind policy is off by 21-34% of a typical effect. That gap is the real
+causal-load certificate, and it needs no calibration to exist.
+
+0.15 rejects the degenerate tail - instances where some blind policy happens to land near the truth
+(observed as low as 2.2%) - while passing 78.8% of feasible draws at 8 drivers, 95.1% at 6."""
 MAX_ATTEMPTS = 1000
 """Rejection-sampling safety valve."""
 
@@ -103,7 +131,10 @@ class GateReport:
     structure_valid: bool
     confounding_realized: bool
     mediation_realized: bool
+    shortcut_defeated: bool
     oracle_recovers: bool
+    min_shortcut_error: float  # best blind policy's estimation error, relative; the causal-load certificate
+    max_shortcut_tau: float  # best |tau| any blind policy reaches; reported, never gated
     min_driver_effect: float
     max_decoy_effect: float
     min_effect_gap: float
@@ -163,6 +194,26 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
     confounding_realized = min_confounding_margin > scaled_threshold(CONFOUNDING_MARGIN, n)
     mediation_realized = min_mediated_share >= MIN_MEDIATED_SHARE
 
+    # Closed-form (population, not sampled - `scoring/baselines.py::population_coefficient`), so it runs
+    # here with the other structural gates and rejects before the expensive sampling step below.
+    true_effects = [effect[d] for d in sc.drivers]
+    signed_effect = {d: scm.total_effect_on_outcome(d) for d in sc.drivers}
+    # Relative to the instance's own effect scale, like every other threshold here: an absolute error floor
+    # would mean something different at each driver count, since effects shrink as `1/sqrt(N)`.
+    effect_scale = float(np.median([abs(v) for v in signed_effect.values()]))
+    shortcuts = shortcut_effects(scm)
+    min_shortcut_error = min(
+        float(np.mean([abs(estimates[d] - signed_effect[d]) for d in sc.drivers])) / effect_scale
+        for estimates in shortcuts.values()
+    )
+    shortcut_defeated = min_shortcut_error >= SHORTCUT_ERROR_THRESHOLD
+    # Diagnostic only, deliberately not gated: blind policies rank well no matter how the generator is
+    # tuned (see `SHORTCUT_ERROR_THRESHOLD`), so this records how weak a readout the ranking is rather
+    # than rejecting on it. Reported so that weakness stays visible instead of implicit.
+    max_shortcut_tau = max(
+        abs(kendall_tau(true_effects, [abs(estimates[d]) for d in sc.drivers])) for estimates in shortcuts.values()
+    )
+
     oracle_tau = math.nan
     vsort = math.nan
     r2sort = math.nan
@@ -171,10 +222,9 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
     oracle_recovers = False
     data: FloatArray | None = None
 
-    if structure_valid and confounding_realized and mediation_realized:
+    if structure_valid and confounding_realized and mediation_realized and shortcut_defeated:
         data = sample(scm, config.n_samples, seed)
         oracle = oracle_effects(data, scm)
-        true_effects = [abs(scm.total_effect_on_outcome(d)) for d in sc.drivers]
         oracle_estimates = [abs(oracle[d]) for d in sc.drivers]
         oracle_tau = kendall_tau(true_effects, oracle_estimates)
         vsort = varsortability(data, scm.W)
@@ -184,13 +234,16 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
         overadjust_flips_ranking = ranking(full) != scm.true_ranking()
         oracle_recovers = oracle_tau >= ORACLE_TAU_THRESHOLD
 
-    passed = structure_valid and confounding_realized and mediation_realized and oracle_recovers
+    passed = structure_valid and confounding_realized and mediation_realized and shortcut_defeated and oracle_recovers
     return GateReport(
         passed=passed,
         structure_valid=structure_valid,
         confounding_realized=confounding_realized,
         mediation_realized=mediation_realized,
+        shortcut_defeated=shortcut_defeated,
         oracle_recovers=oracle_recovers,
+        min_shortcut_error=min_shortcut_error,
+        max_shortcut_tau=max_shortcut_tau,
         min_driver_effect=min_driver_effect,
         max_decoy_effect=max_decoy_effect,
         min_effect_gap=min_effect_gap,

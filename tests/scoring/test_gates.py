@@ -8,10 +8,13 @@ from causalagentbench.scoring.baselines import (
     correlation_effects,
     full_adjustment_effects,
     oracle_effects,
+    population_coefficient,
     ranking,
+    shortcut_effects,
 )
 from causalagentbench.scoring.gates import (
     ORACLE_TAU_THRESHOLD,
+    SHORTCUT_ERROR_THRESHOLD,
     _has_balanced_identifiability,
     generate_gated_procedural,
 )
@@ -34,6 +37,47 @@ def test_gated_procedural_instance_passes_every_gate(seed):
     assert report.confounding_realized
     assert report.mediation_realized
     assert report.oracle_recovers
+    assert report.shortcut_defeated
+    assert report.min_shortcut_error >= SHORTCUT_ERROR_THRESHOLD
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_correct_adjustment_is_exact_at_the_population_level(seed):
+    """The claim the shortcut gate rests on: with a correct backdoor set there is nothing left to estimate.
+
+    ``SHORTCUT_ERROR_THRESHOLD`` certifies a *gap* between what correct adjustment achieves and what a blind
+    policy achieves. That gap is only meaningful if the oracle end of it is pinned at zero rather than
+    merely small - otherwise the threshold would be comparing two noisy quantities.
+    """
+    scm, _ = generate_gated_procedural(seed)
+    for driver in scm.scaffold.drivers:
+        estimate = population_coefficient(scm, driver, scm.scaffold.correct_adjustment.get(driver, ()))
+        assert abs(estimate - scm.total_effect_on_outcome(driver)) < 1e-9
+
+
+@pytest.mark.parametrize("seed", PROCEDURAL_EMPIRICAL_SEEDS)
+def test_population_coefficient_matches_a_large_sample_regression(seed):
+    """``population_coefficient`` reads the same quantity off ``sigma`` that OLS estimates from a table.
+
+    Guards the substitution the gate depends on - it runs the blind panel closed-form, before sampling, so
+    a drift between the two would silently gate on a different quantity than the one being claimed.
+    """
+    scm, _ = generate_gated_procedural(seed)
+    data = sample(scm, LARGE_N, seed=seed)
+    sampled = correlation_effects(data, scm)
+    for driver in scm.scaffold.drivers:
+        assert abs(population_coefficient(scm, driver) - sampled[driver]) < 0.05
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_every_blind_policy_estimates_every_driver(seed):
+    """Key-space contract: the gate indexes each policy by driver, so a missing one must be a loud failure."""
+    scm, _ = generate_gated_procedural(seed)
+    expected = set(scm.scaffold.drivers)
+    panel = shortcut_effects(scm)
+    assert set(panel) == {"correlation", "full_adjustment", "candidate_adjustment"}
+    for estimates in panel.values():
+        assert set(estimates) == expected
 
 
 @pytest.mark.parametrize("seed", PROCEDURAL_EMPIRICAL_SEEDS)
