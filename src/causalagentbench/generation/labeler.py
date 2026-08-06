@@ -47,7 +47,11 @@ GroundingFn = Callable[[SCM, np.random.Generator], str]
 GRID: tuple[float, ...] = (-1.0, 1.0)
 
 _KINDS = ("aligned", "neutral", "misaligned")
-_SNAKE = re.compile(r"[a-z][a-z0-9_]*")
+# No snake_case gate. It was rejecting names that were correct as *names* and wrong only in letter case -
+# scientific unit abbreviations carry capitals, so `groundwater_nitrate_n_mgL_z`, `dissolved_oxygen_mgL_z`
+# and `conductivity_in_groundwater_uScm_z` all failed it, discarding an otherwise-good SCM over notation.
+# The generator prompt still asks for snake_case, so style stays consistent by default; it is simply no
+# longer a reason to throw the instance away.
 # Placeholder / degenerate name patterns that must be rejected (generators fall back to these).
 _PLACEHOLDER = re.compile(r"^(feature|latent_component|component|channel|col|var|node|v|x)_?\d*$|^[a-z]\d+$")
 # Tokens implying a non-continuous variable (the data is standardized continuous).
@@ -140,8 +144,6 @@ def _pre_check(triples: NamingTriples, scm: SCM) -> list[str]:
             continue
         for _, (name, desc) in kinds.items():
             names.append(name)
-            if not _SNAKE.fullmatch(name):
-                issues.append(f"name {name!r} is not snake_case")
             if _PLACEHOLDER.match(name):
                 issues.append(f"name {name!r} is a placeholder, not a real-world concept")
             if not desc.strip():
