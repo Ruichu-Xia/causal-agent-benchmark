@@ -64,19 +64,24 @@ from causalagentbench.types import SCM, FloatArray, Role, Scaffold, SeedLike
 # --- Stage 0 gate thresholds (future GeneratorConfig fields) ------------------
 DECOY_EFFECT_TOL = 1e-9
 """Decoy total effect is a structural zero; tolerate only numerical dust."""
-ORACLE_TAU_THRESHOLD = 0.99
-"""Kendall-tau the oracle ranking must reach for ``oracle_recovers`` to be true.
+ORACLE_TAU_THRESHOLD = 0.90
+"""Minimum Kendall-tau between the oracle ranking and the truth, at the published sample size.
 
-**Reported, not gated.** It certifies that *ranking* is resolvable at the published sample size, which
-mattered when ranking was the headline. It no longer is: the headline is ``scoring/score.py``'s
-``mean_driver_score``, which rests on effect *estimation*, and estimation error at ``n_samples`` is
-``~1/sqrt(n)`` regardless of how tightly the true effects are spaced - close effects hurt the order, not
-the magnitudes.
+Ranking the drivers is the task's stated deliverable, so an instance whose true order *no* analyst could
+recover from the data is not a hard instance - it is an ill-posed one, and every ranking number reported on
+it is noise. This gate keeps them out.
 
-Measured before demoting it: over 160 instances clearing every other gate, the 77 that fail this one are
-indistinguishable from the 83 that pass - oracle headline 1.000 on both, best blind policy 0.258 vs 0.269.
-It was rejecting 45% of survivors to protect a diagnostic. ``GateReport.oracle_tau`` still carries the
-number so an instance whose ranking is unresolvable stays visible rather than silently reported."""
+0.90, not the previous 0.99. Both are floors on the same quantity; the difference is what they cost.
+Measured over accepted instances, the oracle's own tau at ``n_samples`` has median 1.000 but a p10 of 0.810
+- effects are spaced closely enough that sampling noise occasionally swaps an adjacent pair even for a
+perfect estimator. 0.99 therefore discarded 43% of survivors to exclude near-misses; 0.90 discards 14% and
+still guarantees the oracle orders ~95% of pairs correctly.
+
+Ranking is worth gating for: on the set this admits, oracle tau is 0.934 against 0.367 for blind marginal
+correlation. An earlier note here claimed ranking was shortcuttable at every driver count (blind ~0.75) and
+used that to demote this gate - that measurement predated ``SHORTCUT_ERROR_THRESHOLD`` rising to 0.25,
+which selects against instances where blind policies estimate well, and those turn out to be the same
+instances where they rank well."""
 SHORTCUT_ERROR_THRESHOLD = 0.25
 """Minimum estimation error any blind policy must still suffer, as a fraction of the instance's median
 |true effect|.
@@ -250,9 +255,9 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
         overadjust_flips_ranking = ranking(full) != scm.true_ranking()
         oracle_recovers = oracle_tau >= ORACLE_TAU_THRESHOLD
 
-    # `oracle_recovers` is deliberately absent: it gates ranking resolvability, and the headline rests on
-    # estimation (see ORACLE_TAU_THRESHOLD). It stays on the report as a diagnostic.
-    passed = structure_valid and confounding_realized and mediation_realized and shortcut_defeated
+    passed = (
+        structure_valid and confounding_realized and mediation_realized and shortcut_defeated and oracle_recovers
+    )
     return GateReport(
         passed=passed,
         structure_valid=structure_valid,
