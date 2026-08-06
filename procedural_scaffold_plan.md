@@ -1,7 +1,9 @@
 # CausalAgentBench — Procedural Scaffold Generation Plan (v1)
 
-> **Status: §1-§12 all implemented, tested, and re-verified end-to-end.** This is the authoritative
-> description of how instances are generated today. §11's fix is confirmed by
+> **Status: §1-§12 all implemented and tested.** This is the authoritative description of *why* instances
+> are generated the way they are. Named values below are the ones in force when each section was written;
+> the code is the source of truth for current values, and the ones that have since moved are listed in
+> "Superseded values" at the end of this banner. §11's fix is confirmed by
 > measurement (§11.5): per-role ambiguity now genuinely splits (49.7%/51.1%, not the old 100%/0%), 0/100
 > accepted instances have zero identifiable non-clean drivers (was 30%). §11.6 then made two of the
 > retry loop's four rejection sources deterministic (topology and confounding construction), raising
@@ -10,6 +12,15 @@
 > (`scoring/`), task layer (`task/`), and the semantic labeler (`generation/labeler.py`). Superseded in
 > turn on the effect-construction thresholds by `variance_budget_plan.md` (R1/R1b), which replaced
 > §5a's fixed `MIN_MEDIATED_EFFECT` and confounding margin with driver-count-scaled equivalents.
+>
+> **Superseded values (2026-08-06).** The reasoning in each section stands; these numbers do not.
+> `RESOLVE_PROBABILITY` 0.5 → **0.25** (balances the four quadrants; §11.1/§11.2).
+> `ORACLE_TAU_THRESHOLD` 0.99 → **0.90** (0.99 discarded 43% of survivors over near-misses; §5).
+> `n_drivers` → **`n_candidates`**, now the *total* task size with decoys carved out of it, fixed at 7.
+> `DRIVER_COUNT_RANGE (3,8)` → `CANDIDATE_COUNT_RANGE (4,9)`; `DECOY_COUNT_RANGE (0,2)` → **(1,2)**.
+> The naming grid `{-1, 0, +1}` → **`{-1, +1}`** (§11.8; neutral produced the same gold as misaligned).
+> Four gates → **five**: a closed-form blind-policy floor (`SHORTCUT_ERROR_THRESHOLD = 0.25`) was added.
+> `MIN_MEDIATED_EFFECT` no longer exists — see `variance_budget_plan.md`.
 > Conventions: package
 > `causalagentbench` (src layout, Python 3.12, uv, hatchling; ruff + mypy strict + pytest; line-length 120;
 > concise ASCII docstrings). Dataclasses `frozen=True`.
@@ -20,8 +31,8 @@
 
 `CANONICAL` (`scm/scaffold.py`) is one hand-built, fixed topology: exactly three candidate drivers (`A`
 confounded, `B` clean, `Dz` decoy), one confounder, one mediator. It was the right first move — it let the
-soundness gates and the naming-trap design (§03/§08 of `causalagentbench-4.html`) get verified against one
-known-good structure before generalizing. Two costs of staying there, both already on record
+soundness gates and the naming-trap design get verified against one known-good structure before
+generalizing. Two costs of staying there, both already on record
 (`backlog.md` §4, deck §08):
 
 1. **Structural-position fingerprint.** Every instance shares the same node-degree signature. A model with
@@ -46,7 +57,7 @@ multi-confounder, instrumented), decoys — while preserving every guarantee `CA
   under UUMC's variance conservation, which silently collapsed gate acceptance to 0% at 7+ drivers until
   fixed.
 
-**Relationship to the earlier orientation-ambiguity plan** (`orientation_ambiguity_plan.md`, deleted
+**Relationship to the earlier orientation-ambiguity plan** (since deleted
 2026-08-04 once fully superseded). That plan built one hand-authored 4-node scaffold with
 a binary silent/resolved contrast on a single node. This plan generalizes the same underlying idea —
 data-unresolvable edges are the fair thing to test abstention on, not unobserved confounders — into
@@ -54,8 +65,8 @@ something discovered per driver, per procedurally-generated instance,
 at scale. Its core identifiability reasoning was correct and is reused directly here; the scaffold itself
 was built, then cut from v1 scope.
 
-**What this deliberately does not touch:** nonlinear SCMs (Tier C, a separate later change — see
-`causalagentbench-4.html` §08) and unobserved confounders (ruled out — undetectable from data, so naming can
+**What this deliberately does not touch:** nonlinear SCMs (a separate later change — see `backlog.md`
+§11) and unobserved confounders (ruled out — undetectable from data, so naming can
 never legitimately resolve it; see chat log 2026-07-23 for the full argument, not reproduced here).
 
 **Correction on record (same day)**: an intermediate review pass cut the multi-confounder and instrument

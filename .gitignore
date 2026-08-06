@@ -42,3 +42,6 @@ causenet-*.jsonl*
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Local git bundles
+*.bundle

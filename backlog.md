@@ -1,159 +1,159 @@
-# Design backlog
+# Research and Environment Backlog
 
-Notes on parts of the system that work today but may need rethinking. Each item records the current
-state, why it might need to change, and options — so a future redesign starts with context, not a blank
-page. Not a task tracker; just design memory.
+Active design work for making CausalAgentBench a valid research benchmark and a useful RLVR environment.
+This is intentionally a prioritized task backlog, not a record of superseded designs. The current naming
+grid is constructed as `{-1, 0, +1}` plus a name-blind control; there is no active continuous-`alpha`
+design.
 
----
+## P0: Define a coherent task and gold standard
 
-## 1. How `alpha` (naming alignment) is set by users
+### 1-2. Information model and outcome metrics — RESOLVED (2026-08-06)
 
-**Current state.** `alpha ∈ [-1, 1]` is drawn `~U(-1, 1)` per instance by default
-(`LLMLabeler.alpha = None`), giving a continuous sweep for the benchmark and training. It is *pinnable*
-to a fixed float only for ablations (`llm_labeler(..., alpha=)`, `alpha_sweep(...)`). It is deliberately
-**not** a config field, and the labeler seam (`Callable[[SCM, rng], Labeling]`) forces `alpha` to live
-either on the labeler instance or be drawn from `rng` inside `__call__` — we chose the latter for the
-default and a field for the pinned case.
+**Chosen: causal tool use *with* external knowledge.** Names are an explicit evidence source, and the
+prompt now says so — that they come from a domain source of unknown reliability, that the data settles most
+of the structure, and that names consistent with what was recovered can be relied on where it did not. The
+old defect was never the four cells; it was that the prompt said "abstain when the data cannot resolve it"
+while the gold expected the name to be used, so a model that abstained followed the instructions and was
+marked wrong. `_gold_abstain` still reads `quadrant`'s one cell; the instruction now matches it.
 
-**Why it may need rethinking.**
-- The `alpha: float | None` overload (None = draw, float = pin) is a small wart — one field with two
-  meanings. A future API might separate "sampling policy" from "labeling given alpha" more explicitly.
-- Users may want richer control than uniform draw vs single fixed value: a **schedule/curriculum**
-  (alpha as a function of training step), a **restricted range** or **non-uniform distribution**, or a
-  **stratified grid** for evaluation — none of which the current single-field design expresses.
-- The seam constraint (alpha not a call argument) is what pushed alpha onto the labeler. If the seam
-  ever gains an explicit per-instance parameter object, alpha-sampling could move to the generation
-  layer (a first-class `AlphaPolicy`), which would be cleaner and more extensible.
-- Continuous per-instance alpha means paired skins (same SCM, multiple alpha) only exist via the
-  dedicated `alpha_sweep` helper; if paired data becomes central, it may deserve a more prominent place.
+**Metrics rebuilt around it.** `mean_driver_score` is the headline: one score per candidate, graded on
+*every* candidate, so the denominator is never the agent's to choose — which was the real complaint behind
+item 2 (a blanket-abstainer was graded on 4.2 drivers against 7.0 for one that always committed). Ranking
+is derived from the effect estimates rather than stated separately, so it cannot be earned by ordering on
+raw correlation. Abstention is reported as sensitivity and specificity, because one pooled accuracy has a
+0.605 floor from class balance alone. `reference_scores` recomputes fixed-policy oracles per set, including
+the 0.750 ceiling for any policy that never decides whether to trust the names.
 
-**Options to consider later.** (a) An `AlphaPolicy` abstraction (`uniform`, `fixed`, `grid`, `schedule`,
-`distribution`) passed to the generation functions; (b) widen the labeler seam to carry a per-instance
-context (alpha, target domain, …) instead of baking it on the instance; (c) keep the current design and
-only add helpers as concrete needs appear. Prefer the minimal change that a real use case demands —
-don't build the policy zoo speculatively.
+**Relevant code:** `task/instance.py::build_prompt`, `scoring/score.py`, `agent/eval.py`.
 
-**Coverage finding (2026-07-17 verification run).** The generator is alpha-blind (generate diverse ->
-judge -> select nearest), so the *realized* alpha often differs from the *target* alpha, sometimes
-drastically: an instance targeting +0.69 realized -0.50 because the 6 candidates contained no
-well-aligned naming for that graph/domain. An independent audit confirmed the judge's realized scores
-ARE faithful (aligned namings score high, decoy-trap namings score negative) — so the realized-alpha axis
-is trustworthy and is the right analysis coordinate; but per-instance alpha is *measured, not
-controlled*, and axis coverage can be uneven/thin in places. Levers if coverage matters: raise
-`n_candidates` (more shots per instance), oversample-and-bin on realized alpha to fill the axis, or (last
-resort, rejected so far) make the generator alpha-aware. Decide once a real analysis needs a particular
-alpha density.
+### 3. Establish finite-sample recoverability, not only oracle graph identifiability
 
-**Update (2026-07-18): largely resolved by re-spec.** The continuous judge-measured α (uncontrolled,
-"measured not set") was replaced by a **discrete constructed** grid `{-1,-0.5,0,+0.5,+1}` via the
-three-pole mixture (see `semantic_labeler_plan.md`) — α is now exact and controllable by construction,
-and the coverage/gap problem is gone. Remaining future item: *finer* grids toward a smooth continuous
-curve (smaller mixture steps) if a dense dose-response is wanted; and seeded intra-level subset diversity.
+**Problem.** The identifiability label is computed from the hidden DAG's exact CPDAG. The gate only checks
+that an oracle supplied with the hidden correct adjustment set recovers the ranking on the sampled table.
+Neither fact shows that the required structure/effect is recoverable by a specified method from the observed
+finite sample.
 
-**Update (2026-07-27): grid collapsed further, to `{-1,0,+1}`.** The two midpoints needed
-`_informative_order` - a hand-tuned per-node priority list - to pick a partial subset to flip, and that
-list conflated two different justifications (quadrant coverage vs. score sensitivity) with no clean
-single principle. The endpoints never needed an order at all (every node already flipped there), so
-dropping the midpoints removed the ordering question outright rather than re-solving it; `_informative_order`
-is deleted, not kept unused. Trade-off made deliberately: gives up the dose-response middle of the curve
-for a directly comparable, per-quadrant result (aligned vs. neutral vs. misaligned, same SCM, every node
-moving together). See `procedural_scaffold_plan.md` §11.8.
+**Required outcome.** State the assumptions (causal sufficiency, linearity, Gaussianity, faithfulness or a
+finite-sample substitute), then calibrate the generated distribution with repeated samples and causal
+discovery/effect-estimation baselines. Reject or separately label cases that are structurally identifiable
+but not recoverable at the published sample size.
 
-**Related:** `src/causalagentbench/generation/labeler.py` (`LLMLabeler`, `llm_labeler`),
-`generation/generate.py` (`alpha_sweep`), `semantic_labeler_plan.md` §2/§3.
+**Relevant code:** `scm/identifiability.py`, `scoring/gates.py`, `scm/sample.py`.
 
----
+## P0: Validate the intervention and publish a reproducible artifact
 
-## 2. Column-description content is only softly constrained
+### 4. Validate semantic labels independently and control text leakage
 
-**Current state.** The generator is *instructed* (prompt only) that each column description should state
-what the variable **measures** (a data dictionary — "LDL cholesterol, mg/dL"), not narrate the causal
-relationships between variables. There is no hard check. We deliberately removed the role/leakage audit
-(see `semantic_labeler_plan.md` §3): the gold is label-invariant, so nothing "leaks the answer," and a
-substring guard was both false-positive-prone and conceptually wrong (roles are relational).
+**Problem.** The label generator and optional critic receive the hidden graph, roles, and effects. The
+description prohibition is a prompt instruction, not a verifier. The all-at-once naming manipulation also
+changes domain coherence and language style, not just causal prior.
 
-**Why it may need rethinking.** If a description *narrates structure* ("age, which affects both
-cholesterol and heart risk"), that instance's task shifts from "infer the structure" toward "read it off
-the prose" — muddying what the naming axis measures. Today only the prompt discourages this; nothing
-verifies it.
+**Required outcome.** Freeze generated label cards before evaluation; retain provenance and rejection logs;
+independently blind-rate alignment, misleadingness, continuity, and relationship leakage. Use a generator
+separate from evaluated models. Add lexical/text controls and counterfactual swaps that isolate the intended
+semantic variable. Treat descriptions as an explicit design choice, including the option to remove them.
 
-**Options to consider later.** (a) Leave as a prompt nudge and spot-check during human review of a built
-set; (b) if descriptions are found narrating structure, add a *lightweight* judge check on description
-content specifically (not a role blocklist); (c) drop per-column descriptions entirely if they add
-leakage risk without enough task value. Decide based on what real generated descriptions look like — not
-speculatively.
+**Relevant code:** `generation/labeler.py`, `task/labeling.py`.
 
-**Related:** `generation/labeler.py` (`_generator_prompt`), `semantic_labeler_plan.md` §3.
+### 5. Release a frozen, complete test set
 
-**Update (2026-07-18): neutral-name continuity tension.** Live gpt-5 runs skip ~1/3 of SCMs because the
-generator's *neutral* (administrative) names are often inherently discrete (counts, ids, page numbers)
-while the data is continuous & standardized - the pre-check then rejects the description as
-non-continuous, and revisions don't always fix it. Refinement: steer neutral names to
-continuous-compatible admin variables (`enrollment_day_offset`, `device_calibration_offset`,
-`operator_tenure_days`) rather than counts/ids, to cut the skip rate. Low priority (the skip gate works;
-it just wastes some SCMs).
+**Problem.** `outputs/` is ignored and no fixed test set is versioned. The builder silently skips an SCM
+when LLM naming fails, so the retained seed population is selected by an unreported process. Existing
+experiment summaries are pilots from earlier data-generation versions and their raw data is not committed.
 
----
+**Required outcome.** Publish a non-empty frozen dataset, manifest, checksums, build configuration, exact
+generator/critic model identifiers, CauseNet source snapshot/license provenance, accepted and rejected seed
+logs, and raw evaluation records. Fail a release build if its prespecified quota or balance is not met;
+never silently publish a partial set.
 
-## 3. Discrete / mixed-type data (currently all continuous-Gaussian)
+**Relevant code:** `scripts/build_testset.py`, `configs/testset_v1.yaml`, `task/dataset.py`.
 
-**Current state.** The SCM is linear-Gaussian, so every column is a continuous, standardized variable.
-As of 2026-07-17 the generator is constrained (prompt) to describe only continuous real-valued variables
-(Tier A), because a data-blind generator was writing "binary (0/1)" / "yes-no" / "count" descriptions that
-contradicted the continuous data — an agent inspecting the table would see the mismatch. So descriptions
-now match the data, but the data is still always continuous.
+## P1: Make experiments falsifiable and comparable
 
-**Why it may need rethinking.** Real causal analysis is full of **binary treatments, binary/count
-outcomes, and categorical covariates**. Testing agents only on continuous data undercovers the space.
-Diagnosis of a generated batch confirmed the instances are otherwise sound (correct backdoor adjustment
-recovers τ and the ranking; naive correlation and adjust-for-everything both fail as designed).
+### 6. Add calibrated baselines and adversarial shortcut tests
 
-**Options (tiers), trading realism against the exact closed-form verifier.**
-- **Tier B (cheap, keeps exact τ):** in a linear SEM, total effects depend only on `W`, not on the noise
-  distribution — so non-Gaussian / discrete **noise** (counts, skew) and **binary exogenous roots** (a
-  binary *treatment*) can be added while `τ = (I−W)⁻¹−I` stays exact. Covers the common "binary treatment"
-  case. Needs generator/sampler work + care with the standardization/"standardized effect" interpretation.
-- **Tier C (large, breaks the closed form):** genuine categorical/binary **nodes** including binary
-  *outcomes* need link functions (logistic/threshold); effects become estimand-dependent and require
-  Monte-Carlo / do-calculus estimation — i.e. giving up the exact single-artifact verifier that is the
-  project's differentiator. This is a roadmap-level change, likely a separate scaffold/verifier family.
+**Partly done.** A closed-form blind-policy panel now gates every instance (`SHORTCUT_ERROR_THRESHOLD`),
+and `reference_scores` reports fixed-policy oracles per set. Still missing: a causal-discovery baseline
+(PC/GES) run end-to-end as an agent, and the R-squared exploitability test.
 
-**Recommendation captured:** do Tier B before Tier C, and only if evaluation coverage demands it; never
-trade away the exact verifier for v1. Decide against real agent-eval needs, not speculatively.
+**Problem.** Current baselines are oracle, raw correlation, and adjust-everything. They establish useful
+construction checks but do not calibrate an agent against causal discovery or against simple exploitable
+statistics.
 
-**Related:** `scm/generate.py`, `scm/sample.py`, `scm/effects.py` (`τ`), `types.py` (`SCM`),
-`generation/labeler.py` (`_generator_prompt`).
+**Required outcome.** Add and report:
 
----
+- causal-discovery/effect baselines appropriate to the declared assumptions (at least PC/constraint-based
+  and a score-based alternative, with documented hyperparameters);
+- semantic-only, data-only/name-blind, and tool-ablation agent baselines;
+- metadata/text-only and simple-statistic baselines, including the observed R-squared/root-status signal;
+- oracle ceilings that are clearly labeled as access to hidden gold adjustments, not a discoverability
+  baseline.
 
-## 4. The identifiability floor: a feature, and a constraint on how results may be read
+R-squared sortability is not itself a defect: root/non-root signal is legitimate causal information. Its
+task-level exploitability, including the remaining parameterization artifact, is unmeasured and must be
+tested rather than declared closed.
 
-**Current state.** Every instance contains at least one driver whose incoming confounder edge is genuinely
-**unoriented from observational data alone** (no v-structure/Meek rule forces it) — guaranteed by
-construction, not by luck: `procedural_scaffold` reserves one driver slot as forced-ambiguous and one as
-forced-resolved (`procedural_scaffold_plan.md` §11.3/§11.6), and the outcome is read back per instance off
-`unoriented_edges`, never declared.
+### 7. Define the experimental unit and statistical protocol
 
-**This is a feature, not a bug** — it is exactly what makes the naming axis load-bearing. If data alone
-resolved everything, names would be decorative and the benchmark would collapse to "just run PC". But the
-consequence for reporting is permanent and must be stated in any write-up:
+**Partly done.** Task size is now fixed: `n_candidates=7` counts drivers *and* decoys, with decoys carved
+out of that budget rather than added on top, so candidate count no longer varies. Because every instance
+has exactly 7, pooling over drivers and averaging per-instance means give the same number. Still missing:
+the paired bootstrap over SCMs and reported intervals.
 
-**Interpretation floor.** At neutral/name-blind alignment there is an honest information-theoretic ceiling
-below 1.0 on the ambiguous drivers' `adjustment_accuracy` — no amount of good reasoning from data alone can
-beat it. This is expected, not evidence of poor reasoning; the informative signal is the **slope**
-aligned-to-misaligned, not the absolute score at neutral. Omit this and a flat-looking dip at neutral reads
-as a reasoning failure when it is the design working. `abstention_accuracy` is the metric that credits the
-correct behavior in that regime (abstaining), and `ranking_tau` excludes correctly-abstained drivers, so a
-low neutral score is not double-counted against the agent — but the floor on adjustment is real.
+**Problem.** Naming skins of one SCM are paired observations, not independent samples, and the calibration
+signal is one bit per instance (naming is uniform across a skin). Current summaries are point estimates
+without uncertainty.
 
-**Resolved (2026-07-28): the structural-position memorization risk.** Earlier revisions of this item
-recorded a second consequence — `CANONICAL` being one fixed scaffold meant every node's degree/adjacency
-signature was a naming-independent fingerprint, learnable as benchmark trivia by an agent with
-cross-instance memory (an RL loop, or one context spanning several instances). That no longer applies:
-`CANONICAL` and `scm/scaffold.py` are deleted, and every instance now composes its own topology with
-variable driver count, archetype mix, and decoy count. The risk was the concrete motivation for the
-procedural generator; it is closed, not deferred.
+**Required outcome.** Pre-specify source-SCM as the primary unit, use paired/block bootstrap or permutation
+tests over SCMs, report confidence intervals and all denominators, and power the number of independent SCMs
+and independent naming draws for the target interaction. Either fix total candidate count or explicitly
+stratify/standardize every affected metric.
 
-**Related:** `scm/gadgets.py` (`procedural_scaffold`), `scm/identifiability.py` (`unoriented_edges`,
-`unidentifiable_drivers`), `scoring/score.py` (`quadrant`, `abstention_accuracy`),
-`generation/labeler.py` (the α grid), `procedural_scaffold_plan.md` §11.
+**Relevant code:** `scm/gadgets.py`, `agent/eval.py`, `configs/testset_v1.yaml`.
+
+### 8. Expand beyond the small gadget grammar before making broad claims
+
+**Problem.** The current generator composes a small catalog of clean, confounded, multi-confounder,
+instrumented, and decoy motifs under linear-Gaussian causal sufficiency. Procedural variation prevents one
+fixed-graph lookup, but agents can still learn family-specific strategies.
+
+**Required outcome.** Maintain explicit train/validation/test graph-family splits; hold out motif
+compositions and nuisance configurations; measure out-of-family performance. Scope v1 claims to this
+well-controlled linear-Gaussian family until stronger evidence exists. Mixed/discrete node families are a
+separate future verifier problem, not a current paper prerequisite.
+
+## P1: RLVR environment readiness
+
+### 9. Make resource use part of the environment contract
+
+**Problem.** `max_turns` limits model calls but not tool calls: a model can batch arbitrarily many
+correlations/regressions in one turn. That makes training and cross-model comparisons sensitive to API
+batching rather than only causal capability.
+
+**Required outcome.** Define a total query budget, per-tool costs, context/token limits, and termination
+rules. Record them in every trajectory. Evaluate capability under one or more declared budgets, rather than
+implicitly granting unrestricted statistical search.
+
+**Relevant code:** `agent/loop.py`, `agent/tools.py`, `scripts/run_eval.py`.
+
+### 10. Design an RL-safe reward and split protocol
+
+**Problem.** The SCM verifier is fast and exact, making this promising for RLVR, but the current semantic
+gold rule would train a policy to exploit an evaluator-only naming convention. A single scalar score can also
+hide trading off abstention, ranking, and adjustment failures.
+
+**Required outcome.** Start with the data-only environment after item 1 is resolved. Use deterministic
+per-driver verifier components for answer format, valid adjustment, effect/ranking, and calibrated
+abstention; make any scalar reward and query penalty explicit. Train on procedural seeds and evaluate on
+held-out graph families and frozen label cards. Keep semantic generalization as a separate validated track
+until its evidence model is formalized.
+
+## Deferred Scope
+
+### 11. Add non-Gaussian or mixed-type SCM families only with a matching verifier
+
+The current continuous linear-Gaussian family is a deliberate v1 boundary, not an accidental omission.
+Binary treatments, discrete covariates, nonlinear links, hidden confounding, and real datasets would improve
+external validity, but each changes the estimand and/or removes the present exact closed-form verifier.
+Add them as separately validated environment families after the core task, baselines, and release process
+are sound.

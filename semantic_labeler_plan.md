@@ -1,9 +1,13 @@
 # CausalAgentBench — Semantic Labeler Plan (three-pole discrete alignment, constructed)
 
 > **Status: implemented** (`generation/labeler.py`, `generation/grounding.py`, `task/labeling.py`) and the
-> authoritative description of the naming layer, with **one amendment**: the α grid was later collapsed
-> from five values to three, applied uniformly — §3.2, §8 and §9 below carry the correction inline. See
-> `procedural_scaffold_plan.md` §11.8 for that decision and `backlog.md` §1 for the history.
+> authoritative description of the naming layer, with **two amendments**. The α grid was collapsed from
+> five values to three (§3.2, §8, §9 carry that correction inline), and then to **two** — `{-1, +1}` —
+> because neutral produced the same gold as misaligned in every cell. The generator prompt still asks for a
+> neutral variant so a 0.0 level can be restored without a generator change, but no grid level displays it,
+> so it is neither validated nor critiqued. The snake_case name check was also removed: it rejected names
+> that were correct as names and wrong only in letter case (`dissolved_oxygen_mgL_z`).
+> See `procedural_scaffold_plan.md` §11.8 and `backlog.md` for the history.
 > **Supersedes** the
 > earlier LLM-generate→judge→select design (see "§10 What this replaces"). Package `causalagentbench`
 > (src layout, Python 3.12, uv, hatchling; ruff + mypy strict + pytest; line-length 120; concise ASCII

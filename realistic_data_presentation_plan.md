@@ -34,7 +34,7 @@ cosmetic, reason: at a misaligned or neutral alpha level, the displayed range wo
 whatever name is actually displayed (e.g. a plausible age-like range under a name like `annual_rainfall_mm`).
 That's a new signal, unrelated to causal reasoning, that could let an agent shortcut the misaligned
 condition by noticing a range/name mismatch rather than reasoning about structure at all - a real risk to
-the exact experiment this benchmark exists to run (§03 of `causalagentbench-4.html`). The standardize-and-
+the exact experiment this benchmark exists to run. The standardize-and-
 disclose approach removes this risk structurally: with no per-node range, there is nothing for any name to
 be inconsistent with, at any alignment level. It also cuts the implementation surface from a labeler schema
 change + a rescaling step + a `regress()` re-standardization fix down to one sentence of prompt text - lower
@@ -61,5 +61,5 @@ this approach:
   etc.) - not merely deferred for later convenience, rejected on a specific risk (§2). Revisit only if a
   concrete future need for surface realism arises, and only with the naming-coherence risk addressed head
   -on, not waved away.
-* Genuine categorical/binary node types - unrelated to this plan's scope; already Tier C in
-  `causalagentbench-4.html` §08, unchanged by this decision either way.
+* Genuine categorical/binary node types - unrelated to this plan's scope; tracked as `backlog.md` §11,
+  unchanged by this decision either way.

@@ -5,6 +5,10 @@
 > here but deliberately *not* fixed by this plan — it is coupled to sample size and needs its own decision,
 > and it is now the binding constraint at high driver counts.
 > Builds on `procedural_scaffold_plan.md` §5a (direct construction) and §12 (the two validity fixes).
+>
+> **Superseded values (2026-08-06).** `n_drivers` throughout means the non-decoy driver count, which is
+> still what `scaled_threshold` scales by — but the build knob is now `n_candidates` (total task size,
+> decoys included, fixed at 7). §6's ladder analysis is unchanged and still the open constraint.
 
 ---
 
