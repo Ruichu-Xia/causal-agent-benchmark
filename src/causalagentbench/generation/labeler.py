@@ -47,6 +47,12 @@ GroundingFn = Callable[[SCM, np.random.Generator], str]
 GRID: tuple[float, ...] = (-1.0, 1.0)
 
 _KINDS = ("aligned", "neutral", "misaligned")
+#: The kinds ``construct_labeling`` can actually emit, given ``GRID``. Only these are validated: gating on a
+#: name no instance will ever display rejects SCMs for nothing. With ``GRID = (-1, 1)`` the neutral names are
+#: generated (the prompt still asks for all three, so restoring a 0.0 level needs no generator change) but
+#: never consumed - and they were a real rejection source, since administrative names like
+#: ``page_footer_version`` are inherently discrete and tripped the continuity check (backlog §2).
+_USED_KINDS = frozenset({"aligned" if level > 0 else "misaligned" if level < 0 else "neutral" for level in GRID})
 # No snake_case gate. It was rejecting names that were correct as *names* and wrong only in letter case -
 # scientific unit abbreviations carry capitals, so `groundwater_nitrate_n_mgL_z`, `dissolved_oxygen_mgL_z`
 # and `conductivity_in_groundwater_uScm_z` all failed it, discarding an otherwise-good SCM over notation.
@@ -139,10 +145,12 @@ def _pre_check(triples: NamingTriples, scm: SCM) -> list[str]:
         return issues
     names: list[str] = []
     for node, kinds in triples.choices.items():
-        if set(kinds) != set(_KINDS):
-            issues.append(f"node {node} is missing one of aligned/neutral/misaligned")
+        if not set(kinds) >= _USED_KINDS:
+            issues.append(f"node {node} is missing one of {sorted(_USED_KINDS)}")
             continue
-        for _, (name, desc) in kinds.items():
+        for kind, (name, desc) in kinds.items():
+            if kind not in _USED_KINDS:
+                continue  # generated but never displayed; see _USED_KINDS
             names.append(name)
             if _PLACEHOLDER.match(name):
                 issues.append(f"name {name!r} is a placeholder, not a real-world concept")
@@ -283,9 +291,11 @@ All names snake_case and ALL distinct. Return ONLY JSON of the form:
 def _critic_prompt(scm: SCM, triples: NamingTriples) -> str:
     """Prompt the critic to verify each node's aligned/neutral/misaligned names are genuinely correct."""
     ids = _ids(scm)
+    # Only the kinds that can actually be displayed (see _USED_KINDS) - the critic must not reject an SCM
+    # over a name no instance will ever show.
     listed = "\n".join(
         f"  {ids[node]} ({'outcome' if node == scm.scaffold.outcome else scm.scaffold.roles[node].value}): "
-        + ", ".join(f"{kind}={name}" for kind, (name, _) in kinds.items())
+        + ", ".join(f"{kind}={name}" for kind, (name, _) in kinds.items() if kind in _USED_KINDS)
         for node, kinds in triples.choices.items()
     )
     return f"""\
@@ -298,11 +308,9 @@ Proposed names per node:
 
 Verify, for every node: the "aligned" name's real-world prior genuinely matches the node's role (strong
 cause on a large-effect driver, inert on the zero-effect decoy, common-cause on a confounder, on-path on
-a mediator); the "neutral" name is a data-collection artifact / identifier (record/batch/form id,
-operator or device code, row index, timestamp) with no causal link to the outcome - accept such
-administrative names as neutral; the "misaligned" name is a genuine task-relevant trap (a strong
-cause-name on the zero-effect decoy, inert on a driver, swapped confounder/mediator cues). Also flag
-placeholder / incoherent names.
+a mediator); the "misaligned" name is a genuine task-relevant trap (a strong cause-name on the zero-effect
+decoy, inert on a driver, swapped confounder/mediator cues). Also flag placeholder / incoherent names.
+Judge only the names shown below - do not ask for kinds that are not listed.
 Return ONLY JSON: {{"ok": true}} or {{"ok": false, "issues": ["<node id>: <what is wrong>", ...]}}"""
 
 
