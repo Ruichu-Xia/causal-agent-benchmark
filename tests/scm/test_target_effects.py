@@ -101,7 +101,7 @@ def test_mediated_path_sometimes_opposes_its_own_drivers_effect():
     deletes suppression (a real structure) and makes `|direct| < |total|` universal - which turns "adding Z
     to the adjustment set shrinks my estimate" into a perfect test for "Z is a mediator", letting an agent
     dodge the over-adjustment trap by numeric probing instead of reasoning about what is downstream of the
-    treatment (measured 100% vs 53.7%, `variance_budget_plan.md` §10).
+    treatment (measured 100% vs 53.7%).
     """
     agrees = opposes = 0
     for seed in range(30):

@@ -47,7 +47,7 @@ whether a failure fell on a driver whose effect the data can actually resolve. `
 ``alignment`` are the two stratification axes (``agent/eval.py::aggregate_by_driver_cell``); the naming
 axis is deliberately carried by ``alignment`` rather than a stored ``Quadrant``, because
 ``construct_labeling`` applies a level uniformly to every non-outcome node, making a driver's "aligned"
-bit exactly ``alignment > 0`` (``procedural_scaffold_plan.md`` §11.8).
+bit exactly ``alignment > 0``.
 
 ``alignment`` carries the naming-alignment level for stratified analysis. A parse failure or a malformed
 ranking scores zero rather than raising. New metrics are added by extending ``AnswerScore`` and

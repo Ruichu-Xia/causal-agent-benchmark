@@ -53,7 +53,7 @@ score.abstention_accuracy   # fraction whose abstain/commit choice matches the g
 ```
 
 `report.data` is the exact table the oracle gate certified — reuse it rather than drawing a fresh sample,
-since gate acceptance is tied to that one draw (`procedural_scaffold_plan.md` §12.2).
+since gate acceptance is tied to that one draw.
 
 ## Generating naming-alignment data (optional)
 
@@ -260,19 +260,10 @@ Tests mirror this layout under `tests/{scm,task,scoring,generation,agent}/`.
 
 ## Design docs
 
-Four docs, each still accurate as of the last commit:
-
-* [`procedural_scaffold_plan.md`](procedural_scaffold_plan.md) — **the authoritative account of how
-  instances are generated**: the gadget catalog, identifiability discovery, direct effect construction,
-  the gate loop, and the abstain/quadrant scoring rules. Read this first.
-* [`variance_budget_plan.md`](variance_budget_plan.md) — why mediated effects and confounding margins scale
-  with driver count. §6 is the one **open** item in these docs: the target-effect ladder still grows as
-  `√n`, which is what caps usable driver counts at ~9 (n=10 accepts at 4.8%). Fixing it is coupled to a
-  sample-size raise (`N ≳ n³`), not an independent change.
-* [`semantic_labeler_plan.md`](semantic_labeler_plan.md) — the naming layer: three poles per node, the
-  propose→critique→revise loop, and the constructed α grid.
-* [`realistic_data_presentation_plan.md`](realistic_data_presentation_plan.md) — why the data is
-  standardized-and-disclosed rather than dressed in realistic per-node ranges.
+The design rationale lives in the code: every threshold, gate and construction step carries a docstring
+explaining why it holds the value it does and what was measured to choose it. Start at
+`scm/target_effects.py` (how effects are constructed), `scoring/gates.py` (what an instance must prove),
+and `scoring/score.py` (how an answer is graded).
 
 `backlog.md` is the living record of open design questions and known characteristics — read it before
 extending the SCM/naming/scoring layers.

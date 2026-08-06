@@ -5,7 +5,7 @@ Per SCM it runs ONE generator proposal (+ optional correctness critic + revise l
 every alignment level ``{-1,0,+1}`` plus the name-blind control - paired skins over one SCM, sharing the
 exact data table ``generate_gated_procedural`` already validated the oracle gate against (``report.data``)
 - never redrawn independently, which would only be guaranteed to match the gate's own certified oracle
-recovery by coincidence, not by construction (``procedural_scaffold_plan.md`` §12).
+recovery by coincidence, not by construction.
 Writes ``<out>.json`` (metadata + SCM params + naming card, one record per instance: ``id``, ``seed``,
 ``scaffold``, ``W``/``noise_var``/``sigma``/``tau``, ``node_to_label``, ``columns``, ``context``,
 ``column_schema``, ``provenance``) + ``<out>.npz`` (one data table per record id).

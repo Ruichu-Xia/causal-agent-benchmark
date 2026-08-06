@@ -47,7 +47,7 @@ def generate_instance(
 
     ``n_samples=None`` (the default) uses the exact table the oracle gate already validated
     (``report.data``) - the only way to guarantee the gate's oracle-recovery guarantee actually holds on
-    what's returned (`procedural_scaffold_plan.md` §12). Pass an explicit ``n_samples`` to draw a fresh,
+    what's returned. Pass an explicit ``n_samples`` to draw a fresh,
     independent sample at that size instead; that sample is not guaranteed to clear the same oracle bar.
     """
     scm, report = generate_gated_procedural(

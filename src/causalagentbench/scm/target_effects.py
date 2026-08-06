@@ -5,7 +5,7 @@
 (``confounding_realized``) - all depend on specific edges into or around the outcome landing in a
 comfortable range, and pure random draws don't reliably do that at once: measured to collapse combined
 acceptance to under 5% even after fixing gate-threshold scaling, because two of the three gates were still
-just checked against chance rather than constructed (``procedural_scaffold_plan.md`` §5a). This module
+just checked against chance rather than constructed. This module
 fixes all three the same way: pick the target value directly, then solve the exact edge weight needed to
 hit it, instead of drawing random weights and hoping.
 
@@ -22,8 +22,7 @@ Every target this module picks is expressed *relative* to the instance it belong
 floor and gap via ``scaled_threshold``, the mediated path as a share of its own driver's effect, the decoy
 margin as a scaled offset from the realized weakest driver correlation. That is one rule, not three
 coincidences: the outcome's incoming variance is capped at 1, so every demand on it competes, and a demand
-expressed as a fixed absolute magnitude grows without bound as a share of that cap as driver count rises
-(`variance_budget_plan.md`).
+expressed as a fixed absolute magnitude grows without bound as a share of that cap as driver count rises.
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ from causalagentbench.types import SCM, Role
 #: consistent there; every other n scales from here. Single source of truth, imported by
 #: `gates.py` rather than duplicated - two independently-derived formulas for "the guaranteed minimum" is
 #: exactly how this module's own gap requirement and the gate's threshold drifted out of sync the first
-#: time (`procedural_scaffold_plan.md` §5a).
+#: time.
 REFERENCE_N = 3
 REFERENCE_MIN_EFFECT = 0.10
 REFERENCE_MIN_GAP = 0.05
@@ -53,7 +52,7 @@ _MARGIN = 1.1
 #: consumes all of it. Being constructed *first* does not make a demand free - it still competes. Measured
 #: before this was fixed: mediator edges alone took 0.30 of the budget at 3 drivers but 0.75 at 10, and
 #: mediation construction was infeasible in 81% of attempts at 10 drivers, collapsing overall acceptance to
-#: 0.3% (`variance_budget_plan.md` §1).
+#: 0.3%.
 MIN_MEDIATED_SHARE = 0.25
 """|W[driver,mediator] * W[mediator,outcome]| must be at least this *fraction* of that driver's own total
 effect, so over-adjustment biases it materially. A fraction in magnitude only - the mediated path may
@@ -81,7 +80,7 @@ def scaled_threshold(reference_value: float, n_drivers: int) -> float:
 
     The `1/sqrt(N)` relationship isn't a tuning choice - it's the same variance-conservation law that made
     naive UUMC sampling shrink driver effects as driver count grew (measured to collapse gate acceptance to
-    0% at 7+ drivers, `procedural_scaffold_plan.md` §5): with N drivers competing for the outcome's fixed
+    0% at 7+ drivers): with N drivers competing for the outcome's fixed
     unit-variance budget, a threshold calibrated for one driver count only stays equally hard to clear at
     another if it scales the same way the achievable effects do.
     """
@@ -130,8 +129,8 @@ _MEDIATED_SHARE_RANGE = (0.35, 0.60)
 #: close to `_MEDIATOR_EDGE_RANGE` by direct measurement, not guesswork: narrower ranges (e.g. (0.1, 0.25))
 #: measurably made `confounding_construct_infeasible` *worse*, not better - a smaller starting value has
 #: less room left after the shrink ladder in `with_constructed_effects` (below) backs it off for a
-#: driver-target solve, so it beats the decoy margin less often, not more (`procedural_scaffold_plan.md`
-#: §11.6). Widening further past this range keeps helping only marginally while nudging
+#: driver-target solve, so it beats the decoy margin less often, not more.
+#: Widening further past this range keeps helping only marginally while nudging
 #: `mediation_construct_infeasible` up - this is the measured sweet spot, not a protected value like the
 #: mediator's: it still stays part of the shrink ladder's lever.
 _CONFOUNDER_EDGE_RANGE = (0.3, 0.6)
@@ -141,7 +140,7 @@ _CONFOUNDER_EDGE_RANGE = (0.3, 0.6)
 #: value: confirmed by direct comparison that a single fixed shrink is worse at every level tried (0.5 ->
 #: 2.3%, 0.3 and 0.15 -> 0.0%) than trying 1.0 first and backing off only when needed - different instances
 #: need different amounts of room, so one fixed value is either too small to help or large enough to break
-#: something else (`procedural_scaffold_plan.md` §5a). Mediator edges are excluded from this shrink (see
+#: something else. Mediator edges are excluded from this shrink (see
 #: `_construct_mediator_edge`) - they're fixed before this ladder runs, not left for it to squeeze.
 _SHRINK_LADDER = (1.0, 0.5, 0.25, 0.1, 0.03)
 
@@ -192,7 +191,7 @@ def _construct_mediator_edge(
     estimate" into a perfectly separating test for "Z is a mediator" - measured 100% on true mediators vs.
     53.7% on other variables. The over-adjustment trap is supposed to require reasoning about what is
     downstream of the treatment; a numeric probe that identifies mediators without any structural reasoning
-    defeats it (`variance_budget_plan.md` §10). The scaling fix this module exists for is that the mediated
+    defeats it. The scaling fix this module exists for is that the mediated
     path is *proportional to its own driver's effect* rather than a fixed magnitude - which is preserved
     either way, independent of sign.
 
@@ -307,7 +306,7 @@ def with_constructed_confounding(scm: SCM, rng: np.random.Generator) -> SCM | No
 
     Returns ``None`` if a confounder's own correlation with the outcome is too small for any edge weight to
     reach the target without exceeding unit variance - historically ~25-27% of attempts, the largest single
-    rejection source in `generate_gated_procedural`'s loop (`procedural_scaffold_plan.md` §11.6), because
+    rejection source in `generate_gated_procedural`'s loop, because
     the margin it had to clear was a fixed absolute value while the correlations on both sides of it shrank
     as ``1/sqrt(N)``; the margin now scales with driver count (``CONFOUNDING_MARGIN``). Must run *after*
     driver construction - it needs each driver's realized correlation with the outcome, which only exists

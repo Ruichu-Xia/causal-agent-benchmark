@@ -12,8 +12,8 @@ No gadget declares whether its confounder/instrument edge is ambiguous - that is
 tied to its archetype: any confounder- or instrument-bearing driver can independently get the resolving
 modifier (``_add_upstream_cause``) or not, discovered the same way. Exactly two driver slots are reserved to
 guarantee the composed topology always has both an ambiguous driver and a resolved (identifiable-but-still-
-confounded) driver - constructed directly, not left to a topology-gate retry (`procedural_scaffold_plan.md`
-§11.3's revision: the original design checked this after the fact and rejected ~32% of raw draws; every
+confounded) driver - constructed directly, not left to a topology-gate retry (the
+original design checked this after the fact and rejected ~32% of raw draws; every
 other driver slot stays fully free, exactly as before). Their *archetype* is still drawn, not declared -
 only which two properties get guaranteed is fixed, never which gadget shape produces them.
 """
@@ -132,7 +132,7 @@ def _add_upstream_cause(gadget: _Gadget, target: str, names: tuple[str, str]) ->
 
     Gives ``target`` (a confounder or instrument node) its own v-structure - `X1 -> target <- X2`, `X1`/`X2`
     otherwise unconnected. Ordinary v-structure detection orients both new edges, and Meek rule 1 then
-    forces ``target``'s own edge into the driver as well (`procedural_scaffold_plan.md` §11.1) - resolving
+    forces ``target``'s own edge into the driver as well - resolving
     it from data alone while the driver stays genuinely confounded (its `correct_adjustment` is unchanged).
     Never declares this outcome - it's read back off `scm/identifiability.py::unoriented_edges`, exactly as
     for every other edge.
@@ -184,7 +184,7 @@ def procedural_scaffold(
     """Compose a fresh ``Scaffold`` deterministically from ``seed``.
 
     Two driver slots are reserved: one forced resolved-but-confounded, one forced ambiguous - the
-    guarantee `procedural_scaffold_plan.md` §11.3 needs, constructed directly instead of checked after the
+    guarantee needs, constructed directly instead of checked after the
     fact and retried (its original design rejected ~32% of raw draws). Every other slot draws its archetype
     freely from ``FREE_ARCHETYPES`` and, independently, whether its own ambiguity gets resolved
     (``_maybe_resolve``, at ``resolve_probability``) - not special-cased. Decoys attach to a random

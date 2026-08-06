@@ -110,10 +110,10 @@ MAX_ATTEMPTS = 1000
 
 #: `CONFOUNDING_MARGIN` and `MIN_MEDIATED_SHARE` live in `scm/target_effects.py`, next to the driver-effect
 #: thresholds - construction and the check that verifies it must share one definition, not two
-#: independently-tuned ones (`procedural_scaffold_plan.md` §5a). Both are relative, like the driver-effect
+#: independently-tuned ones. Both are relative, like the driver-effect
 #: thresholds and for the same reason: `MIN_MEDIATED_SHARE` is checked as a fraction of the driver's own
 #: effect, and `CONFOUNDING_MARGIN` is scaled here by `scaled_threshold` exactly as construction scales it
-#: (`variance_budget_plan.md`). An absolute floor on either one is a demand that grows as a share of the
+#: An absolute floor on either one is a demand that grows as a share of the
 #: outcome's fixed variance budget as driver count rises, until no candidate can satisfy it.
 
 
@@ -150,7 +150,7 @@ class GateReport:
     one (a seed + sample size that a caller must independently get right and keep in sync). A consumer
     that needs data consistent with what passed the gate (e.g. a released dataset) should use this table
     directly, never redraw independently: a fresh draw, even at a matching sample size, is not guaranteed
-    to reproduce the specific pass this report already certified (`procedural_scaffold_plan.md` §12).
+    to reproduce the specific pass this report already certified.
     """
 
     passed: bool
@@ -255,9 +255,7 @@ def evaluate_gates(scm: SCM, config: GeneratorConfig, seed: SeedLike) -> GateRep
         overadjust_flips_ranking = ranking(full) != scm.true_ranking()
         oracle_recovers = oracle_tau >= ORACLE_TAU_THRESHOLD
 
-    passed = (
-        structure_valid and confounding_realized and mediation_realized and shortcut_defeated and oracle_recovers
-    )
+    passed = structure_valid and confounding_realized and mediation_realized and shortcut_defeated and oracle_recovers
     return GateReport(
         passed=passed,
         structure_valid=structure_valid,
@@ -288,8 +286,7 @@ def _has_balanced_identifiability(scaffold: Scaffold) -> bool:
     declared by construction. Replaces the old single-forced-slot mechanism ("driver 0 is always
     `confounded_driver`"): that was only ever a proxy for guaranteeing an ambiguous driver exists, and
     never guaranteed the reverse (a driver whose confounding *is* resolvable from data) at all - measured to
-    leave 30% of instances with zero identifiable non-clean drivers. See ``procedural_scaffold_plan.md``
-    §11.0/§11.3 for the measurement and the reasoning.
+    leave 30% of instances with zero identifiable non-clean drivers.
     """
     ambiguous = set(unidentifiable_drivers(scaffold))
     non_decoy = scaffold.non_decoy_drivers()
@@ -310,10 +307,10 @@ def generate_gated_procedural(
     (``scm/gadgets.py``) and fresh weights together, then constructs every gate-relevant quantity directly
     rather than leaving it to those random weights - mediated effects, driver totals, and decoy confounding
     margins, in that order (``scm/target_effects.py``; left to chance, combined acceptance collapsed to 0%
-    at 6+ drivers even after scaling every threshold by driver count, ``procedural_scaffold_plan.md`` §5a).
+    at 6+ drivers even after scaling every threshold by driver count).
     The topology gate runs before any weights are even drawn, and the sample-based oracle gate runs only
     after every structural piece is constructed - most rejections should cost nothing
-    (``procedural_scaffold_plan.md`` §5). Raises ``RuntimeError`` if no instance passes within
+    Raises ``RuntimeError`` if no instance passes within
     ``MAX_ATTEMPTS``.
 
     ``n_candidates`` fixes the total candidate count - drivers plus decoys - instead of leaving it to

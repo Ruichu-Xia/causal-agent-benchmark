@@ -151,7 +151,7 @@ def test_has_balanced_identifiability_rejects_a_lopsided_composition():
     """A single confounded_driver, with nothing else - ambiguous but nothing resolved.
 
     The exact shape §11.3's guarantee rules out of `procedural_scaffold`'s real output - tested directly
-    here since composition itself can no longer produce it (procedural_scaffold_plan.md §11.0/§11.3).
+    here since composition itself can no longer produce it.
     """
     scaffold = Scaffold(
         node_names=("Y", "C0", "A0", "M0"),
@@ -168,7 +168,7 @@ def test_has_balanced_identifiability_rejects_a_lopsided_composition():
 def test_every_generated_instance_has_both_an_ambiguous_and_a_resolved_driver():
     """What §11.3's gate actually guarantees, measured on real accepted instances.
 
-    Not just trusted from the gate's own logic - the same standard `procedural_scaffold_plan.md` §11.5 sets.
+    Not just trusted from the gate's own logic.
     """
     for seed in range(30):
         scm, _ = generate_gated_procedural(seed)

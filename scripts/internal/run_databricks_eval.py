@@ -239,7 +239,7 @@ def _spread_across_scms(instances: list, n: int) -> list:
     """Take ~``n`` instances spread across the dataset's SCMs rather than its first ``n``.
 
     Whole SCMs are kept together: each contributes one instance per naming condition, and comparing those
-    conditions is only meaningful within a fixed SCM (`procedural_scaffold_plan.md` §11.8's paired skins),
+    conditions is only meaningful within a fixed SCM (paired skins),
     so a subset that splits one is not a smaller version of the experiment. Groups are keyed by the SCM's
     weight matrix, not by position, so this does not depend on the build script's write order.
 
