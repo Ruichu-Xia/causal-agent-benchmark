@@ -1,24 +1,41 @@
 """Batch the agent loop over many instances and aggregate scores by naming alignment.
 
-The headline metric this benchmark measures is score *as a function of* naming alignment: a reasoner
-should stay flat across the grid, a reciter should degrade as names go neutral or misaligned.
-``run_evaluation`` produces one ``AnswerScore`` per instance (each already carries its own
-``alignment``); ``aggregate_by_alignment`` groups and summarizes them.
+The headline metric this benchmark measures is score *as a function of* naming alignment, on the drivers
+where the data provably cannot settle the answer. ``run_evaluation`` produces one ``AnswerScore`` per
+instance (each already carries its own ``alignment``).
 
-``aggregate_by_driver_cell`` reports the same run one level down, at *driver* grain, crossing naming
-alignment with whether a driver's effect is identifiable from data at all - an instance-level mean
-otherwise conflates failing at something the data supports with failing at something it provably does not.
+``driver_cells`` crosses naming alignment with whether a driver's effect is identifiable from data at all.
+That table is the experiment: naming can only matter where the data leaves the orientation open, so the
+identifiable row is a built-in placebo. ``naming_table`` reduces it to the contrasts that carry the result,
+each paired within SCM with an interval from ``paired_bootstrap_ci`` at the unit that is actually
+independent (see ``scm_group_key``).
+
+The contrast that settles the benchmark's claim is **aligned minus misaligned** (``NamingResult.correctness``)
+- the only one that holds "these columns carry domain names" fixed and varies solely whether the names are
+true. Report every metric separately: ``overall`` averages identification and estimation, and measured live
+those moved in opposite directions under the same manipulation, so their mean hid the effect.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from causalagentbench.agent.loop import MAX_TURNS, ToolCallingClient, TurnTrace, TurnTranscript, run_agent
-from causalagentbench.scoring.score import AnswerScore, RankingPairs, score_output
+import numpy as np
+
+from causalagentbench.agent.loop import (
+    MAX_TOKEN_BUDGET,
+    MAX_TOOL_CALLS,
+    MAX_TURNS,
+    ToolCallingClient,
+    TurnTrace,
+    TurnTranscript,
+    run_agent,
+)
+from causalagentbench.scoring.score import AnswerScore, score_output
 from causalagentbench.task.instance import Instance, InstanceKey
 
 logger = logging.getLogger(__name__)
@@ -28,7 +45,9 @@ def run_evaluation(
     instances: Iterable[tuple[Instance, InstanceKey]],
     client: ToolCallingClient,
     *,
+    max_tool_calls: int = MAX_TOOL_CALLS,
     max_turns: int = MAX_TURNS,
+    max_token_budget: int | None = MAX_TOKEN_BUDGET,
     on_instance: Callable[[int, AnswerScore], None] | None = None,
     on_turn: Callable[[int, TurnTrace], None] | None = None,
     on_transcript: Callable[[int, TurnTranscript], None] | None = None,
@@ -66,7 +85,9 @@ def run_evaluation(
             reply = run_agent(
                 instance,
                 client,
+                max_tool_calls=max_tool_calls,
                 max_turns=max_turns,
+                max_token_budget=max_token_budget,
                 on_turn=instance_on_turn,
                 on_transcript=instance_on_transcript,
             )
@@ -83,144 +104,254 @@ def run_evaluation(
 
 
 @dataclass(frozen=True)
-class AlignmentSummary:
-    """Mean scores for one naming-alignment level (``None`` = name-blind)."""
+class DriverCell:
+    """One (identifiability x naming) cell, pooled over driver observations.
 
-    alignment: float | None
-    n: int
-    mean_ranking_tau: float
-    mean_adjustment_accuracy: float
-    mean_abstention_accuracy: float
-    parse_rate: float
+    ``n`` counts *driver observations*, not instances - one instance contributes as many rows here as it has
+    candidates. Decoys are included: every candidate is graded, so excluding them would make the cell
+    incomparable with the instance-level numbers.
 
-
-def aggregate_by_alignment(scores: list[AnswerScore]) -> list[AlignmentSummary]:
-    """Group scores by ``alignment`` and summarize each group; sorted with name-blind (``None``) last."""
-    groups: dict[float | None, list[AnswerScore]] = {}
-    for score in scores:
-        groups.setdefault(score.alignment, []).append(score)
-
-    summaries = [
-        AlignmentSummary(
-            alignment=alignment,
-            n=len(group),
-            mean_ranking_tau=sum(s.ranking_tau for s in group) / len(group),
-            mean_adjustment_accuracy=sum(s.adjustment_accuracy for s in group) / len(group),
-            mean_abstention_accuracy=sum(s.abstention_accuracy for s in group) / len(group),
-            parse_rate=sum(s.parse_ok for s in group) / len(group),
-        )
-        for alignment, group in groups.items()
-    ]
-    return sorted(summaries, key=lambda s: (s.alignment is None, s.alignment))
-
-
-@dataclass(frozen=True)
-class DriverCellSummary:
-    """Pooled per-driver scores for one identifiability x naming-alignment cell.
-
-    ``n`` counts *driver observations*, not instances - the unit change from ``AlignmentSummary``, and the
-    point of the breakdown: one instance contributes as many rows here as it has candidate drivers.
-    Decoys are included, because ``adjustment_accuracy``/``abstention_accuracy`` already grade every
-    candidate driver; excluding them would make the two tables incomparable.
-
-    Averaging is pooled (micro), so per-cell means will *not* exactly reconcile with ``AlignmentSummary``'s
-    mean-of-instance-means at the same alignment - instances differ in driver count, and here every driver
-    weighs the same. ``n_graded`` and ``n_ranking_pairs`` are the denominators behind the two means, kept
-    visible because both can shrink silently: a cell's ``mean_adjustment_accuracy`` rises if the agent
-    simply abstained on its hard drivers, and ``ranking_tau`` says little over a handful of pairs.
-    ``parse_rate`` is deliberately absent - parse failure is per-instance and ``AlignmentSummary`` reports
-    it; note that a parse failure contributes no ranking pairs at all, so it is invisible in ``ranking_tau``
-    here while still pulling the instance-level mean down.
+    This table is the experiment. Naming is expected to move ``estimation`` in the ``identifiable=False``
+    row and not in the ``identifiable=True`` row, which doubles as a placebo - a nuisance effect (prompt
+    length, domain difficulty, anything that travels with the skin) would move both rows, while a real
+    semantic effect can only move the row where the data leaves the orientation open.
     """
 
     identifiable: bool
     alignment: float | None
     n: int  # driver observations in this cell, NOT instances
-    n_graded: int  # of those, the ones graded (the rest were correctly abstained on)
-    mean_driver_score: float  # THE headline for this cell; every driver counts, nothing is ungraded
-    mean_effect_accuracy: float  # 1 - mean normalized estimation error; the shortcut-resistant metric
-    mean_adjustment_accuracy: float
-    mean_abstention_accuracy: float
-    n_ranking_pairs: int  # non-tied comparisons involving a driver in this cell
-    ranking_tau: float  # pooled (concordant - discordant) / (concordant + discordant) over those pairs
+    identification: float  # 1 - mean induced adjustment bias
+    estimation: float  # 1 - mean normalized effect error; the quantity Gain/Harm are computed on
 
 
-class _DriverObservation(NamedTuple):
-    """One driver's contribution to a cell.
-
-    ``adjustment_valid`` and ``effect_error`` are both ``None`` exactly when abstaining was correct, so
-    ``n_graded`` is the denominator for both.
-    """
-
-    adjustment_valid: bool | None
-    abstention_correct: bool
-    ranking_pairs: RankingPairs
-    effect_error: float | None
-    driver_score: float
-
-
-def _driver_cell_summary(cell: tuple[bool, float | None], group: list[_DriverObservation]) -> DriverCellSummary:
-    """Summarize one cell's per-driver observations."""
-    identifiable, alignment = cell
-    graded = [o.adjustment_valid for o in group if o.adjustment_valid is not None]
-    errors = [o.effect_error for o in group if o.effect_error is not None]
-    concordant = sum(o.ranking_pairs.concordant for o in group)
-    discordant = sum(o.ranking_pairs.discordant for o in group)
-    decided = concordant + discordant
-    return DriverCellSummary(
-        identifiable=identifiable,
-        alignment=alignment,
-        n=len(group),
-        n_graded=len(graded),
-        mean_driver_score=sum(o.driver_score for o in group) / len(group),
-        # Nothing to grade is vacuously accurate, the convention score_answer and kendall_tau both already
-        # use for an empty comparison - not a zero, which would read as a failure the agent never had.
-        mean_effect_accuracy=1.0 - sum(errors) / len(errors) if errors else 1.0,
-        mean_adjustment_accuracy=sum(graded) / len(graded) if graded else 1.0,
-        mean_abstention_accuracy=sum(o.abstention_correct for o in group) / len(group),
-        n_ranking_pairs=decided,
-        ranking_tau=(concordant - discordant) / decided if decided else 1.0,
-    )
-
-
-def abstention_rates(scores: list[AnswerScore]) -> tuple[float | None, float | None]:
-    """``(sensitivity, specificity)`` of the abstain decision, pooled over drivers; ``None`` if no such driver.
-
-    Reported as two numbers rather than one accuracy because one accuracy has a floor set by class balance:
-    ~2.6 of 7 candidates are gold-abstain, so a model that simply never abstains scores 0.605 without
-    deciding anything. Sensitivity is "abstained where it had to", specificity is "committed where it
-    could" - a model can be strong on one and hopeless on the other, and the single number hides it.
-
-    Not per cell: ``_gold_abstain`` is constant within a cell (it is a function of identifiability and
-    aligned-ness, which are the cell axes), so a cell's ``mean_abstention_accuracy`` already *is* whichever
-    of the two applies there. This is the pooled pair for a model-comparison table.
-    """
-    hit = [(s.abstention_correct[d], gold) for s in scores for d, gold in s.gold_abstain.items()]
-    must_abstain = [correct for correct, gold in hit if gold]
-    may_commit = [correct for correct, gold in hit if not gold]
-    return (
-        sum(must_abstain) / len(must_abstain) if must_abstain else None,
-        sum(may_commit) / len(may_commit) if may_commit else None,
-    )
-
-
-def aggregate_by_driver_cell(scores: list[AnswerScore]) -> list[DriverCellSummary]:
-    """Group every driver observation by (identifiability, alignment); identifiable first, name-blind last."""
-    groups: dict[tuple[bool, float | None], list[_DriverObservation]] = {}
+def driver_cells(scores: list[AnswerScore]) -> list[DriverCell]:
+    """Pool every driver observation into (identifiability, alignment) cells; name-blind last."""
+    groups: dict[tuple[bool, float | None], list[tuple[float, float]]] = {}
     for score in scores:
         for driver, identifiable in score.identifiable.items():
             groups.setdefault((identifiable, score.alignment), []).append(
-                _DriverObservation(
-                    score.adjustment_valid[driver],
-                    score.abstention_correct[driver],
-                    score.ranking_pairs[driver],
-                    score.effect_error[driver],
-                    score.driver_score[driver],
-                )
+                (score.adjustment_bias[driver], score.effect_error[driver])
             )
+    cells = [
+        DriverCell(
+            identifiable=identifiable,
+            alignment=alignment,
+            n=len(rows),
+            identification=1.0 - sum(bias for bias, _ in rows) / len(rows),
+            estimation=1.0 - sum(error for _, error in rows) / len(rows),
+        )
+        for (identifiable, alignment), rows in groups.items()
+    ]
+    return sorted(cells, key=lambda c: (not c.identifiable, c.alignment is None, c.alignment))
 
-    summaries = [_driver_cell_summary(cell, group) for cell, group in groups.items()]
-    # Identifiability leads so the table reads as two blocks, each ordered like aggregate_by_alignment's.
-    # The `alignment is None` component is still needed for the same reason it is there: it splits None
-    # from float *before* any `<` is applied, so a None alignment is only ever compared for equality.
-    return sorted(summaries, key=lambda s: (not s.identifiable, s.alignment is None, s.alignment))
+
+class IdentifiabilityF1(NamedTuple):
+    """Pooled precision/recall/F1 of the "is this settled by data alone?" judgement.
+
+    F1 rather than accuracy, following AbstentionBench: accuracy rewards a blanket answer, and ours had a
+    floor of 0.605 from class balance alone. Positive class is *unidentifiable* - the judgement that costs
+    something to get right.
+
+    Pooled from raw counts rather than averaged over per-instance F1s, which does not aggregate correctly.
+    A ``None`` judgement (the agent did not answer the field) counts as a miss, so omitting it is never
+    cheaper than getting it wrong.
+    """
+
+    precision: float
+    recall: float
+    f1: float
+    n_positive: int  # drivers that really are unidentifiable - the recall denominator
+
+
+def identifiability_f1(scores: list[AnswerScore]) -> IdentifiabilityF1:
+    """Pooled identifiability F1 over every driver of every score.
+
+    Report it beside the mechanical PC baseline (F1 0.650 on the built set). Gold identifiability *is* the
+    population CPDAG, so a perfect discovery tool reads it straight off and this number is not evidence of
+    reasoning on its own.
+    """
+    tp = fp = fn = 0
+    for score in scores:
+        for driver, identifiable in score.identifiable.items():
+            said = score.identifiability_judgment[driver]
+            said_unidentifiable = said is False  # None (no answer) is never a positive
+            truly_unidentifiable = not identifiable
+            tp += said_unidentifiable and truly_unidentifiable
+            fp += said_unidentifiable and not truly_unidentifiable
+            fn += (not said_unidentifiable) and truly_unidentifiable
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return IdentifiabilityF1(precision, recall, f1, tp + fn)
+
+
+def driver_metric(score: AnswerScore, metric: str, *, identifiable: bool | None = None) -> float | None:
+    """One answer's score on ``metric``, optionally restricted to one identifiability class.
+
+    ``identifiable=None`` is the whole instance and supports every metric. Restricting to a driver class
+    supports only the two per-driver metrics: ``ranking_tau`` is a property of the ordering over *all*
+    candidates and ``overall`` is built from both axes, so neither has a meaning on a subset - they return
+    ``None`` rather than a number computed on a different population than its name implies.
+
+    ``None`` is also returned when the instance has no driver of the requested class, so a caller can drop
+    that SCM from a pairing rather than average in a value that was never measured.
+    """
+    if identifiable is None:
+        return float(getattr(score, metric)) if hasattr(score, metric) else None
+    if metric not in ("identification", "estimation"):
+        return None
+    source = score.adjustment_bias if metric == "identification" else score.effect_error
+    values = [v for driver, v in source.items() if score.identifiable[driver] is identifiable]
+    return 1.0 - sum(values) / len(values) if values else None
+
+
+class Contrast(NamedTuple):
+    """One paired difference with a bootstrap interval over SCMs."""
+
+    delta: float
+    ci: tuple[float, float]
+    n_scms: int
+
+    @property
+    def excludes_zero(self) -> bool:
+        """Whether the interval clears zero. NaN (nothing paired) is never significant."""
+        low, high = self.ci
+        return low == low and not (low <= 0.0 <= high)
+
+
+class NamingResult(NamedTuple):
+    """All three naming contrasts for one metric on one driver population.
+
+    ``correctness`` = aligned - misaligned is **the decisive one**, and it is reported first because it is
+    the only contrast that holds "the columns carry domain names" fixed and varies solely whether those
+    names are *true*. ``gain`` = aligned - blind conflates two different claims - that names help, and that
+    *correct* names help - and measured live it moved (+0.164) while ``correctness`` on the same drivers did
+    not (+0.102, interval spanning zero). A result read off ``gain`` alone would have claimed the benchmark's
+    central finding on evidence that does not support it.
+
+    **Pre-registered reading, fixed before the first full run.** Computed on the unidentifiable drivers this
+    is the result; on the identifiable ones it is a negative control, because identifiability is a property
+    of the graph and is therefore identical across an SCM's three skins. The rival explanation the control
+    exists to rule out is that misaligned skins are simply *harder* - stranger names, more confusion, worse
+    scores on everything - which predicts equal damage in both halves, while a genuine structural effect
+    predicts it concentrated where the data left the orientation open. So:
+
+    * the contrast on unidentifiable drivers **substantially exceeds** the one on identifiable drivers ->
+      the effect tracks identifiability; the naming claim holds.
+    * the two are **comparable** -> whatever the names are doing is not specific to the edges data cannot
+      settle. That is general semantic contamination *or* a nuisance confound, and this design cannot
+      separate them; report it as such rather than as the naming result.
+    * the identifiable contrast **exceeds** the unidentifiable one -> suspect something travelling with the
+      skin, and make no naming claim.
+
+    Read as a pair, ``gain`` and ``harm`` separate three behaviours a single contrast cannot: a model that
+    reasons about whether names can be trusted shows gain > 0 with harm ~ 0; one that trusts names blindly
+    shows both positive; one that ignores names entirely shows both ~ 0.
+
+    The control is "should be smaller", **not** "should be zero". Zero is the right expectation only for a
+    name-blind policy - ``scoring/scripted_agent.py`` measures exactly 0.0000 - because a real model uses
+    names as a general heuristic and some leakage into the identifiable half is expected and normal.
+
+    Restricting to a driver subset costs power: it drops from ~5 drivers per instance to ~2.4, and measured
+    live a contrast significant over all drivers (estimation +0.081, CI [+0.007, +0.154]) was not
+    significant on either subset alone. Absence of a subset result is therefore weak evidence about
+    concentration, not evidence against it.
+    """
+
+    metric: str
+    subset: str  # "all" | "identifiable" | "unidentifiable"
+    correctness: Contrast  # aligned - misaligned; the decisive contrast
+    gain: Contrast  # aligned - name-blind
+    harm: Contrast  # name-blind - misaligned
+
+
+def naming_result(
+    paired: Sequence[tuple[InstanceKey, AnswerScore]],
+    metric: str,
+    *,
+    identifiable: bool | None = None,
+    seed: int = 0,
+) -> NamingResult:
+    """The three naming contrasts for ``metric``, paired within SCM.
+
+    Paired because the three skins share every structural parameter, so differencing them removes the
+    instance-level variance that otherwise swamps the effect. The interval resamples SCMs, never skins or
+    drivers - treating those as independent understated the standard error enough to turn noise into a
+    reported effect once already.
+    """
+    by_scm: dict[str, dict[float | None, float]] = {}
+    for key, score in paired:
+        value = driver_metric(score, metric, identifiable=identifiable)
+        if value is not None:
+            by_scm.setdefault(scm_group_key(key), {})[score.alignment] = value
+
+    def contrast(minuend: float | None, subtrahend: float | None) -> Contrast:
+        diffs = [c[minuend] - c[subtrahend] for c in by_scm.values() if minuend in c and subtrahend in c]
+        if not diffs:
+            return Contrast(float("nan"), (float("nan"), float("nan")), 0)
+        return Contrast(sum(diffs) / len(diffs), paired_bootstrap_ci([[d] for d in diffs], seed=seed), len(diffs))
+
+    subset = "all" if identifiable is None else ("identifiable" if identifiable else "unidentifiable")
+    return NamingResult(
+        metric=metric,
+        subset=subset,
+        correctness=contrast(1.0, -1.0),
+        gain=contrast(1.0, None),
+        harm=contrast(None, -1.0),
+    )
+
+
+#: Reported for every model. ``overall`` is the leaderboard number but the **worst** place to read a naming
+#: effect from: it averages identification and estimation, which respond differently to the manipulation -
+#: measured live, estimation moved +0.081 (CI clear of zero) while identification moved -0.023 (null), and
+#: their mean came out at +0.029 (null). Always read the naming result per metric.
+CONTRAST_METRICS: tuple[str, ...] = ("overall", "identification", "estimation", "ranking_tau")
+
+
+def naming_table(paired: Sequence[tuple[InstanceKey, AnswerScore]], *, seed: int = 0) -> list[NamingResult]:
+    """Every contrast worth reporting: all metrics over all drivers, then the two per-driver subsets."""
+    rows = [naming_result(paired, m, seed=seed) for m in CONTRAST_METRICS]
+    for identifiable in (False, True):
+        rows += [
+            naming_result(paired, m, identifiable=identifiable, seed=seed) for m in ("identification", "estimation")
+        ]
+    return rows
+
+
+def scm_group_key(key: InstanceKey) -> str:
+    """Stable id for the *SCM* behind an instance, shared by all of its naming skins.
+
+    The resampling unit. An instance is not an independent observation: the grid builds three skins of one
+    SCM, and those skins share every structural parameter, so they succeed and fail together. Treating each
+    skin - or worse, each driver - as independent understates the standard error by roughly the square root
+    of the multiplicity. It happened here: a per-driver mean showed a naming gap that a paired SCM-level
+    bootstrap put at [-0.222, +0.025], straddling zero.
+
+    Derived from the structural parameters rather than a stored id because that is what "same SCM" means,
+    and it needs no change to the on-disk format: skins differ only in ``node_to_label``.
+    """
+    scaffold = key.scm.scaffold
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(repr(sorted(scaffold.edges)).encode())
+    for array in (key.scm.W, key.scm.noise_var):
+        digest.update(np.ascontiguousarray(array, dtype=np.float64).tobytes())
+    return digest.hexdigest()
+
+
+def paired_bootstrap_ci(
+    groups: Sequence[Sequence[float]], *, n_resamples: int = 20000, seed: int = 0, level: float = 0.95
+) -> tuple[float, float]:
+    """Percentile CI for the grand mean, resampling whole ``groups`` (SCMs) rather than observations.
+
+    Each element of ``groups`` is one SCM's values. Resampling groups keeps the within-SCM correlation
+    intact, which is exactly what the naive interval throws away.
+    """
+    means = np.array([np.mean(values) for values in groups if len(values) > 0], dtype=np.float64)
+    if means.size == 0:
+        return (float("nan"), float("nan"))
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, means.size, size=(n_resamples, means.size))
+    resampled = means[draws].mean(axis=1)
+    tail = (1.0 - level) / 2.0
+    low, high = np.quantile(resampled, [tail, 1.0 - tail])
+    return (float(low), float(high))

@@ -56,21 +56,42 @@ def test_unknown_verdict_field_raises():
         parse_answer(f'<answer>{{"verdicts": [{verdict}]}}</answer>')
 
 
-def test_abstaining_may_omit_the_effect_estimate_but_committing_may_not():
-    """The ranking is derived from the estimates, so a committed driver without one has no position."""
-    abstained = """<answer>{"verdicts": [
-        {"driver": "X1", "adjustment_set": [], "abstain": true},
-        {"driver": "X3", "adjustment_set": [], "effect": 0.2}
-    ]}</answer>"""
-    answer = parse_answer_for_instance(abstained, ("X1", "X3"))
-    assert answer.verdicts[0].effect is None
-
-    committed_without_estimate = """<answer>{"verdicts": [
+def test_every_driver_must_carry_an_effect_estimate():
+    """The ranking is derived from the estimates, so a driver without one has no position to hold."""
+    missing_estimate = """<answer>{"verdicts": [
         {"driver": "X1", "adjustment_set": []},
         {"driver": "X3", "adjustment_set": [], "effect": 0.2}
     ]}</answer>"""
     with pytest.raises(AnswerParseError, match="effect estimate"):
-        parse_answer_for_instance(committed_without_estimate, ("X1", "X3"))
+        parse_answer_for_instance(missing_estimate, ("X1", "X3"))
+
+
+def test_there_is_no_way_to_decline_a_driver():
+    """Guards the deletion.
+
+    An abstain option let the agent shrink its own denominator on three metrics at once, and made the
+    correct answer depend on the column names - the axis this benchmark exists to vary independently.
+    """
+    abstained = """<answer>{"verdicts": [
+        {"driver": "X1", "adjustment_set": [], "abstain": true},
+        {"driver": "X3", "adjustment_set": [], "effect": 0.2}
+    ]}</answer>"""
+    with pytest.raises(AnswerParseError, match="extra_forbidden"):
+        parse_answer_for_instance(abstained, ("X1", "X3"))
+
+
+def test_the_identifiability_judgement_is_optional_to_parse_but_recorded():
+    """A missing judgement parses but is penalized at scoring time.
+
+    Keeping the two layers separate is what makes "malformed answer" and "declined one field"
+    distinguishable in the results.
+    """
+    without = """<answer>{"verdicts": [
+        {"driver": "X1", "adjustment_set": [], "effect": 0.1},
+        {"driver": "X3", "adjustment_set": [], "effect": 0.2}
+    ]}</answer>"""
+    answer = parse_answer_for_instance(without, ("X1", "X3"))
+    assert answer.verdicts[0].identifiable_from_data is None
 
 
 def test_instance_contract_requires_each_candidate_exactly_once_in_verdicts():

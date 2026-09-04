@@ -15,6 +15,7 @@ from causalagentbench.scm.target_effects import (
     with_constructed_confounding,
     with_constructed_effects,
 )
+from causalagentbench.scoring.baselines import population_coefficient
 from causalagentbench.types import Role, Scaffold
 
 DRIVERS = ("A", "B", "C", "D", "E")
@@ -128,8 +129,13 @@ def test_mediated_path_sometimes_opposes_its_own_drivers_effect():
     assert opposes > 0, "no inconsistent mediation (suppression) drawn - the over-adjustment trap is probeable"
 
 
-def test_with_constructed_effects_touches_only_the_outcomes_and_mediator_rows():
-    """Every node except the outcome and its drivers' mediators keeps its reference row untouched."""
+def test_with_constructed_effects_touches_only_the_outcomes_mediator_collider_and_mbias_driver_rows():
+    """Confirms construction touches exactly the rows it claims to and nothing else.
+
+    Every node except the outcome, its drivers' mediators, any collider, and an M-bias driver's own row
+    (``A``, via its sole parent ``V`` - the fixup ``_mbias_driver``'s trap strength depends on) keeps its
+    reference row untouched.
+    """
     scaffold = procedural_scaffold(0)
     outcome_idx = scaffold.index(scaffold.outcome)
     drivers = _non_decoy_drivers(scaffold)
@@ -139,7 +145,16 @@ def test_with_constructed_effects_touches_only_the_outcomes_and_mediator_rows():
     assert scm is not None
 
     mediator_indices = {scaffold.index(m) for d in drivers if (m := scaffold.mediator_of(d)) is not None}
-    untouched = [i for i in range(len(scaffold.node_names)) if i not in mediator_indices and i != outcome_idx]
+    collider_indices = {scaffold.index(c) for c in scaffold.nodes_with_role(Role.COLLIDER)}
+    mbias_driver_indices = {
+        scaffold.index(d)
+        for c in scaffold.nodes_with_role(Role.COLLIDER)
+        for p in scaffold.parents(c)
+        for d in scaffold.drivers
+        if scaffold.parents(d) == (p,)
+    }
+    touched = mediator_indices | collider_indices | mbias_driver_indices | {outcome_idx}
+    untouched = [i for i in range(len(scaffold.node_names)) if i not in touched]
     assert np.array_equal(reference.W[np.ix_(untouched, untouched)], scm.W[np.ix_(untouched, untouched)])
 
 
@@ -169,6 +184,93 @@ def test_with_constructed_confounding_guarantees_the_margin():
             n_checked += 1
             decoy_corr = abs(float(scm.sigma[scaffold.index(decoy), outcome_idx]))
             assert decoy_corr > weakest + margin
+    assert n_checked > 0
+
+
+def test_collider_edges_are_constructed_away_from_zero():
+    """Confirms the near-zero-weight failure mode measured against raw UUMC is actually fixed.
+
+    A collider's two incoming weights must not land near zero (raw UUMC sometimes did, making the
+    adjust-for-it trap toothless: measured bias collapsing under 0.01 whenever one weight was near-zero).
+    """
+    scaffold = Scaffold(
+        node_names=("A", "U", "Co", "Y"),
+        roles={"A": Role.DRIVER_CLEAN, "U": Role.CONFOUNDER, "Co": Role.COLLIDER, "Y": Role.OUTCOME},
+        edges=(("A", "Y"), ("U", "Y"), ("A", "Co"), ("U", "Co")),
+        drivers=("A",),
+        outcome="Y",
+        correct_adjustment={"A": ()},
+    )
+    for seed in range(50):
+        reference = generate(seed, scaffold)
+        targets = target_effects(np.random.default_rng(seed), ("A",))
+        scm = with_constructed_effects(reference, targets, np.random.default_rng(seed))
+        assert scm is not None
+        w_a_co = scm.W[scaffold.index("A"), scaffold.index("Co")]
+        w_u_co = scm.W[scaffold.index("U"), scaffold.index("Co")]
+        assert abs(w_a_co) >= 0.3
+        assert abs(w_u_co) >= 0.3
+        assert scm.sigma[scaffold.index("Co"), scaffold.index("Co")] == pytest.approx(1.0)
+
+
+def test_adjusting_for_a_collider_biases_a_clean_drivers_estimate():
+    """The point of the trap: the empty adjustment set is exact, but adjusting for the collider is not."""
+    scaffold = Scaffold(
+        node_names=("A", "U", "Co", "Y"),
+        roles={"A": Role.DRIVER_CLEAN, "U": Role.CONFOUNDER, "Co": Role.COLLIDER, "Y": Role.OUTCOME},
+        edges=(("A", "Y"), ("U", "Y"), ("A", "Co"), ("U", "Co")),
+        drivers=("A",),
+        outcome="Y",
+        correct_adjustment={"A": ()},
+    )
+    n_checked = 0
+    for seed in range(50):
+        reference = generate(seed, scaffold)
+        targets = target_effects(np.random.default_rng(seed), ("A",))
+        scm = with_constructed_effects(reference, targets, np.random.default_rng(seed))
+        assert scm is not None
+        n_checked += 1
+        true_effect = scm.total_effect_on_outcome("A")
+        assert population_coefficient(scm, "A") == pytest.approx(true_effect)  # empty set: exact
+        biased = population_coefficient(scm, "A", ["Co"])
+        assert abs(biased - true_effect) > 0.02  # adjusting for the collider: not exact, by a real margin
+        # measured floor over 500 seeds: min=0.0348 - 0.02 clears it with margin, not just on average
+    assert n_checked > 0
+
+
+def test_mbias_driver_needs_no_adjustment_and_none_of_its_upstream_causes_reach_the_outcome():
+    """Confirms the sharper claim `_mbias_driver` makes.
+
+    A's effect is exact with the empty set, and V - despite causing A - has no path to Y that does not run
+    through the blocked collider.
+    """
+    scaffold = Scaffold(
+        node_names=("A", "V", "U", "Mb", "Y"),
+        roles={
+            "A": Role.DRIVER_CLEAN,
+            "V": Role.UPSTREAM_CAUSE,
+            "U": Role.CONFOUNDER,
+            "Mb": Role.COLLIDER,
+            "Y": Role.OUTCOME,
+        },
+        edges=(("V", "A"), ("A", "Y"), ("V", "Mb"), ("U", "Mb"), ("U", "Y")),
+        drivers=("A",),
+        outcome="Y",
+        correct_adjustment={"A": ()},
+    )
+    n_checked = 0
+    for seed in range(50):
+        reference = generate(seed, scaffold)
+        targets = target_effects(np.random.default_rng(seed), ("A",))
+        scm = with_constructed_effects(reference, targets, np.random.default_rng(seed))
+        assert scm is not None
+        n_checked += 1
+        true_effect = scm.total_effect_on_outcome("A")
+        assert population_coefficient(scm, "A") == pytest.approx(true_effect)
+        biased = population_coefficient(scm, "A", ["Mb"])
+        # a three-hop effect (V->A, V/U->Mb, U->Y), smaller than the two-hop plain-collider case by
+        # construction - measured floor over 500 seeds: min=0.0148; 0.01 clears it with margin.
+        assert abs(biased - true_effect) > 0.01  # conditioning on Mb manufactures bias from nothing
     assert n_checked > 0
 
 

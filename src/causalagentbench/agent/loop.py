@@ -7,6 +7,25 @@ implementation, reaching any provider LiteLLM supports via native function calli
 
 The agent never sees the raw data table: it must call ``preview``/``correlate``/``regress`` to learn
 anything about it, which is the point of a tool-using agent rather than a single-shot prompt.
+
+Three limits bound a run, doing deliberately different jobs. ``MAX_TOOL_CALLS`` bounds *investigation* in
+the unit the task is made of - evidence gathered. ``MAX_TURNS`` bounds *round trips*, which is what a run
+actually costs: tool calls are local numpy computations that cost nothing, while every turn replays the
+whole message history (measured here: ~93% of all tokens a run spends are resent prompt tokens).
+``MAX_TOKEN_BUDGET`` is the backstop under both, in case context grows in a way neither anticipates.
+
+The two the agent controls - calls and turns - are *told to it* and counted down after every batch of
+results (``_budget_notice``), so it can pace itself instead of being cut off mid-investigation. They also
+interact on purpose: spending the full call budget within the turn budget requires batching independent
+calls, which is the behaviour that actually makes a run cheaper. A model that issues one call per turn
+runs out of turns first, and that is the intended pressure rather than a defect.
+
+An earlier revision dropped the turn cap on the theory that it unfairly penalises models that batch less.
+That was true while nothing told models they *could* batch; once the system prompt says so, the measured
+penalty largely disappears (the smaller model moved from 1.82 to 2.52 calls per turn on being told), and
+direct comparison showed the extra turns bought almost nothing: instances allowed past the old 20-turn cap
+improved by +0.054 against +0.031 for those that never reached it - a difference well inside noise at that
+sample size, with one instance scoring identically on 28 turns and 48 calls as it had on 16 turns and 21.
 """
 
 from __future__ import annotations
@@ -22,15 +41,74 @@ from causalagentbench.agent.tools import CausalTools
 from causalagentbench.task.answer import AnswerParseError, parse_answer_for_instance
 from causalagentbench.task.instance import Instance
 
-MAX_TURNS = 20
-"""Safety valve: tool-call turns before forcing a final, tool-free answer."""
+MAX_TOOL_CALLS = 100
+"""Investigation guardrail: tool calls an agent may execute on one instance before its answer is forced.
+
+Set from the *solved-run* distribution, since that is the population a guardrail must not censor. Measured
+across two models on the shipped generator, no run scoring >=0.6 ever exceeded **74** tool calls, and
+nothing above that ever produced a solved run at all - the least efficient run observed (82 calls) scored
+a mediocre 0.580, and the largest (97) scored 0.431. High call counts track floundering, not thoroughness:
+within a model, calls and score correlate *negatively* (-0.68 for the smaller model, -0.10 for the
+larger). 100 leaves ~35% headroom over the worst solved run while still cutting off an agent that is
+plainly not converging.
+
+Deliberately not tuned tighter. This is a guardrail, not a scored constraint - if it starts binding on
+runs that would otherwise succeed, the efficiency numbers it produces become right-censored and the
+comparison it was meant to make fair is corrupted instead."""
+
+MAX_TURNS = 25
+"""Round-trip budget: model replies on one instance before the answer is forced.
+
+The cost instrument, because a turn is what costs money - each one replays the entire message history,
+and resent prompt tokens are ~93% of everything a run spends, while the tool calls themselves are local
+computations costing nothing. Capping turns therefore bounds both spend and wall clock in the unit they
+are actually denominated in.
+
+25 from the observed distribution, not preference. Uncapped, the smaller model's turn counts across 15
+instances were 8-30 (median 16); a 25-turn cap truncates 2 of those 15, and those two gained +0.000 and
++0.062 from the turns past it. Tighter caps get expensive fast - 20 truncates 5/15, 15 truncates 9/15 -
+and looser ones stop binding at all (30 truncates none).
+
+Interacts with ``MAX_TOOL_CALLS`` by design: 100 calls across 25 turns needs 4 calls per turn, above what
+any model here batches unprompted, so the turn budget is what makes batching worth doing. The agent is
+told both budgets and both remaining counts, so this is a constraint it can plan against rather than one
+that ambushes it."""
+
+MAX_TOKEN_BUDGET = 600_000
+"""Backstop guardrail: prompt + completion tokens for one instance before the answer is forced.
+
+Sits under the call and turn budgets for the case neither anticipates - context that grows faster than
+turn count suggests. Unlike those two it is *not* announced to the agent, because it is set not to bind:
+measured per instance on the shipped generator, ~186-189k tokens median for both models tested and 426k at
+the observed maximum, against a 600k limit.
+
+Prompt tokens are counted, not just completion tokens: the message history is resent every turn, so it is
+the larger and faster-growing half of what a long run actually costs. Clients that do not report usage
+contribute nothing here and are governed by ``MAX_TOOL_CALLS`` alone - a budget cannot be enforced on a
+quantity the provider declines to measure."""
 
 _SYSTEM_PROMPT = (
-    "You are a careful causal data scientist. Dataset values are not embedded in the messages: call the "
-    "provided tools to inspect them, and each tool result will appear in the following conversation turn. "
-    "Do not invent tool results or give an <answer> block until you are ready to conclude. Never guess an "
-    "adjustment set or effect without checking it with a tool."
+    "You are a careful causal data scientist. Dataset values are not in the messages - call the provided "
+    "tools to inspect them. Never invent a tool result, and never report an adjustment set or effect you "
+    "have not checked with a tool. Give an <answer> block only when you are ready to conclude. "
+    "You have two budgets: tool calls and turns. A reply spends one turn however many calls it carries, so "
+    "batch calls that do not depend on each other's results. Both remaining counts follow each batch of "
+    "results; when either runs out you must answer immediately, from whatever you have."
 )
+"""Fixed instructions prepended to every instance. Kept terse deliberately: it is resent on every turn, and
+resent prompt tokens are ~93% of what a run costs.
+
+The batching clause is the largest cost instrument available. Tool calls here are local numpy computations
+that cost nothing; a *turn* costs a full replay of the message history. Measured on real runs, the same
+investigation batched at 3.5 calls/turn instead of 1.8 would have cost ~48% less, and models differ
+several-fold in whether they batch unprompted - so stating it also removes an accidental advantage for the
+ones that already knew. It is scoped to *independent* calls on purpose: an instruction to batch
+unconditionally would push a model to fire off uninformed parallel calls instead of letting each result
+inform the next query, trading investigation quality this benchmark scores for cost it does not.
+
+Why the turn budget is explained by its *cost rule* ("a reply spends one turn however many calls it
+carries") rather than by naming a number: the rule is what makes batching worth doing, and the numbers
+themselves arrive with every batch of results anyway (``_budget_notice``)."""
 
 _FINAL_TURN_REMINDER = (
     "This is your final turn - no further tool calls are possible. You must give your complete final "
@@ -44,6 +122,34 @@ may keep narrating what it would check next instead of committing to an answer (
 The budget clause is a second, independent problem, also observed on a real model (an extended-thinking
 model can spend its entire reply on internal reasoning and get cut off before writing any answer text) -
 the model has no innate awareness that a token cutoff exists at all, so this is the only way to tell it."""
+
+_BUDGET_EXHAUSTED_RESULT = "Error: tool-call budget exhausted - this call was not executed. Give your final answer now."
+"""Returned in place of a real result for calls a turn requested beyond the remaining budget.
+
+The budget is enforced exactly rather than letting a turn overshoot it: a model that batches 14 calls per
+turn must not get to run 13 calls past a limit that stops a one-call-per-turn model dead, or the budget
+stops meaning the same amount of investigation per model - which is the entire reason for counting calls
+instead of turns."""
+
+
+def _budget_notice(calls_used: int, call_limit: int, turns_used: int, turn_limit: int) -> str:
+    """Render both running budgets, appended to the last tool result of each turn.
+
+    Continuous rather than only at the cutoff: a model told what remains at every step can prioritise what
+    is left to check, where one told nothing until the forced-final turn is simply interrupted
+    mid-investigation. Both numbers appear together because either can end the run, and because their
+    ratio is the thing the agent should act on - turns running out faster than calls means it should be
+    batching more per turn.
+
+    Appended to an existing tool result rather than sent as its own message so it costs no extra turn and
+    lands exactly where the model reads before choosing its next action. Earlier notices stay in the
+    replayed history, which leaves an honest record of the burn rate.
+    """
+    return (
+        f"[budget: {call_limit - calls_used} of {call_limit} tool calls remaining, "
+        f"{turn_limit - turns_used} of {turn_limit} turns remaining]"
+    )
+
 
 _FORMAT_REPAIR_REMINDER = (
     "Your previous reply was not a valid final answer. Do not call any tools. Reply now with only one "
@@ -103,6 +209,13 @@ class TurnTrace:
     prompt_tokens: int | None
     completion_tokens: int | None
     cost_usd: float | None = None
+    budget_used: int = 0
+    """Tool calls spent *before* this turn - the budget state the model saw when it chose these calls.
+
+    Deliberately the pre-turn figure, not the post-turn one: ``on_turn`` fires the moment the model
+    replies, before any of this turn's calls have run, and the question a trace answers is what the model
+    knew when it acted. Post-hoc, ``budget_used + len(tool_calls)`` recovers the post-turn total."""
+    budget_limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -225,7 +338,9 @@ def run_agent(
     instance: Instance,
     client: ToolCallingClient,
     *,
+    max_tool_calls: int = MAX_TOOL_CALLS,
     max_turns: int = MAX_TURNS,
+    max_token_budget: int | None = MAX_TOKEN_BUDGET,
     on_turn: Callable[[TurnTrace], None] | None = None,
     on_transcript: Callable[[TurnTranscript], None] | None = None,
 ) -> str:
@@ -236,6 +351,12 @@ def run_agent(
     last produced (possibly empty on a degenerate model). One tool-free reply that fails the public answer
     contract receives a single tool-free formatting repair; a second malformed reply is returned for normal
     scoring as a parse failure.
+
+    The answer is forced as soon as any of ``max_tool_calls`` (investigation), ``max_turns`` (round
+    trips, and so cost) or ``max_token_budget`` (backstop) is reached. The first two are reported to the
+    model after every batch of results so it can plan against them; the third is not, being set not to
+    bind. Calls requested beyond the call budget are refused rather than executed - see ``MAX_TOOL_CALLS``
+    and ``_BUDGET_EXHAUSTED_RESULT``. ``max_token_budget=None`` disables the backstop.
 
     ``on_turn``, if given, is called with a ``TurnTrace`` right after each ``client.complete()`` call
     returns - optional so this stays free for every caller that doesn't need turn-level observability.
@@ -248,6 +369,8 @@ def run_agent(
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": instance.prompt},
     ]
+    tool_calls_used = 0
+    tokens_used = 0
 
     def complete_turn(turn: int, *, force_final: bool) -> ModelTurn:
         """Make one model call and emit the optional trace/transcript records."""
@@ -270,6 +393,8 @@ def run_agent(
                 )
             raise
         duration_seconds = time.monotonic() - turn_start
+        nonlocal tokens_used
+        tokens_used += (reply.prompt_tokens or 0) + (reply.completion_tokens or 0)
         if on_turn is not None:
             on_turn(
                 TurnTrace(
@@ -279,6 +404,8 @@ def run_agent(
                     prompt_tokens=reply.prompt_tokens,
                     completion_tokens=reply.completion_tokens,
                     cost_usd=reply.cost_usd,
+                    budget_used=tool_calls_used,
+                    budget_limit=max_tool_calls,
                 )
             )
         if on_transcript is not None:
@@ -299,7 +426,9 @@ def run_agent(
         return reply
 
     for turn in range(max_turns):
-        force_final = turn == max_turns - 1
+        # Any budget running out ends the investigation; the two the agent was told about bind first.
+        over_token_budget = max_token_budget is not None and tokens_used >= max_token_budget
+        force_final = tool_calls_used >= max_tool_calls or turn == max_turns - 1 or over_token_budget
         if force_final:
             messages.append({"role": "user", "content": _FINAL_TURN_REMINDER})
         reply = complete_turn(turn, force_final=force_final)
@@ -312,8 +441,15 @@ def run_agent(
             return repaired.content or ""
 
         messages.append({"role": "assistant", "content": reply.content, "tool_calls": _as_wire(reply.tool_calls)})
-        for call in reply.tool_calls:
-            result = _execute(dispatch, call)
+        for index, call in enumerate(reply.tool_calls):
+            if tool_calls_used >= max_tool_calls:
+                result = _BUDGET_EXHAUSTED_RESULT
+            else:
+                result = _execute(dispatch, call)
+                tool_calls_used += 1
+            if index == len(reply.tool_calls) - 1:
+                notice = _budget_notice(tool_calls_used, max_tool_calls, turn + 1, max_turns)
+                result = f"{result}\n\n{notice}"
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
     # Exhausted max_turns on a tool-call turn; the loop's last force_final request should have produced

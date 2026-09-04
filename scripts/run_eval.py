@@ -19,16 +19,17 @@ from typing import TextIO
 
 from causalagentbench.agent.clients import LiteLLMClient
 from causalagentbench.agent.eval import (
-    AlignmentSummary,
-    DriverCellSummary,
-    abstention_rates,
-    aggregate_by_alignment,
-    aggregate_by_driver_cell,
+    DriverCell,
+    NamingResult,
+    driver_cells,
+    identifiability_f1,
+    naming_table,
     run_evaluation,
 )
-from causalagentbench.agent.loop import MAX_TURNS, ToolCall, TurnTrace, TurnTranscript
+from causalagentbench.agent.loop import MAX_TOKEN_BUDGET, MAX_TOOL_CALLS, MAX_TURNS, ToolCall, TurnTrace, TurnTranscript
 from causalagentbench.generation.clients import load_env
 from causalagentbench.scm.sample import sample
+from causalagentbench.scoring.discovery_baseline import mechanical_identifiability_f1
 from causalagentbench.scoring.gates import generate_gated_procedural
 from causalagentbench.scoring.score import AnswerScore, reference_scores
 from causalagentbench.task.dataset import load_dataset
@@ -40,91 +41,118 @@ def _print(*args: object) -> None:
     print(*args, flush=True)
 
 
-def _fmt_z(z: float | None) -> str:
-    return f"{z:+.2f}" if z is not None else " n/a"
-
-
 def _print_scores(model: str, n_drivers: list[int], scores: list[AnswerScore]) -> None:
     _print(f"model={model}  instances={len(scores)}")
     _print("-" * 64)
     for i, (n, score) in enumerate(zip(n_drivers, scores, strict=True)):
         level = "name-blind" if score.alignment is None else f"alpha={score.alignment:+.1f}"
         _print(
-            f"  #{i:<3} n_drivers={n:<3} {level:<12} ranking_tau={score.ranking_tau:+.3f} "
-            f"(n={score.n_compared:<2} z={_fmt_z(score.ranking_tau_z)})  "
-            f"score={score.mean_driver_score:.3f} eff_acc={score.effect_accuracy:.3f} "
-            f"adj_acc={score.adjustment_accuracy:.3f} abstain_acc={score.abstention_accuracy:.3f} "
-            f"parse={score.parse_ok}"
-        )
-
-
-def _print_summaries(summaries: list[AlignmentSummary]) -> None:
-    _print("-" * 64)
-    for summary in summaries:
-        level = "name-blind" if summary.alignment is None else f"alpha={summary.alignment:+.1f}"
-        _print(
-            f"  {level:<12} n={summary.n:<4} ranking_tau={summary.mean_ranking_tau:+.3f} "
-            f"adj_acc={summary.mean_adjustment_accuracy:.3f} "
-            f"abstain_acc={summary.mean_abstention_accuracy:.3f} parse_rate={summary.parse_rate:.2f}"
+            f"  #{i:<3} n_drivers={n:<3} {level:<12} ident={score.identification:.3f} "
+            f"est={score.estimation:.3f} overall={score.overall:.3f} "
+            f"tau={score.ranking_tau:+.3f} parse={score.parse_ok}"
         )
     _print()
 
 
-def _print_cells(cells: list[DriverCellSummary]) -> None:
-    """Print the driver-grain breakdown; `n` counts drivers here, not instances (unlike _print_summaries)."""
+def _print_cells(cells: list[DriverCell]) -> None:
+    """The experiment table: naming x identifiability, at driver grain.
+
+    The ``identifiable`` rows are the placebo - the data already settles those, so naming should not move
+    them. A nuisance effect travelling with the skin would move both halves; a real semantic effect can
+    only move the unidentifiable half.
+    """
     _print("-" * 64)
+    _print("  driver cells (n counts drivers, not instances)")
     for cell in cells:
         level = "name-blind" if cell.alignment is None else f"alpha={cell.alignment:+.1f}"
-        kind = "identifiable" if cell.identifiable else "unidentifiable"
-        _print(
-            f"  {kind:<15}{level:<12} n={cell.n:<4} graded={cell.n_graded:<4} "
-            f"score={cell.mean_driver_score:.3f} eff_acc={cell.mean_effect_accuracy:.3f} "
-            f"adj_acc={cell.mean_adjustment_accuracy:.3f} abstain_acc={cell.mean_abstention_accuracy:.3f} "
-            f"ranking_tau={cell.ranking_tau:+.3f} (pairs={cell.n_ranking_pairs})"
-        )
+        kind = "identifiable" if cell.identifiable else "UNidentifiable"
+        _print(f"  {kind:<15}{level:<12} n={cell.n:<4} ident={cell.identification:.3f} est={cell.estimation:.3f}")
     _print()
 
 
-def _print_headline(model: str, headline: float, references: dict[str, float], rates: tuple) -> None:
-    """The one number, with the reference points it has to be read against."""
-    sensitivity, specificity = rates
+def _print_headline(
+    model: str,
+    scores: list[AnswerScore],
+    references: dict[str, float],
+    pc_f1: float | None,
+) -> None:
+    """The leaderboard number, then the two contrasts that are the actual result.
+
+    Intervals are over SCMs, never skins or drivers: the three skins of one SCM share every structural
+    parameter, and treating them as independent draws shrinks the interval by roughly sqrt(3 x drivers).
+    """
+    parse_rate = sum(s.parse_ok for s in scores) / len(scores) if scores else float("nan")
+    overall = sum(s.overall for s in scores) / len(scores) if scores else float("nan")
+    f1 = identifiability_f1(scores)
     _print("-" * 64)
-    _print(f"  [{model}] HEADLINE mean_driver_score = {headline:.3f}   (paired alpha conditions only)")
+    _print(f"  [{model}] overall = {overall:.3f}   parse_rate = {parse_rate:.2f}")
     for name, value in references.items():
-        _print(f"      vs {name:28s} {value:.3f}")
-    _print(f"      abstention sensitivity={_fmt_rate(sensitivity)} specificity={_fmt_rate(specificity)}")
+        _print(f"      vs {name:24s} {value:.3f}")
+    mechanical = "unavailable (install the discovery extra)" if pc_f1 is None else f"{pc_f1:.3f}"
+    _print(
+        f"      identifiability F1 = {f1.f1:.3f} (P {f1.precision:.3f} / R {f1.recall:.3f}, "
+        f"n_pos={f1.n_positive})   mechanical PC baseline = {mechanical}"
+    )
     _print()
 
 
-def _fmt_rate(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.3f}"
+def _print_naming(model: str, rows: list[NamingResult]) -> None:
+    """Every naming contrast, per metric. Never collapse this into one number.
+
+    ``correctness`` (aligned - misaligned) is printed first and is the one the benchmark's claim rests on:
+    it alone holds "the columns carry domain names" fixed and varies only whether they are true.
+    """
+    _print(f"  [{model}] naming contrasts, paired within SCM (* = 95% CI clears zero)")
+    _print(f"      {'metric':<16}{'drivers':<15}{'correctness':>22}{'gain':>22}{'harm':>22}")
+    for row in rows:
+        cells = []
+        for contrast in (row.correctness, row.gain, row.harm):
+            star = "*" if contrast.excludes_zero else " "
+            cells.append(f"{contrast.delta:+.3f}[{contrast.ci[0]:+.3f},{contrast.ci[1]:+.3f}]{star}")
+        _print(f"      {row.metric:<16}{row.subset:<15}{cells[0]:>22}{cells[1]:>22}{cells[2]:>22}")
+    _print("      correctness = aligned - misaligned   gain = aligned - blind   harm = blind - misaligned")
+    _print()
+
+
+def _naming_record(row: NamingResult) -> dict[str, object]:
+    return {
+        "metric": row.metric,
+        "subset": row.subset,
+        **{
+            name: {"delta": c.delta, "ci": list(c.ci), "n_scms": c.n_scms, "excludes_zero": c.excludes_zero}
+            for name, c in (("correctness", row.correctness), ("gain", row.gain), ("harm", row.harm))
+        },
+    }
+
+
+def _cell_record(cell: DriverCell) -> dict[str, object]:
+    return {
+        "identifiable": cell.identifiable,
+        "alignment": cell.alignment,
+        "n": cell.n,
+        "identification": cell.identification,
+        "estimation": cell.estimation,
+    }
 
 
 def _score_record(n_drivers: int, score: AnswerScore) -> dict[str, object]:
     return {
         "n_drivers": n_drivers,
         "alignment": score.alignment,
+        "overall": score.overall,
+        "identification": score.identification,
+        "estimation": score.estimation,
         "ranking_tau": score.ranking_tau,
-        "n_compared": score.n_compared,
-        "ranking_tau_z": score.ranking_tau_z,
-        "mean_driver_score": score.mean_driver_score,
-        "effect_accuracy": score.effect_accuracy,
-        "adjustment_accuracy": score.adjustment_accuracy,
-        "abstention_accuracy": score.abstention_accuracy,
         "parse_ok": score.parse_ok,
-        # Raw per-driver rows, so a completed run can be re-sliced offline (by decoy status, archetype,
+        # Raw per-driver rows, so a completed run can be re-sliced offline (by archetype, decoy status,
         # anything) without paying for it again. Keyed by hidden node name, which leaks roles - fine in an
         # output artifact, which is never model input.
         "drivers": {
             driver: {
                 "identifiable": identifiable,
-                "gold_abstain": score.gold_abstain[driver],
-                "driver_score": score.driver_score[driver],
+                "adjustment_bias": score.adjustment_bias[driver],
                 "effect_error": score.effect_error[driver],
-                "adjustment_valid": score.adjustment_valid[driver],
-                "abstention_correct": score.abstention_correct[driver],
-                "concordant": score.ranking_pairs[driver].concordant,
-                "discordant": score.ranking_pairs[driver].discordant,
+                "identifiability_judgment": score.identifiability_judgment[driver],
             }
             for driver, identifiable in score.identifiable.items()
         },
@@ -245,32 +273,6 @@ def _instance_error_record(
     }
 
 
-def _summary_record(summary: AlignmentSummary) -> dict[str, object]:
-    return {
-        "alignment": summary.alignment,
-        "n": summary.n,
-        "mean_ranking_tau": summary.mean_ranking_tau,
-        "mean_adjustment_accuracy": summary.mean_adjustment_accuracy,
-        "mean_abstention_accuracy": summary.mean_abstention_accuracy,
-        "parse_rate": summary.parse_rate,
-    }
-
-
-def _cell_record(cell: DriverCellSummary) -> dict[str, object]:
-    return {
-        "identifiable": cell.identifiable,
-        "alignment": cell.alignment,
-        "n": cell.n,
-        "n_graded": cell.n_graded,
-        "mean_driver_score": cell.mean_driver_score,
-        "mean_effect_accuracy": cell.mean_effect_accuracy,
-        "mean_adjustment_accuracy": cell.mean_adjustment_accuracy,
-        "mean_abstention_accuracy": cell.mean_abstention_accuracy,
-        "n_ranking_pairs": cell.n_ranking_pairs,
-        "ranking_tau": cell.ranking_tau,
-    }
-
-
 def _spread_across_scms(instances: list[tuple[Instance, InstanceKey]], n: int) -> list[tuple[Instance, InstanceKey]]:
     """Take about ``n`` instances, retaining every naming condition for each selected SCM."""
     if n < 1:
@@ -294,12 +296,12 @@ def _spread_across_scms(instances: list[tuple[Instance, InstanceKey]], n: int) -
 
 
 def _generated_instances(
-    n_instances: int, n_samples: int | None, n_drivers: int | None
+    n_instances: int, n_samples: int | None, n_candidates: int | None
 ) -> list[tuple[Instance, InstanceKey]]:
     """Build fresh abstract-labeled instances, reusing each gate-certified table by default."""
     instances = []
     for seed in range(n_instances):
-        scm, report = generate_gated_procedural(seed, n_drivers=n_drivers)
+        scm, report = generate_gated_procedural(seed, n_candidates=n_candidates)
         if n_samples is None:
             assert report.data is not None
             data = report.data
@@ -316,6 +318,26 @@ def _models(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[s
     if not models:
         parser.error("provide at least one non-empty LiteLLM model ID")
     return models
+
+
+def _require_discovery(parser: argparse.ArgumentParser) -> None:
+    """Refuse to start if the ``discovery`` extra is missing, rather than degrade silently.
+
+    ``agent/tools.py::discover`` imports causal-learn lazily and returns an error *string* when it is
+    absent - correct for that module, whose contract is that every tool failure comes back as readable text
+    the agent can act on, but it means an evaluation run missing the extra still completes and still writes
+    scores. Those scores are depressed by an environment defect and are not comparable to a run that had
+    PC available, with nothing in the output JSONL recording the difference. The failure has to surface
+    here, before any model is billed, because this is the last point at which it is still distinguishable
+    from a capability result.
+    """
+    try:
+        import causallearn  # noqa: F401
+    except ImportError:
+        parser.error(
+            "the `discover` tool needs the optional discovery extra (causal-learn), which is not installed; "
+            "run `uv sync --extra generation --extra discovery`"
+        )
 
 
 def _openrouter_session_id(model: str, sampling_seed: int | None, prefix: str | None) -> str | None:
@@ -347,8 +369,30 @@ def main() -> None:
         default=None,
         help="rows per generated instance; by default reuse the table validated by the oracle gate",
     )
-    parser.add_argument("--n-drivers", type=int, default=None, help="fix generated-instance driver count")
-    parser.add_argument("--max-turns", type=int, default=MAX_TURNS, help="tool-call turns before forcing an answer")
+    parser.add_argument(
+        "--n-candidates",
+        type=int,
+        default=None,
+        help="fix generated-instance total candidate count (drivers + decoys)",
+    )
+    parser.add_argument(
+        "--max-tool-calls",
+        type=int,
+        default=MAX_TOOL_CALLS,
+        help="investigation budget: tool calls per instance before the answer is forced",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=MAX_TURNS,
+        help="round-trip budget: model replies per instance before the answer is forced",
+    )
+    parser.add_argument(
+        "--max-token-budget",
+        type=int,
+        default=MAX_TOKEN_BUDGET,
+        help="cost guardrail: prompt+completion tokens per instance before the answer is forced (0 disables)",
+    )
     parser.add_argument("--temperature", type=float, default=0.0, help="shared LiteLLM sampling temperature")
     parser.add_argument("--sampling-seed", type=int, default=0, help="shared provider sampling seed")
     parser.add_argument(
@@ -372,18 +416,19 @@ def main() -> None:
 
     if args.n_instances < 1:
         parser.error("--n-instances must be positive")
-    if args.max_turns < 1:
-        parser.error("--max-turns must be positive")
+    if args.max_tool_calls < 1:
+        parser.error("--max-tool-calls must be positive")
     if args.request_timeout <= 0:
         parser.error("--request-timeout must be positive")
     if args.max_retries < 0:
         parser.error("--max-retries must be non-negative")
+    _require_discovery(parser)
     models = _models(args, parser)
     if args.dataset:
         instances = _spread_across_scms(load_dataset(args.dataset), args.n_instances)
         dataset = args.dataset
     else:
-        instances = _generated_instances(args.n_instances, args.n_samples, args.n_drivers)
+        instances = _generated_instances(args.n_instances, args.n_samples, args.n_candidates)
         dataset = None
     if not instances:
         parser.error("the selected dataset contains no instances")
@@ -413,7 +458,9 @@ def main() -> None:
             models=models,
             instances=instances,
             n_drivers=n_drivers,
+            max_tool_calls=args.max_tool_calls,
             max_turns=args.max_turns,
+            max_token_budget=args.max_token_budget or None,
             temperature=args.temperature,
             sampling_seed=args.sampling_seed,
             openrouter_session_prefix=args.openrouter_session_prefix,
@@ -430,7 +477,9 @@ def _run_models(
     models: list[str],
     instances: list[tuple[Instance, InstanceKey]],
     n_drivers: list[int],
+    max_tool_calls: int,
     max_turns: int,
+    max_token_budget: int | None,
     temperature: float,
     sampling_seed: int | None,
     openrouter_session_prefix: str | None,
@@ -504,8 +553,7 @@ def _run_models(
             _print(
                 f"  [{model}] instance {index + 1}/{len(instances)}  (+{instance_seconds:5.0f}s, "
                 f"{now - start:6.0f}s total)  turns={len(turns):<3} tools={total_tools:<3} "
-                f"parse={score.parse_ok}  ranking_tau={score.ranking_tau:+.3f} "
-                f"(n={score.n_compared} z={_fmt_z(score.ranking_tau_z)})"
+                f"parse={score.parse_ok}  overall={score.overall:.3f} tau={score.ranking_tau:+.3f}"
             )
             if results_file is not None:
                 results_file.write(
@@ -553,7 +601,9 @@ def _run_models(
             scores = run_evaluation(
                 instances,
                 client,
+                max_tool_calls=max_tool_calls,
                 max_turns=max_turns,
+                max_token_budget=max_token_budget,
                 on_instance=on_instance,
                 on_turn=on_turn,
                 on_transcript=on_transcript if transcript_file is not None else None,
@@ -573,11 +623,11 @@ def _run_models(
         ]
         scored_n_drivers = [n_drivers for _, n_drivers, _ in scored]
         scored_scores = [score for _, _, score in scored]
-        summaries = aggregate_by_alignment(scored_scores)
-        cells = aggregate_by_driver_cell(scored_scores)
-        # The headline is the paired naming contrast; name-blind is a control, reported but not averaged in.
-        paired = [score for score in scored_scores if score.alignment is not None]
-        headline = sum(s.mean_driver_score for s in paired) / len(paired) if paired else float("nan")
+        cells = driver_cells(scored_scores)
+        keyed = [(instances[index][1], score) for index, _, score in scored]
+        # Every contrast, per metric: `overall` averages two axes that respond differently, so a
+        # naming effect read off it alone can be hidden by its own components.
+        naming = naming_table(keyed)
         scored_indices = {index for index, _, _ in scored}
         references = reference_scores(
             [
@@ -586,14 +636,21 @@ def _run_models(
                 if index in scored_indices and key.provenance.alignment is not None
             ]
         )
+        # The "isn't this just a discovery call?" control, on exactly the instances that were scored.
+        try:
+            pc_f1: float | None = mechanical_identifiability_f1([instances[index] for index, _, _ in scored]).f1
+        except ImportError:
+            pc_f1 = None
         _print_scores(model, scored_n_drivers, scored_scores)
-        _print_summaries(summaries)
         _print_cells(cells)
-        _print_headline(model, headline, references, abstention_rates(scored_scores))
+        _print_headline(model, scored_scores, references, pc_f1)
+        _print_naming(model, naming)
         record["kind"] = "model_summary"
         record["total_seconds"] = time.monotonic() - start
         record["evaluation_config"] = {
+            "max_tool_calls": max_tool_calls,
             "max_turns": max_turns,
+            "max_token_budget": max_token_budget,
             "temperature": temperature,
             "sampling_seed": sampling_seed,
             "openrouter_session_id": openrouter_session_id,
@@ -611,13 +668,19 @@ def _run_models(
             {"index": index, "error": error} for index, error in sorted(errors_by_instance.items())
         ]
         record["per_instance"] = [_score_record(n_drivers, score) for _, n_drivers, score in scored]
-        record["summaries"] = [_summary_record(summary) for summary in summaries]
         record["driver_cells"] = [_cell_record(cell) for cell in cells]
-        record["headline"] = headline
+        record["naming_contrasts"] = [_naming_record(row) for row in naming]
+        record["overall"] = sum(s.overall for s in scored_scores) / len(scored_scores) if scored_scores else None
+        record["parse_rate"] = sum(s.parse_ok for s in scored_scores) / len(scored_scores) if scored_scores else None
+        f1 = identifiability_f1(scored_scores)
+        record["identifiability_f1"] = {
+            "precision": f1.precision,
+            "recall": f1.recall,
+            "f1": f1.f1,
+            "n_positive": f1.n_positive,
+            "mechanical_pc_baseline": pc_f1,
+        }
         record["reference_scores"] = references
-        sensitivity, specificity = abstention_rates(scored_scores)
-        record["abstention_sensitivity"] = sensitivity
-        record["abstention_specificity"] = specificity
         if costs:
             _print(f"  [{model}] estimated_cost_usd=${sum(costs):.6f} across {len(costs)} model call(s)")
         else:

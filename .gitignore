@@ -32,7 +32,7 @@ coverage.xml
 # Design artifacts (proposal decks etc.), not source
 *.html
 
-# External data dumps (e.g. CauseNet, CC BY-NC) - fetched locally, never committed or shipped
+# External data dumps (e.g. CauseNet, CC BY 4.0) - fetched locally, never committed or shipped
 causenet-*.jsonl*
 *.jsonl.bz2
 

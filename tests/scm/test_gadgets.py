@@ -8,8 +8,10 @@ from causalagentbench.scm.gadgets import (
     RESOLVE_PROBABILITY,
     _add_upstream_cause,
     _clean_driver,
+    _collider_driver,
     _confounded_driver,
     _maybe_resolve,
+    _mbias_driver,
     _resolvable_targets,
     procedural_scaffold,
 )
@@ -119,6 +121,80 @@ def test_confounded_driver_gadget_has_the_expected_shape():
     for edge in [("C0", "A0"), ("C0", "Y"), ("A0", "M0"), ("A0", "Y"), ("M0", "Y")]:
         assert edge in gadget.edges
     assert gadget.adjustment == ("C0",)
+
+
+def test_collider_driver_gadget_has_the_expected_shape():
+    """collider_driver: a clean A, a confounder-shaped U, and a collider Co they both feed."""
+    gadget = _collider_driver(0)
+    assert set(gadget.roles) == {"A0", "U0", "Co0"}
+    assert gadget.roles["A0"] is Role.DRIVER_CLEAN
+    assert gadget.roles["U0"] is Role.CONFOUNDER
+    assert gadget.roles["Co0"] is Role.COLLIDER
+    for edge in [("A0", "Y"), ("U0", "Y"), ("A0", "Co0"), ("U0", "Co0")]:
+        assert edge in gadget.edges
+    assert gadget.adjustment == ()
+
+
+def test_collider_driver_is_a_genuine_unshielded_v_structure():
+    """A0 and U0 are non-adjacent, so Co0 is a real collider - both incoming edges must fully orient."""
+    scaffold = _as_scaffold(_collider_driver(0))
+    assert unoriented_edges(scaffold) == frozenset()
+
+
+def test_mbias_driver_gadget_has_the_expected_shape():
+    """mbias_driver: V feeds A and the collider but never Y; U feeds the collider and Y but never A."""
+    gadget = _mbias_driver(0)
+    assert set(gadget.roles) == {"A0", "V0", "U0", "Mb0"}
+    assert gadget.roles["A0"] is Role.DRIVER_CLEAN
+    assert gadget.roles["V0"] is Role.UPSTREAM_CAUSE
+    assert gadget.roles["U0"] is Role.CONFOUNDER
+    assert gadget.roles["Mb0"] is Role.COLLIDER
+    for edge in [("V0", "A0"), ("A0", "Y"), ("V0", "Mb0"), ("U0", "Mb0"), ("U0", "Y")]:
+        assert edge in gadget.edges
+    assert ("V0", "Y") not in gadget.edges  # V must never reach Y except through the blocked collider
+    assert ("U0", "A0") not in gadget.edges  # U must never touch A directly
+    assert gadget.adjustment == ()
+
+
+def test_mbias_driver_is_a_genuine_unshielded_v_structure():
+    """V0 and U0 are non-adjacent, so Mb0 is a real collider - both its incoming edges must orient.
+
+    Unlike ``_collider_driver``, this checks only Mb0's own two edges, not every edge in the gadget: V0->A0
+    is a plain, single edge with no v-structure of its own (the same benign phenomenon
+    ``test_identifiability.py::test_a_chain_is_fully_unoriented`` documents for a chain link) - and it is
+    benign here too, since V0 is ``Role.UPSTREAM_CAUSE``, not a confounder, so its orientation never affects
+    A's identifiability.
+    """
+    scaffold = _as_scaffold(_mbias_driver(0))
+    assert {("V0", "Mb0"), ("U0", "Mb0")} & unoriented_edges(scaffold) == set()
+
+
+def test_resolvable_targets_is_empty_for_collider_and_mbias():
+    """Neither archetype resolves an edge into its own driver.
+
+    The collider is the trap, not an ambiguous edge on the driver itself.
+    """
+    assert _resolvable_targets("collider", 0) == ()
+    assert _resolvable_targets("mbias", 0) == ()
+
+
+def test_collider_and_mbias_drivers_are_never_marked_unidentifiable():
+    """Confirms neither collider archetype's driver is ever flagged ambiguous.
+
+    Neither driver's own parent (if any) carries `Role.CONFOUNDER` - `A` in `collider_driver` has none at
+    all, and `mbias_driver`'s `V` is `Role.UPSTREAM_CAUSE`, not a confounder - so `unidentifiable_drivers`
+    must never flag them, across every seed that draws either archetype.
+    """
+    n_checked = 0
+    for seed in range(200):
+        scaffold = procedural_scaffold(seed, n_candidates=7)
+        ambiguous = set(unidentifiable_drivers(scaffold))
+        for driver in scaffold.drivers:
+            children = [c for p, c in scaffold.edges if p == driver]
+            if any(scaffold.roles[c] is Role.COLLIDER for c in children):
+                n_checked += 1
+                assert driver not in ambiguous
+    assert n_checked > 0  # sanity: the loop actually exercised at least one collider/mbias driver
 
 
 def _as_scaffold(gadget) -> Scaffold:

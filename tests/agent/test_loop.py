@@ -26,7 +26,7 @@ def _instance():
 
 def _valid_answer(instance) -> str:
     verdicts = [
-        {"driver": driver, "adjustment_set": [], "effect": 0.0, "abstain": False}
+        {"driver": driver, "adjustment_set": [], "effect": 0.0, "identifiable_from_data": True}
         for driver in instance.candidate_drivers
     ]
     return f"<answer>{json.dumps({'verdicts': verdicts})}</answer>"
@@ -251,3 +251,96 @@ def test_discover_is_exposed_to_the_model_and_dispatchable():
     client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=answer)])
     assert run_agent(instance, client) == answer
     assert "Oriented" in client.calls[1][0][-1]["content"]
+
+
+def test_budget_notice_is_appended_to_the_last_tool_result_of_each_turn():
+    """The model is told its remaining budget continuously, so it can pace its own investigation."""
+    instance = _instance()
+    calls = (ToolCall(id="1", name="preview", arguments={}), ToolCall(id="2", name="preview", arguments={}))
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=calls), ModelTurn(content=_valid_answer(instance))])
+    run_agent(instance, client, max_turns=2, max_tool_calls=10)
+
+    tool_messages = [m for m in client.calls[1][0] if m["role"] == "tool"]
+    assert len(tool_messages) == 2
+    # Only the last result of the turn carries the notice - one notice per turn, not one per call.
+    assert "[budget:" not in tool_messages[0]["content"]
+    assert "[budget: 8 of 10 tool calls remaining, 1 of 2 turns remaining]" in tool_messages[1]["content"]
+
+
+def test_exhausting_the_tool_call_budget_forces_the_final_answer():
+    """The tool-call budget, not the turn count, is what ends an ordinary investigation."""
+    instance = _instance()
+    call = ToolCall(id="1", name="preview", arguments={})
+    client = _ScriptedClient(
+        [ModelTurn(content=None, tool_calls=(call, call)), ModelTurn(content=_valid_answer(instance))]
+    )
+    run_agent(instance, client, max_turns=20, max_tool_calls=2)
+
+    # Budget spent on turn 0, so turn 1 is forced even though 18 turns remain.
+    assert client.calls[0][2] is False
+    assert client.calls[1][2] is True
+    assert client.calls[1][0][-1] == {"role": "user", "content": _FINAL_TURN_REMINDER}
+
+
+def test_calls_beyond_the_budget_are_refused_rather_than_executed():
+    """A turn may not overshoot the budget: batching many calls must not buy extra investigation."""
+    instance = _instance()
+    calls = tuple(ToolCall(id=str(i), name="preview", arguments={}) for i in range(4))
+    client = _ScriptedClient([ModelTurn(content=None, tool_calls=calls), ModelTurn(content=_valid_answer(instance))])
+    run_agent(instance, client, max_turns=2, max_tool_calls=2)
+
+    tool_messages = [m for m in client.calls[1][0] if m["role"] == "tool"]
+    assert len(tool_messages) == 4
+    for message in tool_messages[:2]:
+        assert "budget exhausted" not in message["content"]
+    for message in tool_messages[2:]:
+        assert "budget exhausted" in message["content"]
+
+
+def test_turn_trace_reports_the_budget_state_the_model_saw():
+    instance = _instance()
+    call = ToolCall(id="1", name="preview", arguments={})
+    client = _ScriptedClient(
+        [ModelTurn(content=None, tool_calls=(call, call)), ModelTurn(content=_valid_answer(instance))]
+    )
+    traces: list[TurnTrace] = []
+    run_agent(instance, client, max_turns=2, max_tool_calls=10, on_turn=traces.append)
+
+    # Pre-turn figure: what the model knew when it chose these calls, not the post-turn total.
+    assert (traces[0].budget_used, traces[0].budget_limit) == (0, 10)
+    assert (traces[1].budget_used, traces[1].budget_limit) == (2, 10)
+
+
+def test_exhausting_the_token_budget_forces_the_final_answer():
+    """Cost is bounded in a cost unit, so a runaway is cut off even with tool-call budget to spare."""
+    instance = _instance()
+    call = ToolCall(id="1", name="preview", arguments={})
+    expensive = ModelTurn(content=None, tool_calls=(call,), prompt_tokens=400, completion_tokens=200)
+    client = _ScriptedClient([expensive, ModelTurn(content=_valid_answer(instance))])
+    run_agent(instance, client, max_tool_calls=100, max_token_budget=500)
+
+    # 600 tokens spent on turn 0 exceeds the budget, so turn 1 is forced with 99 tool calls unspent.
+    assert client.calls[0][2] is False
+    assert client.calls[1][2] is True
+
+
+def test_a_client_that_reports_no_usage_is_governed_by_the_tool_call_budget_alone():
+    """An unenforceable budget must not silently truncate: no usage reported means no token cutoff."""
+    instance = _instance()
+    call = ToolCall(id="1", name="preview", arguments={})
+    silent = ModelTurn(content=None, tool_calls=(call,))  # prompt/completion tokens default to None
+    client = _ScriptedClient([silent, silent, ModelTurn(content=_valid_answer(instance))])
+    run_agent(instance, client, max_tool_calls=100, max_token_budget=1)
+
+    assert [c[2] for c in client.calls] == [False, False, False]
+
+
+def test_exhausting_the_turn_budget_forces_the_final_answer_with_calls_to_spare():
+    """Turns bind independently of calls: one call per turn runs out of turns long before the call budget."""
+    instance = _instance()
+    call = ToolCall(id="1", name="preview", arguments={})
+    turns = [ModelTurn(content=None, tool_calls=(call,)) for _ in range(2)]
+    client = _ScriptedClient([*turns, ModelTurn(content=_valid_answer(instance))])
+    run_agent(instance, client, max_tool_calls=100, max_turns=3)
+
+    assert [c[2] for c in client.calls] == [False, False, True]

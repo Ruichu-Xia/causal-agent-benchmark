@@ -19,7 +19,7 @@ models); gpt-oss (known reasoning-content-block bug, see ``generation/clients.py
 ``gemma-3-12b`` (Gemma's native function-call text syntax, e.g. ``[correlate(x="X2"...)]``, leaks into
 ``content`` instead of being translated into the structured ``tool_calls`` field). Both of the last two
 were verified directly by tracing a real instance's raw completion, not assumed - and neither is fixed by
-raising ``--max-turns``, since the failure is a format-translation gap, not a turn-budget one.
+raising any budget, since the failure is a format-translation gap, not a resource one.
 
 ``claude-opus-5`` was previously excluded from this list on suspicion of a similar unfixable issue
 ("goes silent" after a growing number of parallel tool calls) - direct tracing found this was actually
@@ -30,8 +30,8 @@ context led it to spend its entire reply on internal reasoning tokens and get cu
 ``length``) before writing any answer text, since it has no innate awareness that a token cutoff exists at
 all - fixed by raising ``DatabricksClient.max_tokens`` (``agent/clients.py``) and telling it about the
 budget on the forced-final turn (``agent/loop.py``'s ``_FINAL_TURN_REMINDER``). Both fixes are provider/
-client-level, not internal-script-only, so this is now re-included with a default ``--max-turns`` well
-above what it was observed to need. Needs ``DATABRICKS_TOKEN`` + ``DATABRICKS_HOST`` (or
+client-level, not internal-script-only, so this is now re-included under the standard tool-call budget.
+Needs ``DATABRICKS_TOKEN`` + ``DATABRICKS_HOST`` (or
 ``DATABRICKS_AI_GATEWAY_BASE_URL``) in ``.env``.
 
 Writes ``--out`` incrementally at three grains, all flushed immediately, all tagged by a ``"kind"`` field
@@ -44,7 +44,7 @@ batching strategy: one spreads an investigation across many single-call turns, a
 work into few many-call turns, so only the per-instance total is fairly comparable across models), and one
 ``"kind": "model_summary"``/``"model_error"`` line once a whole model finishes or fails. The finer grains
 aren't optional extras - a model that's killed, hangs, or errors partway through its instances (each up to
-``--max-turns`` model round trips against a real, sometimes very slow model - opus-5 observed taking 10-25
+the ``--max-tool-calls`` budget against a real, sometimes very slow model - opus-5 observed taking 10-25
 minutes per instance) would otherwise lose every instance already scored, even though the work (and money)
 to produce them was already spent. Console output is flushed the same way, since Python fully buffers
 stdout when it isn't a terminal (piped to a log file, run in the background) - without an explicit flush
@@ -56,23 +56,37 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from contextlib import nullcontext
 from pathlib import Path
+from typing import TextIO
 
 from causalagentbench.agent.clients import DatabricksClient
 from causalagentbench.agent.eval import (
-    AlignmentSummary,
-    DriverCellSummary,
-    aggregate_by_alignment,
-    aggregate_by_driver_cell,
+    DriverCell,
+    NamingResult,
+    driver_cells,
+    identifiability_f1,
+    naming_table,
     run_evaluation,
 )
-from causalagentbench.agent.loop import MAX_TURNS, TurnTrace
+from causalagentbench.agent.loop import (
+    MAX_TOKEN_BUDGET,
+    MAX_TOOL_CALLS,
+    MAX_TURNS,
+    ToolCall,
+    TurnTrace,
+    TurnTranscript,
+)
 from causalagentbench.generation.clients import load_env
-from causalagentbench.scoring.score import AnswerScore
+from causalagentbench.scoring.discovery_baseline import mechanical_identifiability_f1
+from causalagentbench.scoring.score import AnswerScore, reference_scores
 from causalagentbench.task.dataset import load_dataset
 
-_DEFAULT_DATASET = "outputs/databricks_internal"
-_DEFAULT_OUT = "outputs/databricks_eval_results.jsonl"
+#: No default dataset, deliberately. It used to be ``outputs/databricks_internal`` - the pre-firewall pilot
+#: whose naming condition was identifiable from word choice alone on 9 of 10 instances, making every
+#: alignment number measured on it uninterpretable. Running this script bare therefore re-evaluated a known
+#: contaminated set *and* overwrote the previous results file with the new scores. Naming the dataset is now
+#: mandatory, and results default beside it, so neither can happen by omission.
 #: One representative model per size/provider tier, restricted to models confirmed to work through this
 #: gateway's tool-calling shim (see the module docstring for what was excluded and why). Served endpoint
 #: names need the "databricks-" prefix (Databricks Foundation Model APIs convention, confirmed empirically
@@ -83,18 +97,11 @@ _DEFAULT_MODELS = (
     "databricks-qwen35-122b-a10b",  # Alibaba, large MoE
     "databricks-meta-llama-3-1-8b-instruct",  # Meta, small
 )
-#: opus-5 was directly observed needing 12 turns to finish investigating even a modest (4-driver)
-#: instance - default to loop.py's own considered safety-valve value, not a second guessed number.
-_DEFAULT_MAX_TURNS = MAX_TURNS
 
 
 def _print(*args: object) -> None:
     """``print`` that flushes immediately - see the module docstring on why this matters here."""
     print(*args, flush=True)
-
-
-def _fmt_z(z: float | None) -> str:
-    return f"{z:+.2f}" if z is not None else " n/a"
 
 
 def _print_scores(model: str, n_drivers: list[int], scores: list[AnswerScore]) -> None:
@@ -103,64 +110,112 @@ def _print_scores(model: str, n_drivers: list[int], scores: list[AnswerScore]) -
     for i, (n, score) in enumerate(zip(n_drivers, scores, strict=True)):
         level = "name-blind" if score.alignment is None else f"alpha={score.alignment:+.1f}"
         _print(
-            f"  #{i:<3} n_drivers={n:<3} {level:<12} ranking_tau={score.ranking_tau:+.3f} "
-            f"(n={score.n_compared:<2} z={_fmt_z(score.ranking_tau_z)})  "
-            f"score={score.mean_driver_score:.3f} eff_acc={score.effect_accuracy:.3f} "
-            f"adj_acc={score.adjustment_accuracy:.3f} abstain_acc={score.abstention_accuracy:.3f} "
-            f"parse={score.parse_ok}"
-        )
-
-
-def _print_summaries(summaries: list[AlignmentSummary]) -> None:
-    _print("-" * 64)
-    for summary in summaries:
-        level = "name-blind" if summary.alignment is None else f"alpha={summary.alignment:+.1f}"
-        _print(
-            f"  {level:<12} n={summary.n:<4} ranking_tau={summary.mean_ranking_tau:+.3f} "
-            f"adj_acc={summary.mean_adjustment_accuracy:.3f} abstain_acc={summary.mean_abstention_accuracy:.3f} "
-            f"parse_rate={summary.parse_rate:.2f}"
+            f"  #{i:<3} n_drivers={n:<3} {level:<12} ident={score.identification:.3f} "
+            f"est={score.estimation:.3f} overall={score.overall:.3f} "
+            f"tau={score.ranking_tau:+.3f} parse={score.parse_ok}"
         )
     _print()
 
 
-def _print_cells(cells: list[DriverCellSummary]) -> None:
-    """Print the driver-grain breakdown; `n` counts drivers here, not instances (unlike _print_summaries)."""
+def _print_cells(cells: list[DriverCell]) -> None:
+    """The experiment table: naming x identifiability, at driver grain.
+
+    The ``identifiable`` rows are the placebo - the data already settles those, so naming should not move
+    them. A nuisance effect travelling with the skin would move both halves; a real semantic effect can
+    only move the unidentifiable half.
+    """
     _print("-" * 64)
+    _print("  driver cells (n counts drivers, not instances)")
     for cell in cells:
         level = "name-blind" if cell.alignment is None else f"alpha={cell.alignment:+.1f}"
-        kind = "identifiable" if cell.identifiable else "unidentifiable"
-        _print(
-            f"  {kind:<15}{level:<12} n={cell.n:<4} graded={cell.n_graded:<4} "
-            f"score={cell.mean_driver_score:.3f} eff_acc={cell.mean_effect_accuracy:.3f} "
-            f"adj_acc={cell.mean_adjustment_accuracy:.3f} abstain_acc={cell.mean_abstention_accuracy:.3f} "
-            f"ranking_tau={cell.ranking_tau:+.3f} (pairs={cell.n_ranking_pairs})"
-        )
+        kind = "identifiable" if cell.identifiable else "UNidentifiable"
+        _print(f"  {kind:<15}{level:<12} n={cell.n:<4} ident={cell.identification:.3f} est={cell.estimation:.3f}")
     _print()
 
 
-def _score_record(n_drivers: int, score: AnswerScore) -> dict:
+def _print_headline(
+    model: str,
+    scores: list[AnswerScore],
+    references: dict[str, float],
+    pc_f1: float | None,
+) -> None:
+    """The leaderboard number, then the two contrasts that are the actual result.
+
+    Intervals are over SCMs, never skins or drivers: the three skins of one SCM share every structural
+    parameter, and treating them as independent draws shrinks the interval by roughly sqrt(3 x drivers).
+    """
+    parse_rate = sum(s.parse_ok for s in scores) / len(scores) if scores else float("nan")
+    overall = sum(s.overall for s in scores) / len(scores) if scores else float("nan")
+    f1 = identifiability_f1(scores)
+    _print("-" * 64)
+    _print(f"  [{model}] overall = {overall:.3f}   parse_rate = {parse_rate:.2f}")
+    for name, value in references.items():
+        _print(f"      vs {name:24s} {value:.3f}")
+    mechanical = "unavailable (install the discovery extra)" if pc_f1 is None else f"{pc_f1:.3f}"
+    _print(
+        f"      identifiability F1 = {f1.f1:.3f} (P {f1.precision:.3f} / R {f1.recall:.3f}, "
+        f"n_pos={f1.n_positive})   mechanical PC baseline = {mechanical}"
+    )
+    _print()
+
+
+def _print_naming(model: str, rows: list[NamingResult]) -> None:
+    """Every naming contrast, per metric. Never collapse this into one number.
+
+    ``correctness`` (aligned - misaligned) is printed first and is the one the benchmark's claim rests on:
+    it alone holds "the columns carry domain names" fixed and varies only whether they are true.
+    """
+    _print(f"  [{model}] naming contrasts, paired within SCM (* = 95% CI clears zero)")
+    _print(f"      {'metric':<16}{'drivers':<15}{'correctness':>22}{'gain':>22}{'harm':>22}")
+    for row in rows:
+        cells = []
+        for contrast in (row.correctness, row.gain, row.harm):
+            star = "*" if contrast.excludes_zero else " "
+            cells.append(f"{contrast.delta:+.3f}[{contrast.ci[0]:+.3f},{contrast.ci[1]:+.3f}]{star}")
+        _print(f"      {row.metric:<16}{row.subset:<15}{cells[0]:>22}{cells[1]:>22}{cells[2]:>22}")
+    _print("      correctness = aligned - misaligned   gain = aligned - blind   harm = blind - misaligned")
+    _print()
+
+
+def _naming_record(row: NamingResult) -> dict[str, object]:
+    return {
+        "metric": row.metric,
+        "subset": row.subset,
+        **{
+            name: {"delta": c.delta, "ci": list(c.ci), "n_scms": c.n_scms, "excludes_zero": c.excludes_zero}
+            for name, c in (("correctness", row.correctness), ("gain", row.gain), ("harm", row.harm))
+        },
+    }
+
+
+def _cell_record(cell: DriverCell) -> dict[str, object]:
+    return {
+        "identifiable": cell.identifiable,
+        "alignment": cell.alignment,
+        "n": cell.n,
+        "identification": cell.identification,
+        "estimation": cell.estimation,
+    }
+
+
+def _score_record(n_drivers: int, score: AnswerScore) -> dict[str, object]:
     return {
         "n_drivers": n_drivers,
         "alignment": score.alignment,
+        "overall": score.overall,
+        "identification": score.identification,
+        "estimation": score.estimation,
         "ranking_tau": score.ranking_tau,
-        "n_compared": score.n_compared,
-        "ranking_tau_z": score.ranking_tau_z,
-        "mean_driver_score": score.mean_driver_score,
-        "effect_accuracy": score.effect_accuracy,
-        "adjustment_accuracy": score.adjustment_accuracy,
-        "abstention_accuracy": score.abstention_accuracy,
         "parse_ok": score.parse_ok,
-        # Raw per-driver rows, so a completed run can be re-sliced offline without paying for it again.
+        # Raw per-driver rows, so a completed run can be re-sliced offline (by archetype, decoy status,
+        # anything) without paying for it again. Keyed by hidden node name, which leaks roles - fine in an
+        # output artifact, which is never model input.
         "drivers": {
             driver: {
                 "identifiable": identifiable,
-                "gold_abstain": score.gold_abstain[driver],
-                "driver_score": score.driver_score[driver],
+                "adjustment_bias": score.adjustment_bias[driver],
                 "effect_error": score.effect_error[driver],
-                "adjustment_valid": score.adjustment_valid[driver],
-                "abstention_correct": score.abstention_correct[driver],
-                "concordant": score.ranking_pairs[driver].concordant,
-                "discordant": score.ranking_pairs[driver].discordant,
+                "identifiability_judgment": score.identifiability_judgment[driver],
             }
             for driver, identifiable in score.identifiable.items()
         },
@@ -177,6 +232,43 @@ def _turn_record(model: str, index: int, trace: TurnTrace) -> dict:
         "tool_calls": list(trace.tool_calls),
         "prompt_tokens": trace.prompt_tokens,
         "completion_tokens": trace.completion_tokens,
+        # Budget state the model saw when it chose this turn's calls - lets a finished run show whether the
+        # tool-call budget actually bound, and for which models, without re-running anything.
+        "budget_used": trace.budget_used,
+        "budget_limit": trace.budget_limit,
+    }
+
+
+def _tool_call_record(call: ToolCall) -> dict[str, object]:
+    return {"id": call.id, "name": call.name, "arguments": dict(call.arguments), "error": call.error}
+
+
+def _transcript_record(model: str, index: int, transcript: TurnTranscript) -> dict:
+    """Render one complete application-level model exchange - full messages, tool results, raw reply.
+
+    Same shape as ``run_eval.py``'s own ``_transcript_record``, minus the LiteLLM-only fields
+    (``seed``/``openrouter_session_id``) that don't apply to the Databricks Gateway path.
+    """
+    return {
+        "kind": "transcript",
+        "model": model,
+        "index": index,
+        "turn": transcript.turn,
+        "duration_seconds": transcript.duration_seconds,
+        "request": {
+            "messages": transcript.messages,
+            "tools": transcript.tools,
+            "tool_choice": "none" if transcript.force_final else "auto",
+        },
+        "response": None
+        if transcript.error is not None
+        else {
+            "content": transcript.content,
+            "tool_calls": [_tool_call_record(call) for call in transcript.tool_calls],
+            "prompt_tokens": transcript.prompt_tokens,
+            "completion_tokens": transcript.completion_tokens,
+        },
+        "error": transcript.error,
     }
 
 
@@ -209,32 +301,6 @@ def _instance_record(
     }
 
 
-def _summary_record(summary: AlignmentSummary) -> dict:
-    return {
-        "alignment": summary.alignment,
-        "n": summary.n,
-        "mean_ranking_tau": summary.mean_ranking_tau,
-        "mean_adjustment_accuracy": summary.mean_adjustment_accuracy,
-        "mean_abstention_accuracy": summary.mean_abstention_accuracy,
-        "parse_rate": summary.parse_rate,
-    }
-
-
-def _cell_record(cell: DriverCellSummary) -> dict:
-    return {
-        "identifiable": cell.identifiable,
-        "alignment": cell.alignment,
-        "n": cell.n,
-        "n_graded": cell.n_graded,
-        "mean_driver_score": cell.mean_driver_score,
-        "mean_effect_accuracy": cell.mean_effect_accuracy,
-        "mean_adjustment_accuracy": cell.mean_adjustment_accuracy,
-        "mean_abstention_accuracy": cell.mean_abstention_accuracy,
-        "n_ranking_pairs": cell.n_ranking_pairs,
-        "ranking_tau": cell.ranking_tau,
-    }
-
-
 def _spread_across_scms(instances: list, n: int) -> list:
     """Take ~``n`` instances spread across the dataset's SCMs rather than its first ``n``.
 
@@ -261,16 +327,55 @@ def _spread_across_scms(instances: list, n: int) -> list:
     return instances[:n]
 
 
+def _require_discovery(parser: argparse.ArgumentParser) -> None:
+    """Refuse to start if the ``discovery`` extra is missing, rather than degrade silently.
+
+    Mirrors ``scripts/run_eval.py::_require_discovery``, duplicated rather than imported to keep this
+    internal path textually separate from the public one. ``agent/tools.py::discover`` imports causal-learn
+    lazily and returns an error *string* when it is absent - correct for that module, whose contract is that
+    tool failures come back as readable text - but it means an eval missing the extra still completes and
+    still writes scores, depressed by an environment defect, with nothing in the output recording the
+    difference. This is the last point at which that is still distinguishable from a capability result, and
+    it runs before any gateway call is billed.
+    """
+    try:
+        import causallearn  # noqa: F401
+    except ImportError:
+        parser.error(
+            "the `discover` tool needs the optional discovery extra (causal-learn), which is not installed; "
+            "run `uv sync --extra databricks --extra discovery`"
+        )
+
+
 def main() -> None:
     """Run the agent over a pre-built dataset for each model, in turn; print + persist scores as they land."""
     load_env()
     parser = argparse.ArgumentParser(description="INTERNAL: evaluate the agent against Databricks-served models.")
     parser.add_argument("--models", default=",".join(_DEFAULT_MODELS), help="comma-separated gateway model names")
-    parser.add_argument("--dataset", default=_DEFAULT_DATASET, help="path to a build_testset(.py)-shaped output")
+    parser.add_argument("--dataset", required=True, help="path to a build_testset(.py)-shaped output")
     parser.add_argument(
-        "--max-turns", type=int, default=_DEFAULT_MAX_TURNS, help="tool-call turns before forcing a final answer"
+        "--max-tool-calls",
+        type=int,
+        default=MAX_TOOL_CALLS,
+        help="investigation budget: tool calls per instance before the answer is forced",
     )
-    parser.add_argument("--out", default=_DEFAULT_OUT, help="incremental results (.jsonl, one line per model)")
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=MAX_TURNS,
+        help="round-trip budget: model replies per instance before the answer is forced",
+    )
+    parser.add_argument(
+        "--max-token-budget",
+        type=int,
+        default=MAX_TOKEN_BUDGET,
+        help="cost guardrail: prompt+completion tokens per instance before the answer is forced (0 disables)",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="incremental results (.jsonl, one line per model); defaults to <dataset>_eval.jsonl",
+    )
     parser.add_argument(
         "-n",
         "--n-instances",
@@ -278,21 +383,39 @@ def main() -> None:
         default=None,
         help="evaluate about N instances - whole SCMs spread across the dataset, not the first N (default all)",
     )
+    parser.add_argument(
+        "--transcript-out",
+        help=(
+            "write full JSONL request/response transcripts - complete message history, tool call arguments, "
+            "tool results, and raw model text - for tracing whether a model's reasoning and tool use are "
+            "actually sound rather than just looking at the final score (existing file is overwritten)"
+        ),
+    )
     args = parser.parse_args()
+    _require_discovery(parser)
 
     instances = load_dataset(args.dataset)
     if args.n_instances is not None:
         instances = _spread_across_scms(instances, args.n_instances)
     n_drivers = [len(key.scm.scaffold.non_decoy_drivers()) for _, key in instances]
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    out = Path(args.out)
+    # Results land beside their dataset unless told otherwise, so two datasets cannot share one file.
+    out = Path(args.out) if args.out else Path(f"{Path(args.dataset).with_suffix('')}_eval.jsonl")
     out.parent.mkdir(parents=True, exist_ok=True)
+    transcript_out = Path(args.transcript_out) if args.transcript_out else None
+    if transcript_out is not None:
+        if transcript_out.resolve() == out.resolve():
+            parser.error("--out and --transcript-out must be different files")
+        transcript_out.parent.mkdir(parents=True, exist_ok=True)
 
     _print(f"dataset={args.dataset}  instances={len(instances)}  models={models}")
     _print(f"writing incrementally to {out} - one line per instance, plus one per model, each flushed as it lands")
+    if transcript_out is not None:
+        _print(f"writing full request/response transcripts to {transcript_out}")
     _print()
 
-    with out.open("w", encoding="utf-8") as results_file:
+    transcript_context = transcript_out.open("w", encoding="utf-8") if transcript_out is not None else nullcontext(None)
+    with out.open("w", encoding="utf-8") as results_file, transcript_context as transcript_file:
         for model in models:
             record: dict = {"model": model, "dataset": args.dataset}
             start = time.monotonic()
@@ -351,8 +474,7 @@ def main() -> None:
                 _print(
                     f"  [{model}] instance {i + 1}/{len(instances)}  (+{instance_secs:5.0f}s, "
                     f"{now - start:6.0f}s total)  turns={len(turns):<3} tools={total_tools:<3} "
-                    f"parse={score.parse_ok}  ranking_tau={score.ranking_tau:+.3f} "
-                    f"(n={score.n_compared} z={_fmt_z(score.ranking_tau_z)})"
+                    f"parse={score.parse_ok}  overall={score.overall:.3f} tau={score.ranking_tau:+.3f}"
                 )
                 results_file.write(
                     json.dumps(_instance_record(model, i, instance_secs, n_drivers[i], score, turns)) + "\n"
@@ -362,13 +484,27 @@ def main() -> None:
             def _on_instance_error(i: int, error: Exception, *, errors_by_instance: dict = errors_by_instance) -> None:
                 errors_by_instance[i] = f"{type(error).__name__}: {error}"
 
+            def _on_transcript(
+                i: int,
+                transcript: TurnTranscript,
+                *,
+                model: str = model,
+                transcript_file: TextIO = transcript_file,
+            ) -> None:
+                if transcript_file is not None:
+                    transcript_file.write(json.dumps(_transcript_record(model, i, transcript)) + "\n")
+                    transcript_file.flush()
+
             try:
                 scores = run_evaluation(
                     instances,
                     DatabricksClient(model=model),
+                    max_tool_calls=args.max_tool_calls,
                     max_turns=args.max_turns,
+                    max_token_budget=args.max_token_budget or None,
                     on_instance=_progress,
                     on_turn=_on_turn,
+                    on_transcript=_on_transcript if transcript_file is not None else None,
                     on_instance_error=_on_instance_error,
                 )
             except Exception as exc:  # one unavailable/misnamed model shouldn't abort the rest of the sweep
@@ -384,22 +520,44 @@ def main() -> None:
             record["instance_seconds"] = durations
             # A provider failure is scored as a parse failure by run_evaluation (all zeros) and would
             # otherwise be averaged in as if the model had answered badly, deflating it for a network blip.
-            paired = enumerate(zip(n_drivers, scores, strict=True))
-            scored = [(n, s) for i, (n, s) in paired if i not in errors_by_instance]
-            scored_n_drivers = [n for n, _ in scored]
-            scored_scores = [s for _, s in scored]
-            summaries = aggregate_by_alignment(scored_scores)
-            cells = aggregate_by_driver_cell(scored_scores)
+            indexed = enumerate(zip(n_drivers, scores, strict=True))
+            scored = [(i, n, s) for i, (n, s) in indexed if i not in errors_by_instance]
+            scored_n_drivers = [n for _, n, _ in scored]
+            scored_scores = [s for _, _, s in scored]
+            cells = driver_cells(scored_scores)
+            keyed = [(instances[i][1], s) for i, _, s in scored]
+            # Every contrast, per metric: `overall` averages two axes that respond differently, so a
+            # naming effect read off it alone can be hidden by its own components.
+            naming = naming_table(keyed)
+            references = reference_scores([k for k, s in keyed if s.alignment is not None])
+            try:
+                pc_f1: float | None = mechanical_identifiability_f1([instances[i] for i, _, _ in scored]).f1
+            except ImportError:
+                pc_f1 = None
             _print_scores(model, scored_n_drivers, scored_scores)
-            _print_summaries(summaries)
             _print_cells(cells)
+            _print_headline(model, scored_scores, references, pc_f1)
+            _print_naming(model, naming)
             record["instances_requested"] = len(instances)
             record["instances_scored"] = len(scored)
             record["provider_error_count"] = len(errors_by_instance)
             record["failed_instances"] = [{"index": i, "error": e} for i, e in sorted(errors_by_instance.items())]
-            record["per_instance"] = [_score_record(n, s) for n, s in scored]
-            record["summaries"] = [_summary_record(s) for s in summaries]
+            record["per_instance"] = [_score_record(n, s) for _, n, s in scored]
             record["driver_cells"] = [_cell_record(c) for c in cells]
+            record["naming_contrasts"] = [_naming_record(row) for row in naming]
+            record["overall"] = sum(s.overall for s in scored_scores) / len(scored_scores) if scored_scores else None
+            record["parse_rate"] = (
+                sum(s.parse_ok for s in scored_scores) / len(scored_scores) if scored_scores else None
+            )
+            f1 = identifiability_f1(scored_scores)
+            record["identifiability_f1"] = {
+                "precision": f1.precision,
+                "recall": f1.recall,
+                "f1": f1.f1,
+                "n_positive": f1.n_positive,
+                "mechanical_pc_baseline": pc_f1,
+            }
+            record["reference_scores"] = references
             results_file.write(json.dumps(record) + "\n")
             results_file.flush()
 

@@ -99,7 +99,7 @@ def alpha_sweep_with(
     """Build one fixed SCM at each grid ``level`` from a *single* naming proposal - paired skins.
 
     All skins share the SCM, data, and column order (same ``seed``) and the same domain/name pool; only
-    the alignment level (which nodes are aligned / neutral / misaligned) differs. One proposal call
+    the alignment level (which nodes are aligned / misaligned) differs. One proposal call
     (+ critic/revise) is amortized across every level. Dependency-injected core: takes a ``proposer``/
     ``grounding`` directly, the same seam ``propose_triples`` itself uses, so it's testable with a stub -
     no network, no monkeypatching. ``alpha_sweep`` is the plain-string convenience wrapper over this for

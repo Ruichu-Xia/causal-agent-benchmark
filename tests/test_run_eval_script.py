@@ -44,8 +44,20 @@ def test_multi_model_sweep_records_litellm_turn_instance_and_summary(monkeypatch
     calls = []
     monkeypatch.setattr(runner.LiteLLMClient, "validate_tool_capability", lambda self: None)
 
-    def fake_run_evaluation(instances, client, *, max_turns, on_instance, on_turn, on_transcript, on_instance_error):
-        calls.append((client.model, client.temperature, client.request_timeout, max_turns, list(instances)))
+    def fake_run_evaluation(
+        instances,
+        client,
+        *,
+        max_tool_calls,
+        max_turns,
+        max_token_budget,
+        on_instance,
+        on_turn,
+        on_transcript,
+        on_instance_error,
+    ):
+        del max_turns, max_token_budget
+        calls.append((client.model, client.temperature, client.request_timeout, max_tool_calls, list(instances)))
         trace = TurnTrace(
             turn=0,
             duration_seconds=0.1,
@@ -79,7 +91,9 @@ def test_multi_model_sweep_records_litellm_turn_instance_and_summary(monkeypatch
             models=["openai/model-a", "anthropic/model-b"],
             instances=[(instance, key)],
             n_drivers=[len(key.scm.scaffold.non_decoy_drivers())],
-            max_turns=12,
+            max_tool_calls=100,
+            max_turns=25,
+            max_token_budget=600_000,
             temperature=0.3,
             sampling_seed=7,
             openrouter_session_prefix=None,
@@ -90,9 +104,9 @@ def test_multi_model_sweep_records_litellm_turn_instance_and_summary(monkeypatch
             transcript_file=transcript_file,
         )
 
-    assert [(model, temperature, timeout, max_turns) for model, temperature, timeout, max_turns, _ in calls] == [
-        ("openai/model-a", 0.3, 45.0, 12),
-        ("anthropic/model-b", 0.3, 45.0, 12),
+    assert [(model, temp, timeout, budget) for model, temp, timeout, budget, _ in calls] == [
+        ("openai/model-a", 0.3, 45.0, 100),
+        ("anthropic/model-b", 0.3, 45.0, 100),
     ]
     records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert [record["kind"] for record in records] == [
@@ -110,7 +124,20 @@ def test_multi_model_sweep_records_litellm_turn_instance_and_summary(monkeypatch
     summaries = [record for record in records if record["kind"] == "model_summary"]
     assert all(record["driver_cells"] for record in summaries)
     cells = [cell for record in summaries for cell in record["driver_cells"]]
-    assert all("identifiable" in cell and "ranking_tau" in cell for cell in cells)
+    assert all({"identifiable", "alignment", "n", "identification", "estimation"} <= cell.keys() for cell in cells)
+    # Every naming contrast is recorded even when a partial run leaves it undefined - absence would be
+    # indistinguishable from a run that found no effect. `correctness` in particular must always be present:
+    # it is the only contrast that isolates whether the names are *true* rather than merely present.
+    for record in summaries:
+        rows = record["naming_contrasts"]
+        assert {r["metric"] for r in rows if r["subset"] == "all"} == {
+            "overall",
+            "identification",
+            "estimation",
+            "ranking_tau",
+        }
+        assert all({"correctness", "gain", "harm"} <= r.keys() for r in rows)
+    assert all("mechanical_pc_baseline" in record["identifiability_f1"] for record in summaries)
     assert all(record["per_instance"][0]["drivers"] for record in summaries)  # raw per-driver rows too
     transcript_records = [json.loads(line) for line in transcript_out.read_text(encoding="utf-8").splitlines()]
     assert len(transcript_records) == 2
@@ -161,8 +188,19 @@ def test_provider_error_is_recorded_but_excluded_from_model_summary(monkeypatch,
     instance, key = _instance(0)
     failed_score = score_output("not an answer", key)
 
-    def fake_run_evaluation(instances, client, *, max_turns, on_instance, on_turn, on_transcript, on_instance_error):
-        del client, max_turns, on_turn, on_transcript
+    def fake_run_evaluation(
+        instances,
+        client,
+        *,
+        max_tool_calls,
+        max_turns,
+        max_token_budget,
+        on_instance,
+        on_turn,
+        on_transcript,
+        on_instance_error,
+    ):
+        del client, max_tool_calls, max_turns, max_token_budget, on_turn, on_transcript
         on_instance_error(0, RuntimeError("provider unavailable"))
         on_instance(0, failed_score)
         return [failed_score]
@@ -174,7 +212,9 @@ def test_provider_error_is_recorded_but_excluded_from_model_summary(monkeypatch,
             models=["openrouter/example"],
             instances=[(instance, key)],
             n_drivers=[len(key.scm.scaffold.non_decoy_drivers())],
-            max_turns=2,
+            max_tool_calls=100,
+            max_turns=25,
+            max_token_budget=600_000,
             temperature=0.2,
             sampling_seed=0,
             openrouter_session_prefix=None,

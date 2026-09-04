@@ -2,7 +2,7 @@
 
 Active design work for making CausalAgentBench a valid research benchmark and a useful RLVR environment.
 This is intentionally a prioritized task backlog, not a record of superseded designs. The current naming
-grid is constructed as `{-1, 0, +1}` plus a name-blind control; there is no active continuous-`alpha`
+grid is constructed as `{-1, +1}` plus a name-blind control; there is no active continuous-`alpha`
 design.
 
 ## P0: Define a coherent task and gold standard
@@ -114,8 +114,11 @@ stratify/standardize every affected metric.
 ### 8. Expand beyond the small gadget grammar before making broad claims
 
 **Problem.** The current generator composes a small catalog of clean, confounded, multi-confounder,
-instrumented, and decoy motifs under linear-Gaussian causal sufficiency. Procedural variation prevents one
-fixed-graph lookup, but agents can still learn family-specific strategies.
+instrumented, collider, M-bias, and decoy motifs under linear-Gaussian causal sufficiency. Procedural
+variation prevents one fixed-graph lookup, but agents can still learn family-specific strategies. Adding
+collider/M-bias closed a real gap in the *local-role* catalog (two textbook adjustment-set traps that were
+simply missing), but it is orthogonal to the *topology*-level narrowness this item is actually about: every
+motif still meets at one high-degree outcome sink, and no gadget touches another except through it.
 
 **Required outcome.** Maintain explicit train/validation/test graph-family splits; hold out motif
 compositions and nuisance configurations; measure out-of-family performance. Scope v1 claims to this

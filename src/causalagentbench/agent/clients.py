@@ -139,7 +139,7 @@ class DatabricksClient:
     """
 
     model: str
-    temperature: float = 0.2
+    temperature: float = 0.0
     max_tokens: int = 32_000
     """Generous, not a real constraint: this is a hard external cutoff the model has no awareness of - it
     keeps generating (reasoning tokens count against the same budget as answer tokens) until either it's
