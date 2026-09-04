@@ -2,10 +2,17 @@
 
 Each "gadget" below is a self-contained local pattern contributing one candidate driver (or, for a decoy,
 one candidate that is a trap): a clean driver, a confounded driver, a richer multi-confounder driver, an
-instrumented driver, and a decoy. ``procedural_scaffold`` draws a random count of drivers and decoys per
-seed and wires every gadget's terminal edge into one shared outcome - the same anchor-based composition
-CausalDS uses to keep the naming/verbalization problem tractable, since a gadget only ever touches the
-rest of the graph through the shared outcome, never another gadget directly.
+instrumented driver, a collider driver, an M-bias driver, and a decoy. ``procedural_scaffold`` draws a
+random count of drivers and decoys per seed and wires every gadget's terminal edge into one shared outcome
+- the same anchor-based composition CausalDS uses to keep the naming/verbalization problem tractable,
+since a gadget only ever touches the rest of the graph through the shared outcome, never another gadget
+directly.
+
+The collider and M-bias drivers are a different kind of trap from the other four: every other archetype's
+driver needs adjustment (or is trivially clean), and the failure mode being tested is "did you adjust for
+the wrong thing / not enough." These two need *no* adjustment at all, and the failure mode is the opposite:
+adjusting for the wrong thing actively creates bias that correct reasoning would never introduce. See
+``_collider_driver``/``_mbias_driver``.
 
 No gadget declares whether its confounder/instrument edge is ambiguous - that is discovered separately
 (``scm/identifiability.py``), never assumed here. Whether a driver's ambiguity ends up resolved is also not
@@ -43,7 +50,7 @@ Carved out rather than added because task size must not vary with the draw. A va
 ``ranking_tau`` incomparable across instances (its achievable granularity and its chance variance both
 depend on the count) and gives an RL policy a varying action-space size. Varying the *split* instead keeps
 the size fixed while leaving the decoy count unmemorizable."""
-FREE_ARCHETYPES = ("clean", "confounded", "multi_confounder", "instrumented")
+FREE_ARCHETYPES = ("clean", "confounded", "multi_confounder", "instrumented", "collider", "mbias")
 #: Chance that a confounder-/instrument-bearing driver gets its ambiguity resolved (§11.1/§11.2). One coin
 #: flip per driver, not per confounder - a multi-confounder driver's two confounders are always resolved
 #: together, never independently (§11.1: the partial case is real but scores identically to fully ambiguous
@@ -99,6 +106,49 @@ def _instrumented_driver(i: int) -> _Gadget:
     return _Gadget(roles=roles, edges=edges, driver=a, adjustment=())
 
 
+def _collider_driver(i: int) -> _Gadget:
+    """A driver that needs no adjustment at all, plus a trap for adjusting anyway.
+
+    ``A`` is exogenous (like ``_clean_driver``) with a clean direct effect on ``Y``. ``U`` is a genuine,
+    independent second cause of ``Y`` - structurally a confounder, just of ``{Co, Y}`` rather than of a
+    driver, which is exactly what ``Role.CONFOUNDER``'s existing construction machinery
+    (``target_effects.py::_construct_confounder_edge``) already builds without any change. ``A`` and ``U``
+    both cause ``Co``, an unshielded collider with no children of its own (a pure sink, zero total effect on
+    ``Y`` - it looks like a decoy from that angle, but for a different reason).
+
+    ``A``'s correct adjustment set is empty: the only other route from ``A`` to ``Y`` is
+    ``A -> Co <- U -> Y``, and a collider blocks a path by default rather than opening it. Conditioning on
+    ``Co`` - the naive "it's correlated with both, so adjust for it" move - does the opposite of what
+    adjustment is supposed to do: it *creates* the very confounding the driver never had, contaminating
+    ``A``'s estimate with a fraction of ``U``'s unrelated effect on ``Y``.
+    """
+    a, u, co = f"A{i}", f"U{i}", f"Co{i}"
+    roles = {a: Role.DRIVER_CLEAN, u: Role.CONFOUNDER, co: Role.COLLIDER}
+    edges = [(a, OUTCOME), (u, OUTCOME), (a, co), (u, co)]
+    return _Gadget(roles=roles, edges=edges, driver=a, adjustment=())
+
+
+def _mbias_driver(i: int) -> _Gadget:
+    """A sharper collider trap: ``Co`` looks confounder-adjacent, but nothing about ``A`` needs fixing.
+
+    ``V`` causes both ``A`` and the collider ``Mb``, but - unlike ``_collider_driver``'s ``U`` - has no edge
+    to ``Y`` at all, so it is not a confounder in any sense: it cannot bias ``A``'s effect through any path
+    that does not first pass through the blocked collider. ``U`` causes ``Mb`` and (via the same
+    ``Role.CONFOUNDER`` construction) ``Y``. The classic "M-bias" configuration (Pearl): ``Mb`` sits between
+    two variables that are each connected to one side of the ``A -> Y`` relationship, so a superficial glance
+    - "something upstream of my driver is linked to something downstream" - misreads it as confounder-like.
+
+    ``A``'s correct adjustment set is empty, exactly as if ``V`` and ``U`` were not there at all - ``A``
+    would need no adjustment even without this whole apparatus. Conditioning on ``Mb`` does not just
+    contaminate a real effect (``_collider_driver``'s failure mode) - it manufactures an association between
+    ``A`` and ``Y`` out of a graph with no other route between them, the sharper form of the same mistake.
+    """
+    a, v, u, mb = f"A{i}", f"V{i}", f"U{i}", f"Mb{i}"
+    roles = {a: Role.DRIVER_CLEAN, v: Role.UPSTREAM_CAUSE, u: Role.CONFOUNDER, mb: Role.COLLIDER}
+    edges = [(v, a), (a, OUTCOME), (v, mb), (u, mb), (u, OUTCOME)]
+    return _Gadget(roles=roles, edges=edges, driver=a, adjustment=())
+
+
 def _decoy(j: int, confounder: str) -> _Gadget:
     dz = f"Dz{j}"
     return _Gadget(roles={dz: Role.DECOY}, edges=[(confounder, dz)], driver=dz, adjustment=(confounder,))
@@ -109,6 +159,8 @@ _BUILDERS = {
     "confounded": _confounded_driver,
     "multi_confounder": _multi_confounder_driver,
     "instrumented": _instrumented_driver,
+    "collider": _collider_driver,
+    "mbias": _mbias_driver,
 }
 
 
@@ -201,7 +253,8 @@ def procedural_scaffold(
     ``resolve_probability`` only affects the free slots - the two reserved ones are always forced either
     way, so the "at least one ambiguous, one resolved" guarantee holds at any value. ``0.0``/``1.0`` push
     every free slot to the same extreme (mostly ambiguous / mostly resolved) for a controlled ambiguity
-    sweep; the default ``0.5`` reproduces the original, unparameterized behavior exactly.
+    sweep; the default is ``RESOLVE_PROBABILITY`` (0.25) - see that constant's docstring for how the value
+    was chosen.
     """
     minimum = DECOY_COUNT_RANGE[1] + 2
     if n_candidates is not None and n_candidates < minimum:

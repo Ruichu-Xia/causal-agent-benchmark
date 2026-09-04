@@ -1,10 +1,16 @@
 """The agent's answer contract.
 
-A minimal, validated deliverable: per candidate driver an adjustment set and an estimate of its total
-causal effect. The agent emits this as JSON inside an ``<answer>...</answer>`` block; ``parse_answer``
-extracts and validates its JSON shape. ``validate_answer_contract`` then checks the public instance
-contract (every displayed candidate exactly once, an effect estimate wherever the agent did not abstain)
-without consulting any hidden causal ground truth.
+A minimal, validated deliverable: per candidate driver an adjustment set, an estimate of its total causal
+effect, and a judgement of whether the data alone settles that effect. The agent emits this as JSON inside
+an ``<answer>...</answer>`` block; ``parse_answer`` extracts and validates its JSON shape.
+``validate_answer_contract`` then checks the public instance contract (every displayed candidate exactly
+once, an effect estimate on every one) without consulting any hidden causal ground truth.
+
+There is deliberately **no way to decline a driver**. An abstention option let the agent choose its own
+denominator on three metrics at once, and made the correct answer depend on the column names - the very
+thing the naming axis is supposed to vary independently. Uncertainty is now expressed by
+``identifiable_from_data``, which is a judgement about the data rather than a refusal to answer, so it is
+gradeable on every driver in every naming condition.
 
 The ranking the task asks for is derived from those estimates rather than stated separately - see
 ``Answer``.
@@ -26,10 +32,6 @@ class AnswerParseError(ValueError):
 class DriverVerdict(BaseModel):
     """The agent's adjustment set and effect estimate for one candidate driver, or an abstention.
 
-    ``abstain=True`` means the agent judges the driver's effect not identifiable from the data - neither
-    ``adjustment_set`` nor ``effect`` is then graded on content, only whether abstaining was the right call
-    (``scoring/score.py``).
-
     ``effect`` is the estimated total causal effect, and it is what makes the deliverable gradeable beyond a
     shortcut. Measured on the generator: blind policies (marginal correlation, adjust-for-everything) rank
     the drivers at tau 0.68-0.78 but estimate them ~25% of a typical effect away, while correct adjustment
@@ -39,9 +41,19 @@ class DriverVerdict(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     driver: str
-    adjustment_set: tuple[str, ...]
+    adjustment_set: tuple[str, ...] = ()
     effect: float | None = None
-    abstain: bool = False
+    identifiable_from_data: bool | None = None
+    """Whether the *data alone* pins this driver's effect down, independent of what the columns are called.
+
+    A judgement, not a refusal: the agent still owes an ``effect`` either way. Identifiability is a property
+    of the graph, so this is well defined - and scored against the same driver population - in every naming
+    condition, which an abstention was not (measured: n=0 gold-abstain drivers at alpha=+1 against n=20 at
+    alpha=-1, so half the design had nothing to grade).
+
+    ``None`` means the agent did not judge, and counts against it in the pooled precision/recall - otherwise
+    omitting the field would be free.
+    """
 
 
 class Answer(BaseModel):
@@ -89,9 +101,9 @@ def validate_answer_contract(
     if len(verdict_labels) != len(candidate_drivers) or set(verdict_labels) != expected:
         raise AnswerParseError("verdicts must contain every candidate driver exactly once")
     for verdict in answer.verdicts:
-        # The ranking is derived from these, so a committed driver without one has no position to hold.
-        if not verdict.abstain and verdict.effect is None:
-            raise AnswerParseError("a driver that is not abstained on must carry an effect estimate")
+        # The ranking is derived from these, so a driver without one has no position to hold.
+        if verdict.effect is None:
+            raise AnswerParseError("every driver must carry an effect estimate")
     if columns is not None:
         allowed_columns = set(columns)
         for verdict in answer.verdicts:

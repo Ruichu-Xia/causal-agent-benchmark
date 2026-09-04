@@ -1,24 +1,29 @@
+"""Tests for the scorer.
+
+The property most of these defend is that **no metric's denominator is the agent's to choose**. Every
+candidate driver is graded on identification and estimation, always, in every naming condition. The previous
+design let the agent abstain, which excluded drivers from three metrics at once and let a blanket-abstainer
+be scored on a smaller, easier population than a model that answered everything.
+"""
+
+import numpy as np
+import pytest
+
 from causalagentbench import build_instance, generate, sample
-from causalagentbench.scoring.gates import generate_gated_procedural
-from causalagentbench.scoring.metrics import kendall_tau_zscore
+from causalagentbench.scoring.baselines import effect_scale, population_coefficient
 from causalagentbench.scoring.score import (
-    Quadrant,
-    RankingPairs,
-    _gold_abstain,
-    quadrant,
+    AnswerScore,
+    _adjustment_bias,
+    _effect_error,
+    _ranking_tau,
     reference_scores,
     score_answer,
     score_output,
 )
 from causalagentbench.task.answer import Answer, DriverVerdict
 from causalagentbench.task.instance import InstanceKey
-from causalagentbench.task.labeling import LabelProvenance
 from causalagentbench.types import Role, Scaffold
 
-# A small, hand-built example graph (confounder C, confounded driver A + mediator M, clean driver B,
-# decoy Dz) - the same shape used across the test suite as a readable fixture (tests/scm/test_scaffold.py).
-# Scoring logic only needs a valid SCM on a known graph, never gate-passing, so this skips the gate loop
-# entirely rather than depending on it.
 _SCAFFOLD = Scaffold(
     node_names=("C", "A", "B", "M", "Dz", "Y"),
     roles={
@@ -43,422 +48,257 @@ def _instance() -> tuple[InstanceKey, dict[str, str]]:
     return key, dict(key.node_to_label)  # node -> label
 
 
-def _verdict(label: dict[str, str], node: str, adjust: tuple[str, ...] = (), effect: float = 0.0) -> DriverVerdict:
-    return DriverVerdict(driver=label[node], adjustment_set=tuple(label[z] for z in adjust), effect=effect)
-
-
-def _abstain(label: dict[str, str], node: str) -> DriverVerdict:
-    return DriverVerdict(driver=label[node], adjustment_set=(), abstain=True)
-
-
-def _ordered(label: dict[str, str], nodes: tuple[str, ...]) -> Answer:
-    """Verdicts whose estimates place ``nodes`` in exactly that order, strongest first.
-
-    The ranking is derived from the estimates now (``task/answer.py::Answer``), so a test that wants a
-    particular order states it as decreasing magnitudes rather than as a separate ranking field.
-    """
-    return Answer(verdicts=tuple(_verdict(label, node, effect=1.0 - i / 10) for i, node in enumerate(nodes)))
+def _verdict(
+    label: dict[str, str],
+    node: str,
+    adjust: tuple[str, ...] = (),
+    effect: float = 0.0,
+    identifiable: bool | None = None,
+) -> DriverVerdict:
+    return DriverVerdict(
+        driver=label[node],
+        adjustment_set=tuple(label[z] for z in adjust),
+        effect=effect,
+        identifiable_from_data=identifiable,
+    )
 
 
 def _perfect(key: InstanceKey, label: dict[str, str]) -> Answer:
-    # Each driver's true effect and its gold adjustment (A<-C so {C}; B exogenous so {}; Dz via C). The true
-    # effects also derive the true order, so this is simultaneously a perfect ranking and perfect estimates.
+    """Gold adjustment sets and exact true effects. Also the true order, so ranking is perfect too."""
     return Answer(
-        verdicts=(
-            _verdict(label, "A", ("C",), key.scm.total_effect_on_outcome("A")),
-            _verdict(label, "B", (), key.scm.total_effect_on_outcome("B")),
-            _verdict(label, "Dz", ("C",), key.scm.total_effect_on_outcome("Dz")),
+        verdicts=tuple(
+            _verdict(label, node, adjust, key.scm.total_effect_on_outcome(node))
+            for node, adjust in (("A", ("C",)), ("B", ()), ("Dz", ("C",)))
         )
     )
 
 
-def test_perfect_answer_scores_one():
+# ---- nothing is ever ungraded --------------------------------------------------------------------------
+
+
+def test_every_driver_is_graded_on_both_axes():
+    """The core invariant: fixed denominators, set by the instance and not by the answer."""
     key, label = _instance()
     score = score_answer(_perfect(key, label), key)
-    assert score.ranking_tau == 1.0
-    assert score.adjustment_accuracy == 1.0
-    assert all(score.adjustment_valid.values())
-    # Exact true effects were reported, so there is no estimation error anywhere.
-    assert score.effect_accuracy == 1.0
-    assert set(score.effect_error.values()) == {0.0}
-    # n_compared is the candidate count actually behind ranking_tau (all 3: A, B, Dz - nothing abstained).
-    assert score.n_compared == 3
-    assert score.ranking_tau_z == kendall_tau_zscore(1.0, 3)
+    assert set(score.adjustment_bias) == set(key.scm.scaffold.drivers)
+    assert set(score.effect_error) == set(key.scm.scaffold.drivers)
+    assert all(isinstance(v, float) for v in score.adjustment_bias.values())
+    assert all(isinstance(v, float) for v in score.effect_error.values())
 
 
-def test_reversed_ranking_scores_minus_one():
+def test_a_perfect_answer_scores_one():
     key, label = _instance()
-    reversed_order = tuple(reversed(key.scm.true_ranking()))
-    assert score_answer(_ordered(label, reversed_order), key).ranking_tau == -1.0
+    score = score_answer(_perfect(key, label), key)
+    assert score.identification == pytest.approx(1.0, abs=1e-9)
+    assert score.estimation == pytest.approx(1.0, abs=1e-9)
+    assert score.overall == pytest.approx(1.0, abs=1e-9)
+    assert score.ranking_tau == pytest.approx(1.0)
 
 
-def test_estimating_no_effect_anywhere_scores_zero_effect_accuracy():
-    """The metric's ceiling has a meaning: 1.0 error is "no better than asserting no effect"."""
+def test_an_empty_answer_cannot_beat_a_real_one():
+    """Answering nothing used to be free on the graded metrics; now it takes the maximum penalty."""
     key, label = _instance()
-    score = score_answer(Answer(verdicts=tuple(_verdict(label, n) for n in ("A", "B", "Dz"))), key)
-    # Dz's true effect really is 0, so a zero estimate is exactly right there and costs nothing.
-    assert score.effect_error["Dz"] == 0.0
-    # A and B carry real effects; estimating zero is the maximum penalty the clip allows for the median
-    # driver, and A is the fixture's strongest so its raw error exceeds the scale outright.
-    assert score.effect_error["A"] == 1.0
-    assert 0.0 < score.effect_accuracy < 1.0
+    blank = Answer(verdicts=tuple(_verdict(label, d) for d in key.scm.scaffold.drivers))
+    assert score_answer(blank, key).overall < score_answer(_perfect(key, label), key).overall
 
 
-def test_a_sign_error_is_scored_as_an_error_not_a_success():
-    """Ranking reads magnitude, but estimation must not: +0.3 where the truth is -0.3 is a wrong answer."""
-    key, label = _instance()
-    flipped = tuple(_verdict(label, n, effect=-key.scm.total_effect_on_outcome(n)) for n in ("A", "B", "Dz"))
-    score = score_answer(Answer(verdicts=flipped), key)
-    assert score.ranking_tau == 1.0  # magnitudes are unchanged, so the derived order is still perfect
-    assert score.effect_error["A"] > 0.0
-    assert score.effect_accuracy < 1.0
-
-
-def test_backdoor_validity_accepts_supersets_rejects_bad_sets():
-    key, label = _instance()
-
-    # A's valid backdoor set is {C}; {C, B} is also valid (superset); {} and {M} (a mediator) are not.
-    def acc(node, adjust):
-        answer = Answer(verdicts=(_verdict(label, node, adjust),))
-        return score_answer(answer, key).adjustment_valid[node]
-
-    assert acc("A", ("C",)) is True
-    assert acc("A", ("C", "B")) is True
-    assert acc("A", ()) is False
-    assert acc("A", ("M",)) is False
-    assert acc("B", ()) is True  # B is exogenous
-
-
-def test_unknown_adjustment_column_is_invalid():
-    key, label = _instance()
-    answer = Answer(verdicts=(DriverVerdict(driver=label["A"], adjustment_set=("nope",), effect=0.1),))
-    assert score_answer(answer, key).adjustment_valid["A"] is False
-
-
-def test_malformed_ranking_scores_zero():
-    key, label = _instance()
-    partial = Answer(verdicts=(_verdict(label, "A"),))  # omits B and Dz
-    score = score_answer(partial, key)
-    assert score.ranking_tau == 0.0
-    # Nothing was actually compared (the ranking itself is invalid) - n_compared falls back to every
-    # candidate, giving honest task-size context for the 0.0 penalty rather than a meaningless 0.
-    assert score.n_compared == 3
-    assert score.ranking_tau_z == 0.0
-
-
-def test_parse_failure_state():
-    key, _ = _instance()
-    score = score_output("no answer block", key)
-    assert score.parse_ok is False
-    assert score.ranking_tau == 0.0
-    assert score.adjustment_accuracy == 0.0
-    assert not any(score.adjustment_valid.values())
-    assert score.n_compared == 3
-    assert score.ranking_tau_z == 0.0
-
-
-def test_incomplete_but_json_shaped_answer_is_a_parse_failure():
-    key, _ = _instance()
-    score = score_output('<answer>{"verdicts": []}</answer>', key)
-
-    assert score.parse_ok is False
-
-
-def test_alignment_is_carried_through():
-    key, label = _instance()
-    # abstract labeler -> alignment is None; the field is passed through for stratification.
-    assert score_answer(_perfect(key, label), key).alignment is None
-
-
-def test_gold_abstain_flips_with_the_drivers_own_naming():
-    """The capability under test: fall back on the name only where the data ran out.
-
-    The same unidentifiable driver (A) is abstain-correct when naming doesn't resolve it, and abstain-*wrong*
-    when its own displayed name is the aligned one - because then the name settles the orientation the data
-    left open. That the agent can tell those two worlds apart is what `build_prompt` makes true: naming is
-    uniform, so it checks the names against the structure discovery does pin down.
-    """
-    scm = generate(0, _SCAFFOLD)
-    neutral_kind = dict.fromkeys(scm.scaffold.node_names, "neutral")
-    aligned_a_kind = {**neutral_kind, "A": "aligned"}
-
-    def key_with(node_kind):
-        provenance = LabelProvenance(
-            alignment=1.0, n_aligned=1, n_neutral=5, n_misaligned=0, node_kind=node_kind, domain="d", producer="p"
-        )
-        return InstanceKey(scm=scm, label_to_node={}, node_to_label={}, provenance=provenance)
-
-    assert _gold_abstain(key_with(neutral_kind), "A") is True  # unidentifiable, naming doesn't resolve it
-    assert _gold_abstain(key_with(aligned_a_kind), "A") is False  # same driver, now its own name IS aligned
-
-
-def test_quadrant_covers_all_four_cells():
-    """`quadrant` survives as a *reporting* axis, no longer as the source of any gold answer.
-
-    Directly verify all four cells classify as §6's table says, using the fixture's known-unidentifiable A
-    and known-identifiable B. `_gold_abstain` no longer reads any of them - see the naming test above.
-    """
-    scm = generate(0, _SCAFFOLD)
-    neutral_kind = dict.fromkeys(scm.scaffold.node_names, "neutral")
-    aligned_kind = {**neutral_kind, "A": "aligned", "B": "aligned"}
-
-    def key_with(node_kind):
-        provenance = LabelProvenance(
-            alignment=1.0, n_aligned=2, n_neutral=4, n_misaligned=0, node_kind=node_kind, domain="d", producer="p"
-        )
-        return InstanceKey(scm=scm, label_to_node={}, node_to_label={}, provenance=provenance)
-
-    assert quadrant(key_with(aligned_kind), "A") == Quadrant.UNIDENTIFIABLE_ALIGNED  # trust naming
-    assert quadrant(key_with(neutral_kind), "A") == Quadrant.UNIDENTIFIABLE_NOT_ALIGNED  # abstain correct
-    assert quadrant(key_with(aligned_kind), "B") == Quadrant.IDENTIFIABLE_ALIGNED  # trivial - both agree
-    assert quadrant(key_with(neutral_kind), "B") == Quadrant.IDENTIFIABLE_NOT_ALIGNED  # trust data
-    assert _gold_abstain(key_with(neutral_kind), "B") is False  # never ambiguous, regardless of naming
-
-
-# ---- per-driver breakdown -----------------------------------------------------------------------------
-# The three per-driver maps exist so results can be split below instance grain (agent/eval.py's
-# aggregate_by_driver_cell). `identifiable` is the topology axis; on this fixture A and Dz are the
-# unidentifiable ones (only C is a CONFOUNDER, and C-A / C-Dz are the unoriented edges), B is exogenous.
-
-
-def _pooled_tau(score) -> float:
-    """Recompute tau from the per-driver pair counts, the way an aggregator pools a cell."""
-    concordant = sum(pairs.concordant for pairs in score.ranking_pairs.values())
-    discordant = sum(pairs.discordant for pairs in score.ranking_pairs.values())
-    decided = concordant + discordant
-    return (concordant - discordant) / decided if decided else 1.0
-
-
-def test_pooling_per_driver_pairs_reproduces_ranking_tau_exactly():
-    """The per-driver ranking counts are a decomposition of `ranking_tau`, not a second metric.
-
-    Every pair has two endpoints, so pooling gives (2C-2D)/(2C+2D) = kendall_tau's own (C-D)/(C+D). Asserted
-    over several answer shapes because the two values are computed independently - `ranking_tau` from
-    `kendall_tau`, the counts from `_ranking_tau`'s own loop - so this is what catches them drifting apart.
-    Exact equality, not approx: both sides are the same small-integer ratio, so any gap is a real bug.
-    """
-    key, label = _instance()
-    effect = key.scm.total_effect_on_outcome
-    answers = [
-        _perfect(key, label),  # fully concordant
-        _ordered(label, tuple(reversed(key.scm.true_ranking()))),  # fully discordant
-        # One driver correctly abstained - it leaves the comparison, so its pairs must vanish from both sides.
-        Answer(
-            verdicts=(
-                _verdict(label, "A", ("C",), effect("A")),
-                _verdict(label, "B", (), effect("B")),
-                _abstain(label, "Dz"),
-            )
-        ),
-    ]
-    for answer in answers:
-        score = score_answer(answer, key)
-        assert _pooled_tau(score) == score.ranking_tau
-
-
-def test_drivers_outside_the_comparison_carry_no_ranking_pairs():
-    key, label = _instance()
-    effect = key.scm.total_effect_on_outcome
-    verdicts = (
-        _verdict(label, "A", ("C",), effect("A")),
-        _verdict(label, "B", (), effect("B")),
-        _abstain(label, "Dz"),
-    )
-    score = score_answer(Answer(verdicts=verdicts), key)
-
-    # Dz abstained correctly, so it is dropped from the comparison - contributing to neither side of a
-    # pooled ratio, rather than being scored as if it had been ranked wrongly.
-    assert score.ranking_pairs["Dz"] == RankingPairs(0, 0)
-    assert score.ranking_pairs["A"].concordant + score.ranking_pairs["A"].discordant == 1  # only against B
-
-
-def test_identifiable_flags_the_topologically_ambiguous_drivers():
-    key, _ = _instance()
-    # An instance property read off the graph, so it is answer-independent - see the parse-failure test.
-    assert score_answer(_perfect(key, dict(key.node_to_label)), key).identifiable == {
-        "A": False,
-        "B": True,
-        "Dz": False,
-    }
-
-
-def test_parse_failure_still_records_identifiability_and_a_consistent_key_space():
-    key, _ = _instance()
+def test_a_parse_failure_scores_zero_rather_than_raising():
+    key, _label = _instance()
     score = score_output("no answer block here", key)
-
-    assert score.parse_ok is False
-    assert score.identifiable == {"A": False, "B": True, "Dz": False}  # graph fact, not an answer fact
-    assert score.abstention_correct == dict.fromkeys(("A", "B", "Dz"), False)
-    assert score.ranking_pairs == dict.fromkeys(("A", "B", "Dz"), RankingPairs(0, 0))
-    # The key-space contract aggregate_by_driver_cell indexes on: AnswerScore is built at two separate
-    # sites, and a driver present in one map but missing from another would only surface at aggregation.
-    assert score.adjustment_valid.keys() == score.abstention_correct.keys()
-    assert score.abstention_correct.keys() == score.identifiable.keys() == score.ranking_pairs.keys()
+    assert not score.parse_ok
+    assert score.overall == 0.0
+    assert set(score.identifiable) == set(key.scm.scaffold.drivers)  # instance property, still filled
+    assert all(v is None for v in score.identifiability_judgment.values())
 
 
-# ---- abstention ---------------------------------------------------------------------------------------
-# The fixture scaffold + abstract_labels (no naming manipulation at all, so nothing is ever "aligned"): A and Dz are
-# gold-abstain-correct (their edges are genuinely unidentifiable, `unidentifiable_drivers`), B is not
-# (exogenous, no incoming edge to be ambiguous about).
+# ---- identification is continuous ----------------------------------------------------------------------
 
 
-def test_correctly_abstaining_on_every_unidentifiable_driver_scores_full_credit():
+def test_adjustment_bias_orders_qualitatively_different_mistakes():
+    """A validity boolean scored all of these an identical 0; the bias measure ranks them."""
     key, label = _instance()
-    verdicts = (
-        _abstain(label, "A"),
-        _verdict(label, "B", (), key.scm.total_effect_on_outcome("B")),
-        _abstain(label, "Dz"),
+    scale = effect_scale(key.scm)
+
+    def bias(adjust: tuple[str, ...]) -> float:
+        answer = Answer(verdicts=(_verdict(label, "A", adjust, 0.0),))
+        return _adjustment_bias(answer, key, "A", scale)
+
+    assert bias(("C",)) == pytest.approx(0.0, abs=1e-9)  # the gold set
+    assert bias(()) > 0.0  # missing the confounder leaves bias
+
+
+def test_a_harmless_extra_covariate_costs_nothing():
+    """Conditioning on a variable that blocks no path is not an error, and must not be scored as one."""
+    key, label = _instance()
+    scale = effect_scale(key.scm)
+    gold = Answer(verdicts=(_verdict(label, "A", ("C",), 0.0),))
+    plus_decoy = Answer(verdicts=(_verdict(label, "A", ("C", "Dz"), 0.0),))
+    assert _adjustment_bias(plus_decoy, key, "A", scale) == pytest.approx(
+        _adjustment_bias(gold, key, "A", scale), abs=1e-9
     )
-    score = score_answer(Answer(verdicts=verdicts), key)
-
-    assert score.abstention_accuracy == 1.0
-    # A and Dz excluded from the pairwise comparison entirely - only B is left, vacuously perfect.
-    assert score.ranking_tau == 1.0
-    # n_compared reflects that real exclusion (1, not 3) - too few items for a meaningful z-score.
-    assert score.n_compared == 1
-    assert score.ranking_tau_z is None
-    # A and Dz excluded from the accuracy denominator too - only B is graded, and it's valid.
-    assert score.adjustment_accuracy == 1.0
-    assert score.adjustment_valid["A"] is None
-    assert score.adjustment_valid["Dz"] is None
-    assert score.adjustment_valid["B"] is True
 
 
-def test_committing_instead_of_abstaining_is_graded_normally_but_scores_no_abstention_credit():
+def test_conditioning_on_the_driver_or_outcome_is_maximally_penalized():
     key, label = _instance()
-    # The perfect answer commits valid backdoor sets for A and Dz too - both gold-abstain-correct, but
-    # committing isn't penalized on adjustment_accuracy/ranking_tau, only on abstention_accuracy.
-    score = score_answer(_perfect(key, label), key)
-    assert score.ranking_tau == 1.0
-    assert score.adjustment_accuracy == 1.0
-    assert score.abstention_accuracy == 1 / 3  # only B (not gold-abstain) was called correctly
+    scale = effect_scale(key.scm)
+    on_outcome = Answer(verdicts=(_verdict(label, "A", ("Y",), 0.0),))
+    assert _adjustment_bias(on_outcome, key, "A", scale) == 1.0
 
 
-def test_wrongly_abstaining_on_an_identifiable_driver_is_graded_not_excluded():
+def test_adjustment_bias_matches_the_estimand_the_set_implies():
+    """The metric is defined off `population_coefficient`, not re-derived - pin that they agree."""
     key, label = _instance()
-    # true_ranking is (A, B, Dz). Only Dz correctly abstains (excluded); A commits (also gold-abstain-
-    # correct here, so this commit is itself an abstention miss - see the "committing instead" test above);
-    # B - exogenous, never ambiguous - wrongly abstains. If a bug excluded *any* abstained driver (not just
-    # correct ones), B would drop out too, leaving only A - too few items for kendall_tau to catch the
-    # swap below.
-    verdicts = (
-        _verdict(label, "A", ("C",), key.scm.total_effect_on_outcome("A")),
-        _abstain(label, "B"),
-        _abstain(label, "Dz"),
+    scale = effect_scale(key.scm)
+    answer = Answer(verdicts=(_verdict(label, "A", (), 0.0),))
+    induced = population_coefficient(key.scm, "A", [])
+    expected = min(abs(induced - key.scm.total_effect_on_outcome("A")) / scale, 1.0)
+    assert _adjustment_bias(answer, key, "A", scale) == pytest.approx(expected)
+
+
+# ---- estimation -----------------------------------------------------------------------------------------
+
+
+def test_effect_error_is_signed_so_a_flipped_sign_is_wrong():
+    key, label = _instance()
+    scale = effect_scale(key.scm)
+    truth = key.scm.total_effect_on_outcome("A")
+    flipped = Answer(verdicts=(_verdict(label, "A", ("C",), -truth),))
+    exact = Answer(verdicts=(_verdict(label, "A", ("C",), truth),))
+    assert _effect_error(exact, key, "A", scale) == pytest.approx(0.0, abs=1e-9)
+    assert _effect_error(flipped, key, "A", scale) > 0.0
+
+
+def test_effect_error_is_clipped_at_one():
+    key, label = _instance()
+    scale = effect_scale(key.scm)
+    wild = Answer(verdicts=(_verdict(label, "A", ("C",), 1e6),))
+    assert _effect_error(wild, key, "A", scale) == 1.0
+
+
+# ---- ranking --------------------------------------------------------------------------------------------
+
+
+def test_ranking_compares_every_candidate_in_every_condition():
+    """Ranking must cover the same population in every naming condition.
+
+    The old exclusion rule ranked 5 candidates in one condition and 3.38 in another - measured, and the only
+    contrast in that run whose CI excluded zero - which made every cross-condition comparison meaningless.
+    """
+    key, label = _instance()
+    answer = _perfect(key, label)
+    # Kendall tau over all three drivers; a driver dropped from the comparison would change this.
+    assert _ranking_tau(answer, key) == pytest.approx(1.0)
+
+
+def test_ranking_is_invariant_to_rescaling_the_estimates():
+    """The one thing ranking measures that estimation cannot.
+
+    A model with the right causal structure and the wrong units is a different diagnosis from one that got
+    the structure wrong, and only tau separates them.
+    """
+    key, label = _instance()
+    shrunk = Answer(
+        verdicts=tuple(
+            _verdict(label, node, adjust, key.scm.total_effect_on_outcome(node) * 0.1)
+            for node, adjust in (("A", ("C",)), ("B", ()), ("Dz", ("C",)))
+        )
     )
-    score = score_answer(Answer(verdicts=verdicts), key)
-
-    assert score.abstention_accuracy == 1 / 3  # only Dz's abstention call is correct
-    # All three metrics now use the same exclusion rule - only a *correct* abstention is exempt. B is
-    # identifiable, so declining to answer is a failed adjustment and a failed estimate, not an ungraded one.
-    assert score.adjustment_valid["B"] is False
-    assert score.adjustment_accuracy == 1 / 2  # A valid, B failed; only Dz (correctly abstained) is exempt
-    assert score.effect_error["B"] is not None  # graded on estimation too, at the "asserted no effect" cost
-    assert score.effect_error["Dz"] is None  # ...whereas the correct abstention genuinely is exempt
-    # A and B are both still compared. Only Dz leaves, so the comparison is over two drivers, not one -
-    # which is what a bug that exempted *every* abstention would produce.
-    assert score.n_compared == 2
-    assert score.ranking_pairs["B"] == RankingPairs(1, 0)
+    assert _ranking_tau(shrunk, key) == pytest.approx(1.0)
+    assert score_answer(shrunk, key).estimation < 1.0  # but estimation notices
 
 
-def test_missing_verdict_scores_no_abstention_credit():
+def test_a_missing_verdict_forfeits_the_ranking():
     key, label = _instance()
-    # A and Dz correctly abstained; B has no verdict at all (not "correctly didn't abstain").
-    answer = Answer(verdicts=(_abstain(label, "A"), _abstain(label, "Dz")))
-    score = score_answer(answer, key)
-    assert score.abstention_accuracy == 2 / 3  # A, Dz correct; B (missing) is not
-    assert score.abstention_correct == {"A": True, "B": False, "Dz": True}
-    # Exactly why abstention_correct has to be stored rather than derived from adjustment_valid: B's
-    # missing verdict makes adjustment_valid False (not None), so "abstained?" read off that map says
-    # "no" - which matches gold for identifiable B and would wrongly derive True.
-    assert score.adjustment_valid["B"] is False
+    partial = Answer(verdicts=(_verdict(label, "A", ("C",), 1.0),))
+    assert _ranking_tau(partial, key) == 0.0
 
 
-def test_abstaining_on_everything_cannot_buy_adjustment_accuracy():
-    """Blanket abstention must not score well: the denominator is not the agent's to choose.
+# ---- the identifiability judgement ----------------------------------------------------------------------
 
-    This pinned the opposite before, and a live run showed why it mattered - a model abstained on 22 of 48
-    identifiable drivers (gold commits on every one) and scored a *perfect* 1.000 in a cell where it
-    abstained on all 12, beating its own 0.583 in the cell it answered in full. Only a correct abstention
-    (A and Dz here) is ungraded; B is identifiable, so abstaining on it is a failure to supply a set.
+
+def test_the_identifiability_judgement_is_stored_raw_including_absence():
+    """The raw judgement is kept, absence included.
+
+    Scoring pools precision/recall across instances, so the scorer stores the answer rather than a
+    per-instance summary, and `None` has to survive - omitting the field must not be cheaper than
+    answering it wrong.
     """
     key, label = _instance()
-    verdicts = tuple(_abstain(label, node) for node in ("A", "B", "Dz"))
-    score = score_answer(Answer(verdicts=verdicts), key)
-    assert score.adjustment_valid["A"] is None  # correctly abstained - genuinely unanswerable, so ungraded
-    assert score.adjustment_valid["Dz"] is None
-    assert score.adjustment_valid["B"] is False  # wrongly abstained - graded, and failed
-    assert score.adjustment_accuracy == 0.0
+    answer = Answer(
+        verdicts=(
+            _verdict(label, "A", ("C",), 0.0, identifiable=False),
+            _verdict(label, "B", (), 0.0, identifiable=True),
+            _verdict(label, "Dz", ("C",), 0.0),  # not answered
+        )
+    )
+    judgments = score_answer(answer, key).identifiability_judgment
+    assert judgments["A"] is False
+    assert judgments["B"] is True
+    assert judgments["Dz"] is None
 
 
-def test_ranking_tau_does_not_penalize_order_between_exactly_tied_decoys():
-    """Two decoys always share exactly the same true effect (0) - there is no correct order between them.
-
-    An agent's guess either way must score identically, not get graded as a coin flip. seed=5/n_candidates=5
-    has two decoys (Dz0, Dz1) alongside three real drivers with distinct, non-zero effects (A0, A1, A2) -
-    true order is (A1, A0, A2, Dz0, Dz1) with the last pair a genuine tie.
-    """
-    scm, _ = generate_gated_procedural(5, n_candidates=5)
-    data = sample(scm, 64, seed=5)
-    _, key = build_instance(scm, data, seed=5)
-    label = dict(key.node_to_label)
-    dz0_first = _ordered(label, ("A1", "A0", "A2", "Dz0", "Dz1"))
-    dz1_first = _ordered(label, ("A1", "A0", "A2", "Dz1", "Dz0"))
-
-    assert score_answer(dz0_first, key).ranking_tau == score_answer(dz1_first, key).ranking_tau == 1.0
-
-
-# ---- the headline -------------------------------------------------------------------------------------
-
-
-def test_driver_score_grades_every_candidate_with_no_agent_chosen_denominator():
-    """Nothing is exempt, so the denominator is never the agent's to choose.
-
-    The defect this replaces: adjustment and effect accuracy both exempt correctly-abstained drivers, so a
-    model that abstains more is scored on a smaller population than one that commits.
-    """
+def test_identifiability_is_not_part_of_the_headline():
+    """It is near-mechanical - gold is the population CPDAG - so it must not move `overall`."""
     key, label = _instance()
-    score = score_answer(Answer(verdicts=tuple(_abstain(label, n) for n in ("A", "B", "Dz"))), key)
-    assert set(score.driver_score) == {"A", "B", "Dz"}  # nothing exempt, unlike adjustment_valid
-    assert score.adjustment_valid["A"] is None  # ...which does exempt it
-    assert score.driver_score["A"] == 1.0  # A is gold-abstain here, so abstaining is the whole answer
-    assert score.driver_score["B"] == 0.0  # B is identifiable: declining a question the data answered
+    right = Answer(verdicts=tuple(_verdict(label, d, (), 0.0, identifiable=True) for d in ("A", "B", "Dz")))
+    wrong = Answer(verdicts=tuple(_verdict(label, d, (), 0.0, identifiable=False) for d in ("A", "B", "Dz")))
+    assert score_answer(right, key).overall == score_answer(wrong, key).overall
 
 
-def test_driver_score_splits_credit_between_adjustment_and_estimate():
-    key, label = _instance()
-    truth = key.scm.total_effect_on_outcome("B")  # B is the fixture's one identifiable driver
-    assert score_answer(Answer(verdicts=(_verdict(label, "B", (), truth),)), key).driver_score["B"] == 1.0
-
-    # Right number, invalid set -> half credit: not zero (which a product would give), not full (which
-    # scoring the estimate alone would). A set naming a column that doesn't exist can never be valid;
-    # B is exogenous, so any *real* non-descendant set is legitimately valid and wouldn't test this.
-    bad_set = Answer(verdicts=(DriverVerdict(driver=label["B"], adjustment_set=("nope",), effect=truth),))
-    assert score_answer(bad_set, key).driver_score["B"] == 0.5
-
-    # Valid set, wrong number -> the other half.
-    no_estimate = Answer(verdicts=(_verdict(label, "B", (), 0.0),))
-    assert score_answer(no_estimate, key).driver_score["B"] == 0.5
+# ---- stratification axes and baselines ------------------------------------------------------------------
 
 
-def test_committing_on_a_gold_abstain_driver_scores_zero_even_when_the_number_is_right():
-    """Being close on an effect the data cannot identify is luck, not calibration."""
-    key, label = _instance()
-    truth = key.scm.total_effect_on_outcome("A")  # A is gold-abstain on this fixture
-    score = score_answer(Answer(verdicts=(_verdict(label, "A", ("C",), truth),)), key)
-    assert score.gold_abstain["A"] is True
-    assert score.driver_score["A"] == 0.0
+def test_identifiable_is_a_property_of_the_graph_not_the_naming():
+    """The placebo row depends on this: the same SCM must classify drivers identically in every skin."""
+    scm = generate(0, _SCAFFOLD)
+    data = sample(scm, 64, seed=0)
+    _a, key_a = build_instance(scm, data, seed=0)
+    _b, key_b = build_instance(scm, data, seed=7)  # a different labeling of the same SCM
+    by_node_a = score_output("x", key_a).identifiable
+    by_node_b = score_output("x", key_b).identifiable
+    assert by_node_a == by_node_b
 
 
-def test_reference_scores_bracket_the_headline():
-    """The oracle is 1.0 by construction; the reference points below it are what make a raw score readable."""
-    key, _ = _instance()
-    references = reference_scores([key])
-    assert references["oracle (calibrates)"] == 1.0
-    assert references["always abstain"] < references["oracle (calibrates)"]
-    assert references["correlation, never abstain"] < references["oracle (calibrates)"]
-    # Abstract labels mark nothing "aligned", so gold never asks for a name - "never trust names" is optimal
-    # and "always trust names" pays for committing where it should have abstained. The two fixed policies
-    # only tie once the paired conditions are averaged; within one condition they are mirror images.
-    assert references["never trust names"] == 1.0
-    assert references["always trust names"] < 1.0
+def test_knowing_the_orientation_beats_data_only():
+    """The headroom the naming axis measures: the gap between these two is what a name can buy."""
+    keys = []
+    for seed in range(4):
+        scm = generate(seed, _SCAFFOLD)
+        data = sample(scm, 64, seed=seed)
+        _, key = build_instance(scm, data, seed=seed)
+        keys.append(key)
+    refs = reference_scores(keys)
+    assert refs["knows the orientation"] == pytest.approx(1.0, abs=1e-9)
+    assert refs["data-only"] < refs["knows the orientation"]
+    assert refs["correlation only"] <= refs["data-only"]
+    # The ceiling is the coin flip between the two admissible orientations, not the give-up branch. Taking
+    # the pessimistic branch as the ceiling doubled the headroom the naming axis appeared to have.
+    assert refs["data-only (gives up)"] < refs["data-only"]
+    assert refs["data-only"] == pytest.approx(
+        (refs["knows the orientation"] + refs["data-only (gives up)"]) / 2, abs=1e-9
+    )
+
+
+def test_answer_score_is_invariant_to_the_display_names():
+    """Scoring goes through `label_to_node`, which is what lets naming be a condition rather than a key."""
+    scm = generate(0, _SCAFFOLD)
+    data = sample(scm, 64, seed=0)
+    _a, key_a = build_instance(scm, data, seed=0)
+    _b, key_b = build_instance(scm, data, seed=11)
+    a = score_answer(_perfect(key_a, dict(key_a.node_to_label)), key_a)
+    b = score_answer(_perfect(key_b, dict(key_b.node_to_label)), key_b)
+    assert a.overall == pytest.approx(b.overall)
+
+
+def test_answer_score_has_no_abstention_surface_left():
+    """Guards the deletion: a re-added abstain field would silently reintroduce a movable denominator."""
+    fields = set(AnswerScore.__dataclass_fields__)
+    assert not {f for f in fields if "abstain" in f or "coverage" in f or "committed" in f}
+    assert not hasattr(DriverVerdict, "abstain")
+    assert "abstain" not in DriverVerdict.model_fields
+
+
+def test_scale_is_finite_and_positive():
+    key, _label = _instance()
+    scale = effect_scale(key.scm)
+    assert np.isfinite(scale) and scale > 0

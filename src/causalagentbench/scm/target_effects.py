@@ -135,6 +135,37 @@ _MEDIATED_SHARE_RANGE = (0.35, 0.60)
 #: mediator's: it still stays part of the shrink ladder's lever.
 _CONFOUNDER_EDGE_RANGE = (0.3, 0.6)
 
+#: A collider's two incoming edges, chosen directly rather than left to raw UUMC - the same near-zero
+#: problem the mediator/confounder edges avoid, and measured to matter just as much here: the bias adjusting
+#: for a collider induces scales with ``|w1 * w2|``, so a near-zero raw draw on either parent leaves the
+#: trap toothless (measured over 200 raw draws: bias collapsing under 0.01 whenever one weight landed near
+#: 0, against a reliable 0.04-0.29 once both are constructed away from it).
+_COLLIDER_EDGE_RANGE = (0.3, 0.6)
+
+
+def _construct_collider_edges(
+    w: np.ndarray, noise_var: np.ndarray, parent1_idx: int, parent2_idx: int, child_idx: int, rng: np.random.Generator
+) -> None:
+    """Mutate ``w``/``noise_var`` in place: set a collider's two incoming edges to a comfortable magnitude.
+
+    Valid only for a collider whose two parents are themselves mutually independent exogenous roots - true
+    of every ``Role.COLLIDER`` node ``scm/gadgets.py`` constructs, since each collider gadget's two parents
+    are both degree-0. With no cross term to account for, the two weights alone fix the child's own unit
+    variance (``noise_var = 1 - w1^2 - w2^2``) directly, the same closed form ``_set_single_parent_edge``
+    uses for a degree-1 child, generalized to two independent parents instead of one.
+
+    Unlike that helper, this never touches ``sigma``: a ``Role.COLLIDER`` node is a pure sink (no
+    outgoing edges, ``scm/gadgets.py``), so nothing downstream needs its covariance propagated
+    incrementally - the final ``marginal_covariance`` call in ``with_constructed_effects`` recomputes it
+    correctly from the completed ``w`` once every edge, this one included, is set.
+    """
+    w1 = float(rng.uniform(*_COLLIDER_EDGE_RANGE)) * float(rng.choice((-1.0, 1.0)))
+    w2 = float(rng.uniform(*_COLLIDER_EDGE_RANGE)) * float(rng.choice((-1.0, 1.0)))
+    w[parent1_idx, child_idx] = w1
+    w[parent2_idx, child_idx] = w2
+    noise_var[child_idx] = 1.0 - w1 * w1 - w2 * w2
+
+
 #: Shrink factors tried on the outcome's remaining (confounder) incoming edges, in order, when solving
 #: driver targets at full strength (1.0, i.e. no shrink) leaves no room. Adaptive, not a single fixed
 #: value: confirmed by direct comparison that a single fixed shrink is worse at every level tried (0.5 ->
@@ -265,6 +296,31 @@ def with_constructed_effects(
 
     for confounder in scaffold.nodes_with_role(Role.CONFOUNDER):
         _construct_confounder_edge(w, scaffold.index(confounder), outcome_idx, construction_rng)
+
+    for collider in scaffold.nodes_with_role(Role.COLLIDER):
+        parents = scaffold.parents(collider)
+        assert len(parents) == 2, f"collider {collider!r} must have exactly two parents, got {parents}"
+        _construct_collider_edges(
+            w,
+            noise_var,
+            scaffold.index(parents[0]),
+            scaffold.index(parents[1]),
+            scaffold.index(collider),
+            construction_rng,
+        )
+        # A collider parent that is ALSO some driver's *sole* parent (``_mbias_driver``'s V, feeding both A
+        # and the collider) needs its own edge constructed too - the trap's strength depends on how much of
+        # the collider's spurious signal reaches the driver, which a near-zero raw UUMC draw on THIS edge
+        # would zero out regardless of how strong the collider's own two edges are (measured: bias collapsing
+        # to <0.005 whenever this edge, not the collider's, landed near zero - the plain collider gadget has
+        # no such edge, since its own driver has no parent at all). ``_collider_edges`` never has this shape,
+        # so this loop is a no-op for it - it exists purely for ``_mbias_driver``'s V.
+        for parent in parents:
+            for driven in (d for d in scaffold.drivers if scaffold.parents(d) == (parent,)):
+                edge = float(construction_rng.uniform(*_COLLIDER_EDGE_RANGE)) * float(
+                    construction_rng.choice((-1.0, 1.0))
+                )
+                _set_single_parent_edge(w, noise_var, sigma, scaffold.index(parent), scaffold.index(driven), edge)
 
     driver_mask = np.zeros(n_nodes, dtype=bool)
     driver_mask[[scaffold.index(d) for d in targets]] = True

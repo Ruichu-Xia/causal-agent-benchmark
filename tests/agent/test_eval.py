@@ -1,15 +1,29 @@
+"""Tests for batching the agent over instances and aggregating the result.
+
+The aggregation is the experiment: ``driver_cells`` crosses naming against identifiability, and
+``naming_table`` reduces that to per-metric contrasts. Most of these defend properties that a naive
+aggregation gets wrong - pooling F1 from counts rather than averaging per-instance F1s, and resampling
+whole SCMs rather than skins or drivers.
+"""
+
 import json
+
+import pytest
 
 from causalagentbench import build_instance, sample
 from causalagentbench.agent.eval import (
-    abstention_rates,
-    aggregate_by_alignment,
-    aggregate_by_driver_cell,
+    driver_cells,
+    driver_metric,
+    identifiability_f1,
+    naming_result,
+    naming_table,
+    paired_bootstrap_ci,
     run_evaluation,
+    scm_group_key,
 )
 from causalagentbench.agent.loop import ModelTurn
 from causalagentbench.scoring.gates import generate_gated_procedural
-from causalagentbench.scoring.score import AnswerScore, RankingPairs, score_output
+from causalagentbench.scoring.score import AnswerScore
 from causalagentbench.task.instance import Instance, InstanceKey
 
 
@@ -29,28 +43,8 @@ class _FixedReplyClient:
         return ModelTurn(content=self._reply)
 
 
-def _perfect_answer_text(key: InstanceKey) -> str:
-    """A well-formed answer that matches gold exactly (true effects, gold adjustment sets).
-
-    The true effects also derive the true ranking, so one set of numbers makes this perfect on both.
-    """
-    label = dict(key.node_to_label)
-    verdicts = [
-        {
-            "driver": label[node],
-            "adjustment_set": [label[z] for z in key.scm.scaffold.correct_adjustment.get(node, ())],
-            "effect": key.scm.total_effect_on_outcome(node),
-        }
-        for node in key.scm.true_ranking()
-    ]
-    return f"<answer>{json.dumps({'verdicts': verdicts})}</answer>"
-
-
 class _RaisesOnFirstCallClient:
-    """Simulates a client/provider error on the first instance only.
-
-    A stand-in for anything the tool loop itself can't turn into text (e.g. a network failure).
-    """
+    """Simulates a client/provider error on the first instance only."""
 
     def __init__(self, reply: str):
         self._reply = reply
@@ -63,6 +57,49 @@ class _RaisesOnFirstCallClient:
         return ModelTurn(content=self._reply)
 
 
+def _perfect_answer_text(key: InstanceKey) -> str:
+    """A well-formed answer matching gold exactly, including the identifiability judgement."""
+    label = dict(key.node_to_label)
+    from causalagentbench.scm.identifiability import unidentifiable_drivers
+
+    unidentifiable = set(unidentifiable_drivers(key.scm.scaffold))
+    verdicts = [
+        {
+            "driver": label[node],
+            "adjustment_set": [label[z] for z in key.scm.scaffold.correct_adjustment.get(node, ())],
+            "effect": key.scm.total_effect_on_outcome(node),
+            "identifiable_from_data": node not in unidentifiable,
+        }
+        for node in key.scm.true_ranking()
+    ]
+    return f"<answer>{json.dumps({'verdicts': verdicts})}</answer>"
+
+
+def _score(alignment: float | None, drivers: dict[str, tuple[bool, float, float, bool | None]]) -> AnswerScore:
+    """Build a score directly from ``{driver: (identifiable, bias, error, judgment)}``.
+
+    Constructed rather than run through a model so identifiability and alignment can be varied
+    independently - the real pipeline ties them together, which is exactly what these tests must not rely on.
+    """
+    identification = 1.0 - sum(v[1] for v in drivers.values()) / len(drivers)
+    estimation = 1.0 - sum(v[2] for v in drivers.values()) / len(drivers)
+    return AnswerScore(
+        parse_ok=True,
+        overall=(identification + estimation) / 2.0,
+        identification=identification,
+        estimation=estimation,
+        ranking_tau=0.0,
+        adjustment_bias={d: v[1] for d, v in drivers.items()},
+        effect_error={d: v[2] for d, v in drivers.items()},
+        identifiability_judgment={d: v[3] for d, v in drivers.items()},
+        identifiable={d: v[0] for d, v in drivers.items()},
+        alignment=alignment,
+    )
+
+
+# ---- batching -------------------------------------------------------------------------------------------
+
+
 def test_run_evaluation_isolates_a_crashing_instance_instead_of_losing_the_batch():
     second = _instance(1)
     instances = [_instance(0), second]
@@ -73,8 +110,8 @@ def test_run_evaluation_isolates_a_crashing_instance_instead_of_losing_the_batch
         on_instance_error=lambda index, error: errors.append((index, error)),
     )
     assert len(scores) == 2
-    assert not scores[0].parse_ok  # the crashed instance scores as a parse failure, not an exception
-    assert scores[1].parse_ok  # the second instance still ran normally
+    assert not scores[0].parse_ok
+    assert scores[1].parse_ok
     assert len(errors) == 1
     assert errors[0][0] == 0 and isinstance(errors[0][1], RuntimeError)
 
@@ -83,194 +120,195 @@ def test_run_evaluation_returns_one_score_per_instance():
     instances = [_instance(0), _instance(1)]
     scores = run_evaluation(instances, _FixedReplyClient("not an answer"))
     assert len(scores) == 2
-    assert all(not s.parse_ok for s in scores)  # no <answer> block in the fixed reply
+    assert all(not s.parse_ok for s in scores)
 
 
-def test_aggregate_groups_by_alignment_and_sorts_none_last():
-    instances = [_instance(0), _instance(1), _instance(2)]  # all abstract-labeled -> alignment=None
-    scores = run_evaluation(instances, _FixedReplyClient("no answer"))
-    summaries = aggregate_by_alignment(scores)
-    assert len(summaries) == 1
-    assert summaries[0].alignment is None
-    assert summaries[0].n == 3
-    assert summaries[0].parse_rate == 0.0  # none parsed
+def test_a_perfect_answer_scores_one_end_to_end():
+    instance, key = _instance(0)
+    scores = run_evaluation([(instance, key)], _FixedReplyClient(_perfect_answer_text(key)))
+    assert scores[0].parse_ok
+    assert scores[0].overall > 0.99
 
 
-def test_aggregate_computes_means_correctly():
-    _instance_obj, key = _instance(0)
-    good = score_output(_perfect_answer_text(key), key)
-    bad = score_output("nothing", key)
-    assert good.parse_ok and good.ranking_tau == 1.0
-    assert not bad.parse_ok
-
-    summaries = aggregate_by_alignment([good, bad])
-    assert len(summaries) == 1
-    assert summaries[0].n == 2
-    assert summaries[0].parse_rate == 0.5
-    assert summaries[0].mean_ranking_tau == (good.ranking_tau + bad.ranking_tau) / 2
-    assert summaries[0].mean_adjustment_accuracy == (good.adjustment_accuracy + bad.adjustment_accuracy) / 2
+# ---- the experiment table -------------------------------------------------------------------------------
 
 
-# ---- driver-grain cells -------------------------------------------------------------------------------
-# Built directly rather than through a model, so identifiability and alignment can be varied independently
-# (the real pipeline ties "aligned" to alignment > 0, and abstract labels always give alignment=None).
-
-
-def _score(alignment: float | None, drivers: dict[str, tuple]) -> AnswerScore:
-    """One score from ``{driver: (identifiable, adjustment_valid, abstention_correct, pairs[, effect_error])}``.
-
-    ``effect_error`` is optional and defaults to mirroring ``adjustment_valid``'s graded/ungraded state,
-    which is the invariant ``score_answer`` maintains: both are ``None`` exactly when abstaining was correct,
-    so both share ``n_graded`` as their denominator.
-    """
-
-    def error(v: tuple) -> float | None:
-        return v[4] if len(v) > 4 else (None if v[1] is None else 0.0)
-
-    def score(v: tuple) -> float:
-        return v[5] if len(v) > 5 else float(bool(v[1])) if v[1] is not None else 1.0
-
-    return AnswerScore(
-        parse_ok=True,
-        ranking_tau=0.0,
-        n_compared=len(drivers),
-        ranking_tau_z=None,
-        ranking_pairs={d: v[3] for d, v in drivers.items()},
-        mean_driver_score=0.0,
-        driver_score={d: score(v) for d, v in drivers.items()},
-        gold_abstain={d: v[1] is None for d, v in drivers.items()},
-        effect_accuracy=0.0,
-        effect_error={d: error(v) for d, v in drivers.items()},
-        adjustment_accuracy=0.0,
-        adjustment_valid={d: v[1] for d, v in drivers.items()},
-        abstention_accuracy=0.0,
-        abstention_correct={d: v[2] for d, v in drivers.items()},
-        identifiable={d: v[0] for d, v in drivers.items()},
-        alignment=alignment,
-    )
-
-
-def test_driver_cells_pool_effect_error_over_the_same_graded_denominator():
-    """The estimation metric is the shortcut-resistant one, so it must pool per driver like the others."""
-    scores = [
-        _score(
-            0.0,
-            {
-                "a": (True, True, True, RankingPairs(0, 0), 0.25),
-                "b": (True, True, True, RankingPairs(0, 0), 0.75),
-            },
-        ),
-        # A correctly-abstained driver is ungraded on estimation exactly as it is on adjustment.
-        _score(0.0, {"c": (False, None, True, RankingPairs(0, 0), None)}),
-    ]
-    identifiable, unidentifiable = aggregate_by_driver_cell(scores)
-    assert identifiable.n_graded == 2
-    assert identifiable.mean_effect_accuracy == 1.0 - 0.5  # (0.25 + 0.75) / 2
-    assert unidentifiable.n_graded == 0
-    assert unidentifiable.mean_effect_accuracy == 1.0  # vacuous, matching the adjustment convention
-
-
-def test_driver_cells_split_identifiable_from_unidentifiable_within_each_alignment():
-    scores = [
-        _score(0.0, {"a": (True, True, True, RankingPairs(2, 0)), "u": (False, False, False, RankingPairs(0, 2))}),
-        _score(1.0, {"a": (True, False, True, RankingPairs(1, 1)), "u": (False, True, False, RankingPairs(2, 0))}),
-    ]
-    cells = {(c.identifiable, c.alignment): c for c in aggregate_by_driver_cell(scores)}
+def test_driver_cells_cross_identifiability_with_naming():
+    aligned = _score(1.0, {"a": (True, 0.0, 0.0, True), "b": (False, 1.0, 1.0, False)})
+    misaligned = _score(-1.0, {"a": (True, 0.0, 0.0, True), "b": (False, 0.5, 0.5, False)})
+    cells = {(c.identifiable, c.alignment): c for c in driver_cells([aligned, misaligned])}
     assert len(cells) == 4
-    assert cells[(True, 0.0)].mean_adjustment_accuracy == 1.0
-    assert cells[(False, 0.0)].mean_adjustment_accuracy == 0.0
-    assert cells[(True, 0.0)].ranking_tau == 1.0  # (2-0)/(2+0)
-    assert cells[(False, 0.0)].ranking_tau == -1.0  # (0-2)/(0+2)
-    assert cells[(True, 1.0)].ranking_tau == 0.0  # (1-1)/(1+1)
+    assert cells[(True, 1.0)].estimation == 1.0
+    assert cells[(False, 1.0)].estimation == 0.0
+    assert cells[(False, -1.0)].estimation == 0.5
+    assert all(c.n == 1 for c in cells.values())
 
 
 def test_driver_cells_pool_across_instances_rather_than_averaging_instance_means():
-    # Two instances at the same alignment, different driver counts: one identifiable driver right, two
-    # wrong. Pooled gives 1/3; a mean of per-instance means would give (1.0 + 0.0)/2 = 0.5.
-    scores = [
-        _score(0.0, {"a": (True, True, True, RankingPairs(0, 0))}),
-        _score(0.0, {"a": (True, False, True, RankingPairs(0, 0)), "b": (True, False, True, RankingPairs(0, 0))}),
-    ]
-    (cell,) = aggregate_by_driver_cell(scores)
-    assert cell.n == 3
-    assert cell.mean_adjustment_accuracy == 1 / 3
-
-
-def test_driver_cells_exclude_abstained_drivers_from_the_graded_denominator():
-    scores = [_score(0.0, {"a": (True, True, True, RankingPairs(0, 0)), "b": (True, None, True, RankingPairs(0, 0))})]
-    (cell,) = aggregate_by_driver_cell(scores)
-    assert cell.n == 2  # both drivers are observed...
-    assert cell.n_graded == 1  # ...but only the non-abstained one is graded on adjustment
-    assert cell.mean_adjustment_accuracy == 1.0
-
-
-def test_driver_cells_are_vacuously_accurate_when_nothing_was_graded_or_compared():
-    scores = [_score(0.0, {"a": (True, None, True, RankingPairs(0, 0))})]
-    (cell,) = aggregate_by_driver_cell(scores)
-    assert cell.n_graded == 0
-    assert cell.mean_adjustment_accuracy == 1.0  # not 0.0 - a failure the agent never had a chance to make
-    assert cell.n_ranking_pairs == 0
-    assert cell.ranking_tau == 1.0
+    one = _score(1.0, {"a": (False, 0.0, 0.0, None)})
+    many = _score(1.0, {"a": (False, 1.0, 1.0, None), "b": (False, 1.0, 1.0, None), "c": (False, 1.0, 1.0, None)})
+    (cell,) = driver_cells([one, many])
+    assert cell.n == 4
+    assert cell.estimation == 1.0 - 3 / 4  # pooled, not the 0.5 a mean-of-means would give
 
 
 def test_driver_cells_sort_identifiable_first_and_name_blind_last():
-    """Name-blind puts ``None`` in *two* cells here, not one - pin the order that falls out.
-
-    The ``alignment is None`` component of the key is what keeps that safe: it splits None from float
-    before any ``<`` is applied, so None is only ever compared for equality. (Dropping it *would* break -
-    ``None < 1.0`` raises - which is why this asserts a mixed name-blind/aligned set rather than one level.)
-    """
     scores = [
-        _score(None, {"a": (True, True, True, RankingPairs(0, 0)), "u": (False, True, True, RankingPairs(0, 0))}),
-        _score(1.0, {"a": (True, True, True, RankingPairs(0, 0)), "u": (False, True, True, RankingPairs(0, 0))}),
+        _score(None, {"a": (False, 0.0, 0.0, None)}),
+        _score(1.0, {"a": (True, 0.0, 0.0, None)}),
+        _score(-1.0, {"a": (True, 0.0, 0.0, None)}),
     ]
-    cells = aggregate_by_driver_cell(scores)
-    assert [(c.identifiable, c.alignment) for c in cells] == [(True, 1.0), (True, None), (False, 1.0), (False, None)]
+    order = [(c.identifiable, c.alignment) for c in driver_cells(scores)]
+    assert order == [(True, -1.0), (True, 1.0), (False, None)]
 
 
-def test_driver_cells_cover_every_candidate_driver_end_to_end():
+# ---- identifiability F1 ---------------------------------------------------------------------------------
+
+
+def test_identifiability_f1_pools_counts_rather_than_averaging_per_instance_f1():
+    """Averaging per-instance F1s is not F1. One instance with a single positive would otherwise dominate."""
+    a = _score(1.0, {"x": (False, 0.0, 0.0, False)})  # 1 true positive
+    b = _score(1.0, {f"y{i}": (False, 0.0, 0.0, True) for i in range(9)})  # 9 false negatives
+    pooled = identifiability_f1([a, b])
+    assert pooled.n_positive == 10
+    assert pooled.recall == 0.1  # 1 of 10, not the 0.5 a mean of (1.0, 0.0) would give
+
+
+def test_not_answering_the_identifiability_field_counts_as_a_miss():
+    """Omitting the field must never be cheaper than answering it wrong."""
+    silent = _score(1.0, {"a": (False, 0.0, 0.0, None)})
+    wrong = _score(1.0, {"a": (False, 0.0, 0.0, True)})
+    assert identifiability_f1([silent]).recall == identifiability_f1([wrong]).recall == 0.0
+
+
+def test_identifiability_f1_penalizes_calling_everything_unidentifiable():
+    """The reason for F1 over accuracy: a blanket answer must not score well."""
+    blanket = _score(1.0, {"a": (True, 0.0, 0.0, False), "b": (False, 0.0, 0.0, False)})
+    assert identifiability_f1([blanket]).recall == 1.0
+    assert identifiability_f1([blanket]).precision == 0.5  # precision is what catches it
+
+
+# ---- the two result numbers -----------------------------------------------------------------------------
+
+
+def test_driver_metric_is_none_when_the_class_is_absent():
+    """So a pairing drops the SCM rather than averaging in a value that was never measured."""
+    all_identifiable = _score(1.0, {"a": (True, 0.0, 0.0, None)})
+    assert driver_metric(all_identifiable, "estimation", identifiable=False) is None
+    assert driver_metric(all_identifiable, "estimation", identifiable=True) == 1.0
+
+
+def test_instance_level_metrics_have_no_meaning_on_a_driver_subset():
+    """Instance-level metrics cannot be restricted to a driver subset.
+
+    `ranking_tau` orders all candidates and `overall` mixes both axes, so neither has a meaning on a subset
+    without silently changing the population it describes.
+    """
+    score = _score(1.0, {"a": (True, 0.0, 0.0, None), "b": (False, 0.0, 0.0, None)})
+    assert driver_metric(score, "ranking_tau", identifiable=False) is None
+    assert driver_metric(score, "overall", identifiable=False) is None
+    assert driver_metric(score, "ranking_tau") is not None  # but fine over the whole instance
+
+
+def test_correctness_holds_semantic_presence_fixed_while_gain_does_not():
+    """The reason `correctness` is first-class.
+
+    Here BOTH named conditions beat name-blind by the same amount: the names carry no usable information,
+    they just help generally. `gain` reports a large positive effect anyway; `correctness` correctly
+    reports zero. Measured live, exactly this gap decided whether the benchmark's central claim held.
+    """
     _instance_obj, key = _instance(0)
-    score = score_output(_perfect_answer_text(key), key)
-    cells = aggregate_by_driver_cell([score])
-    assert sum(c.n for c in cells) == len(key.scm.scaffold.drivers)
-
-
-def test_on_turn_tags_every_turn_with_its_own_instance_index():
-    instances = [_instance(0), _instance(1)]
-    seen: list[int] = []
-    run_evaluation(instances, _FixedReplyClient("no tool calls"), on_turn=lambda i, _trace: seen.append(i))
-    assert seen == [0, 0, 1, 1]  # invalid replies receive one tagged formatting repair per instance
-
-
-def test_on_turn_is_never_called_when_omitted():
-    instances = [_instance(0)]
-    run_evaluation(instances, _FixedReplyClient("no tool calls"))  # would raise if on_turn were required
-
-
-def test_abstention_rates_separate_the_two_error_directions():
-    """One pooled accuracy has a floor set by class balance; two rates do not.
-
-    Sensitivity is "abstained where it had to", specificity is "committed where it could". A model can be
-    perfect on one and hopeless on the other, which a single number hides.
-    """
-    # One gold-abstain driver handled correctly, two gold-commit drivers - one right, one wrong.
-    scores = [
-        _score(
-            1.0,
-            {
-                "must_abstain": (False, None, True, RankingPairs(0, 0)),
-                "may_commit_ok": (True, True, True, RankingPairs(0, 0)),
-                "may_commit_bad": (True, True, False, RankingPairs(0, 0)),
-            },
-        )
+    paired = [
+        (key, _score(1.0, {"a": (False, 0.0, 0.2, None)})),  # aligned
+        (key, _score(-1.0, {"a": (False, 0.0, 0.2, None)})),  # misaligned - identical
+        (key, _score(None, {"a": (False, 0.0, 0.6, None)})),  # blind - worse
     ]
-    sensitivity, specificity = abstention_rates(scores)
-    assert sensitivity == 1.0
-    assert specificity == 1 / 2
+    row = naming_result(paired, "estimation", identifiable=False)
+    assert row.gain.delta == pytest.approx(0.4)  # "names help" - true but not the claim
+    assert row.correctness.delta == pytest.approx(0.0)  # "correct names help" - false, and caught
 
 
-def test_abstention_rates_are_none_when_a_class_is_absent():
-    scores = [_score(1.0, {"a": (True, True, True, RankingPairs(0, 0))})]  # no gold-abstain driver at all
-    sensitivity, specificity = abstention_rates(scores)
-    assert sensitivity is None
-    assert specificity == 1.0
+def test_naming_contrasts_are_measured_on_the_unidentifiable_drivers():
+    """Aligned names help and misleading names hurt - a model using names without checking them."""
+    _instance_obj, key = _instance(0)
+    paired = [
+        (key, _score(1.0, {"a": (False, 0.0, 0.0, None)})),
+        (key, _score(None, {"a": (False, 0.0, 0.5, None)})),
+        (key, _score(-1.0, {"a": (False, 0.0, 1.0, None)})),
+    ]
+    row = naming_result(paired, "estimation", identifiable=False)
+    assert row.gain.delta == pytest.approx(0.5)
+    assert row.harm.delta == pytest.approx(0.5)
+    assert row.correctness.delta == pytest.approx(1.0)
+
+
+def test_a_model_that_ignores_names_shows_nothing_on_any_contrast():
+    _instance_obj, key = _instance(0)
+    paired = [(key, _score(level, {"a": (False, 0.0, 0.4, None)})) for level in (1.0, -1.0, None)]
+    row = naming_result(paired, "estimation", identifiable=False)
+    assert row.correctness.delta == row.gain.delta == row.harm.delta == 0.0
+
+
+def test_contrasts_pair_within_scm_and_skip_incomplete_ones():
+    """Skins of different SCMs are not comparable, so an SCM missing a condition contributes nothing."""
+    _ia, key_a = _instance(0)
+    _ib, key_b = _instance(1)
+    paired = [
+        (key_a, _score(1.0, {"a": (False, 0.0, 0.0, None)})),
+        (key_a, _score(None, {"a": (False, 0.0, 1.0, None)})),
+        (key_b, _score(1.0, {"a": (False, 0.0, 0.0, None)})),  # key_b has no blind skin
+    ]
+    row = naming_result(paired, "estimation", identifiable=False)
+    assert row.gain.delta == 1.0
+    assert row.gain.n_scms == 1
+    assert row.correctness.n_scms == 0  # no SCM has both alpha skins
+
+
+def test_contrasts_are_nan_when_nothing_pairs_and_nan_is_never_significant():
+    _i, key = _instance(0)
+    row = naming_result([(key, _score(1.0, {"a": (False, 0.0, 0.0, None)}))], "estimation", identifiable=False)
+    assert row.correctness.delta != row.correctness.delta  # NaN, not a confident zero
+    assert not row.correctness.excludes_zero
+
+
+def test_naming_table_covers_every_metric_and_both_subsets():
+    """A model must be measured on every metric.
+
+    `overall` averages two axes that moved in opposite directions under the same manipulation, so reading
+    the naming result off it alone hid the effect entirely.
+    """
+    _i, key = _instance(0)
+    paired = [
+        (key, _score(level, {"a": (False, 0.0, 0.4, None), "b": (True, 0.0, 0.2, None)})) for level in (1.0, -1.0, None)
+    ]
+    rows = naming_table(paired)
+    assert {r.metric for r in rows if r.subset == "all"} == {"overall", "identification", "estimation", "ranking_tau"}
+    assert {r.subset for r in rows} == {"all", "identifiable", "unidentifiable"}
+
+
+# ---- the resampling unit --------------------------------------------------------------------------------
+
+
+def test_skins_of_one_scm_share_a_group_key_and_different_scms_do_not():
+    scm, _ = generate_gated_procedural(0)
+    data = sample(scm, 200, seed=0)
+    _a, key_a = build_instance(scm, data, seed=0)
+    _b, key_b = build_instance(scm, data, seed=1)  # different labeling, same SCM
+    _c, key_c = _instance(1)
+    assert scm_group_key(key_a) == scm_group_key(key_b)
+    assert scm_group_key(key_a) != scm_group_key(key_c)
+
+
+def test_bootstrap_resamples_scms_so_duplicating_skins_does_not_narrow_the_interval():
+    groups = [[0.1], [0.9], [0.2], [0.8], [0.3]]
+    inflated = [values * 7 for values in groups]
+    assert paired_bootstrap_ci(groups) == paired_bootstrap_ci(inflated)
+    low, high = paired_bootstrap_ci(groups)
+    flat = [[value] for values in inflated for value in values]
+    flat_low, flat_high = paired_bootstrap_ci(flat)
+    assert (high - low) > (flat_high - flat_low)
+
+
+def test_bootstrap_on_no_groups_is_nan_rather_than_a_confident_zero():
+    low, high = paired_bootstrap_ci([])
+    assert low != low and high != high

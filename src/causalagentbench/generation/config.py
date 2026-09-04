@@ -1,7 +1,7 @@
 """Versioned build configuration - the few knobs a user must set to build a data set.
 
 Deliberately minimal: only what genuinely varies per build. The alignment level is NOT here - it is the
-fixed grid ``{-1,0,+1}``, constructed per instance. Internal tuning (temperatures, grounding
+fixed grid ``{-1,+1}``, constructed per instance. Internal tuning (temperatures, grounding
 thresholds, sample size) stays as fixed code defaults. Secrets and the CauseNet dump path live in
 ``.env``. Committing the config makes a shipped set reproducible.
 """

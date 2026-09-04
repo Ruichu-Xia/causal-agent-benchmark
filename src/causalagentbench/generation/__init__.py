@@ -5,8 +5,8 @@ always-available ``abstract_labels`` needs none of it. The LLM client is an opti
 (``pip install 'causalagentbench[generation]'``); imports are lazy, so this package stays importable
 without the extra.
 
-The naming alignment is a fixed discrete grid ``{-1,0,+1}``, *constructed* per instance - applied
-uniformly to every non-outcome node - from per-node aligned/neutral/misaligned name triples (one generator
+The naming alignment is a fixed discrete grid ``{-1,+1}``, *constructed* per instance - applied
+uniformly to every non-outcome node - from per-node aligned/misaligned name pairs (one generator
 call + optional correctness critic per SCM). Example::
 
     from causalagentbench.generation import alpha_sweep, GRID

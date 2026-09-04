@@ -24,7 +24,6 @@ def _stub_triples_json(scm) -> str:
         entries.append(
             f'"v{i}": {{'
             f'"aligned": {{"name": "n{i}_aligned", "description": "a standardized measure"}}, '
-            f'"neutral": {{"name": "n{i}_neutral", "description": "a record identifier"}}, '
             f'"misaligned": {{"name": "n{i}_misaligned", "description": "a standardized measure"}}}}'
         )
     return '{"domain": "study", "context": "one row per unit", "nodes": {' + ",".join(entries) + "}}"

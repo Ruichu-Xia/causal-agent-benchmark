@@ -2,8 +2,16 @@
 # Only what a user must choose. Alignment is the fixed grid {-1,+1} (+ name-blind),
 # constructed per instance. Secrets + the CauseNet dump path live in .env, never here.
 
-gen_model: openrouter/openai/gpt-5   # generator (proposes per-node aligned/neutral/misaligned name triples)
+gen_model: openrouter/openai/gpt-5   # generator (proposes per-node aligned/misaligned name pairs)
 critic_model: openrouter/openai/gpt-5 # correctness critic (null to skip; same model is fine, or a different one)
 max_revisions: 2               # propose -> critique -> revise iterations before skipping an SCM
 n_scms: 30                     # base SCM seeds; each yields all grid levels (+ name-blind) as paired skins
-n_candidates: 7                # total candidates (drivers + decoys), fixed - task size must not vary within a set
+n_candidates: 5                # total candidates (drivers + decoys), fixed - task size must not vary within a set
+# 5, not 7. Node count is emergent, not chosen: each resolved confounder adds two upstream-cause nodes, so
+# 7 candidates produced a 25-node median (23-33). Measured on a real eval, that size moved the task's
+# difficulty off causal reasoning and onto graph search - an agent recovered exact oracle effects on every
+# driver whose adjustment set was empty, and returned a blank "no effect, no adjustment" on every confounded
+# one, despite PC having surfaced 7 of its 9 required confounder edges in a single call. 5 candidates gives
+# a 16-node median while keeping every trap (confounder, mediator, collider, decoy, instrument), holding the
+# shortcut gate (min error 0.251 >= 0.25), and still averaging 2.3 unidentifiable candidates so the
+# abstention cell stays populated. Generator acceptance also rises, 25% -> 37%.

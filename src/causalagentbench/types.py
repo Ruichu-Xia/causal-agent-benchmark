@@ -30,6 +30,7 @@ class Role(Enum):
     DECOY = "decoy"
     INSTRUMENT = "instrument"
     UPSTREAM_CAUSE = "upstream_cause"
+    COLLIDER = "collider"
     OUTCOME = "outcome"
 
 

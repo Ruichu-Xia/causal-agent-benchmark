@@ -2,7 +2,7 @@
 
 Driven by a versioned build config (``configs/*.yaml``); secrets and the CauseNet path come from ``.env``.
 Per SCM it runs ONE generator proposal (+ optional correctness critic + revise loop), then *constructs*
-every alignment level ``{-1,0,+1}`` plus the name-blind control - paired skins over one SCM, sharing the
+every alignment level in ``GRID`` (``{-1,+1}``) plus the name-blind control - paired skins over one SCM, sharing the
 exact data table ``generate_gated_procedural`` already validated the oracle gate against (``report.data``)
 - never redrawn independently, which would only be guaranteed to match the gate's own certified oracle
 recovery by coincidence, not by construction.
@@ -17,10 +17,12 @@ assembled at the end. Never runs in CI; needs the ``generation`` extra, an LLM k
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +37,43 @@ from causalagentbench.task.labeling import Labeling, abstract_labels
 
 _OUT = "outputs/testset_v1"
 log = logging.getLogger("build_testset")
+
+
+def _git_commit() -> str | None:
+    """The commit this build ran from, or ``None`` outside a git checkout.
+
+    Suffixed ``-dirty`` when the working tree has uncommitted changes, because a bare hash would be a
+    false provenance claim: it names a tree that is not the one that ran. This is not hypothetical - the
+    shipped ``testset_v2`` was built from a dirty tree whose uncommitted files included ``labeler.py`` and
+    ``grounding.py``, the two modules that decide every column name in it, and its stamp pointed at a
+    commit that never produced it. A reader cannot reproduce a dirty build, but they can at least be told
+    not to trust the hash.
+    """
+    root = Path(__file__).resolve().parent.parent
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+    try:
+        commit = git("rev-parse", "HEAD")
+        dirty = bool(git("status", "--porcelain"))
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    if not commit:
+        return None
+    return f"{commit}-dirty" if dirty else commit
+
+
+def _file_md5(path: str) -> str | None:
+    """MD5 of ``path``, or ``None`` if it cannot be read. Streamed - the CauseNet dump is ~138 MB."""
+    digest = hashlib.md5(usedforsecurity=False)
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 def _record(rid: str, seed: int, instance: Instance, key: InstanceKey) -> dict:
@@ -139,21 +178,77 @@ def main() -> None:
                 records_file.flush()
             log.info("[scm %d/%d] domain=%s -> %d instances", seed + 1, n_scms, domain, len(conditions))
 
-    _assemble(out, partial)
+    _assemble(
+        out,
+        partial,
+        n_scms_attempted=n_scms,
+        gen_model=config.gen_model,
+        critic_model=config.critic_model,
+        causenet_dump=args.dump,
+    )
     shutil.rmtree(partial)
     log.info("done - REVIEW %s.json before committing.", out)
 
 
-def _assemble(out: Path, partial: Path) -> None:
-    """Build the final single-file ``<out>.json`` + ``<out>.npz`` from the incremental partial dir."""
+def _assemble(
+    out: Path,
+    partial: Path,
+    *,
+    n_scms_attempted: int,
+    gen_model: str,
+    critic_model: str | None,
+    causenet_dump: str,
+) -> None:
+    """Build the final single-file ``<out>.json`` + ``<out>.npz`` from the incremental partial dir.
+
+    Records ``n_scms_attempted`` alongside the records, which is what makes set completeness answerable
+    *from the artifact*. Every record already carries its ``seed`` and seeds are ``range(n_scms)``, so the
+    dropped seeds are derivable - but only once the attempted count is known. Without it a 27-SCM set that
+    lost three to naming failures is indistinguishable from a complete 27-SCM build, and the SCMs that drop
+    out are not a random subset (they are the ones whose naming constraints are hardest to satisfy), so the
+    survivors skew easier than the config describes.
+
+    Deliberately does *not* raise on a short build. Discarding 27 good SCMs and hours of LLM spend because
+    three failed is a worse outcome than shipping 27 and recording that fact; the caller gets a prominent
+    warning and decides.
+
+    The rest is documentation, not a rebuild recipe - a naming build is not reproducible (temperature 0.7,
+    no request seed, drifting model aliases), which is exactly why the artifact is frozen rather than
+    regenerated. ``causenet_md5`` earns its place because names now come *from* CauseNet, so the corpus is
+    an input to the data rather than loose inspiration.
+    """
     records = [json.loads(line) for line in (partial / "records.jsonl").read_text(encoding="utf-8").splitlines()]
     tables = {r["id"]: np.load(partial / "data" / f"{r['id']}.npy") for r in records}
     n_samples = next(iter(tables.values())).shape[0] if tables else 0  # from the actual data, not a duplicated constant
-    blob = {"version": out.name, "scaffold": "procedural", "n_samples": n_samples, "records": records}
+    accepted = sorted({r["seed"] for r in records})
+    log.info("checksumming CauseNet dump (streamed, ~138 MB)...")
+    blob = {
+        "version": out.name,
+        "scaffold": "procedural",
+        "n_samples": n_samples,
+        "n_scms_attempted": n_scms_attempted,
+        "n_scms_accepted": len(accepted),
+        "gen_model": gen_model,
+        "critic_model": critic_model,
+        "causenet_md5": _file_md5(causenet_dump),
+        "code_commit": _git_commit(),
+        "records": records,
+    }
     out.with_suffix(".json").write_text(json.dumps(blob, indent=2), encoding="utf-8")
     with out.with_suffix(".npz").open("wb") as handle:
         np.savez_compressed(handle, **tables)
-    log.info("assembled %d instances into %s.json (+ .npz)", len(records), out)
+    log.info("assembled %d instances from %d SCMs into %s.json (+ .npz)", len(records), len(accepted), out)
+    if len(accepted) < n_scms_attempted:
+        missing = sorted(set(range(n_scms_attempted)) - set(accepted))
+        log.warning("=" * 78)
+        log.warning(
+            "INCOMPLETE SET: %d of %d SCMs produced records. Missing seeds: %s",
+            len(accepted),
+            n_scms_attempted,
+            missing,
+        )
+        log.warning("Skipped SCMs are not a random subset - do not report this set as %d SCMs.", n_scms_attempted)
+        log.warning("=" * 78)
 
 
 if __name__ == "__main__":

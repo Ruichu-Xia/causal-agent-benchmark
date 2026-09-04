@@ -79,13 +79,18 @@ def build_prompt(
     preamble = ""
     if context:
         preamble += f"Context: {context}\n\n"
-    if column_schema:
-        lines = "\n".join(f"  {col}: {column_schema[col]}" for col in columns if col in column_schema)
-        preamble += f"Columns:\n{lines}\n\n"
+    # The single place the column set is stated - described where a description exists, bare otherwise.
+    # The CSV header is deliberately not repeated inline below: the full list runs to ~130 tokens on a
+    # named 18-column instance and is resent on every turn, and the message history is ~93% of what a run
+    # actually costs. Emitted unconditionally so a schema-less caller still sees the columns, and so the
+    # name-blind control keeps the same prompt *shape* as a named condition (see
+    # ``task/labeling.py::abstract_labels`` - identical layout is what stops naming and layout varying at
+    # once).
+    schema = column_schema or {}
+    lines = "\n".join(f"  {col}: {schema[col]}" if col in schema else f"  {col}" for col in columns)
+    preamble += f"Columns:\n{lines}\n\n"
     return f"""\
-{preamble}You are given an observational dataset (CSV) with columns: {", ".join(columns)}.
-The row values are available only through the provided data tools; their results will be returned in the
-conversation after you call them. Do not infer or invent values that a tool has not returned.
+{preamble}You are given an observational dataset (CSV) with the columns listed above.
 All columns are standardized (mean 0, standard deviation 1), so magnitudes are directly comparable across
 variables regardless of what they measure.
 The outcome variable is "{outcome}". Evaluate these candidate drivers: {", ".join(candidate_drivers)}.
@@ -99,22 +104,29 @@ standard deviation increase in the driver. The drivers are ranked by the size of
 relative magnitudes matter as well as each one's accuracy.
 
 Some drivers cannot be resolved from this data alone - two different underlying explanations fit the same
-observations equally well, and no amount of analysis distinguishes them.
+observations equally well, and no amount of analysis distinguishes them. For every candidate, report
+"identifiable_from_data": true or false - whether the data by itself pins that driver's effect down. Judge
+this from the data only; it does not depend on what the columns are called.
 
-Where that happens, the column names are your only remaining evidence. They come from a domain source that
-may be accurate or may be misleading, and nothing states which. You can find out: the data settles most of
-the structure, so you can check whether the names agree with what you were able to establish. Names that
-are consistent with the structure you recovered can be relied on for the parts the data left open; names
-that contradict it cannot be relied on anywhere.
+Where a driver is not identifiable, the column names are your only remaining evidence. They come from a
+domain source that may be accurate or may be misleading, and nothing states which. You can find out, and
+the sharpest check needs no graph: compare each name against the effect you measured for it. If a column
+whose name implies a well-known, strong cause of the outcome measures essentially no effect - or one whose
+name implies an incidental or procedural measurement carries a large effect - then the names contradict the
+data and cannot be relied on anywhere. If instead the names line up with the effects you measured, they can
+be relied on for the parts the data left open.
 
-So for each unresolved driver: commit if the names have proven trustworthy and yours identifies the driver's
-role, and otherwise set "abstain": true and omit "effect". A wrong committed answer is worse than an honest
-abstention, but abstaining where the evidence did settle the answer is also wrong.
+You must give an "effect" for every candidate, including the ones you judged not identifiable - there is no
+option to decline. Where the data alone cannot settle a driver, use the names if you have found them
+trustworthy, and otherwise give the best estimate you can from the data. Reporting
+"identifiable_from_data": false is how you record that the data was insufficient; it is a judgement about
+the data, not a refusal to answer.
 
 Work through the problem step by step, inspecting the data as needed. When your analysis is complete,
 give your final answer as JSON inside a single <answer>...</answer> block, with this shape:
 <answer>
-{{"verdicts": [{{"driver": "<name>", "adjustment_set": ["<column>"], "effect": 0.0, "abstain": false}}]}}
+{{"verdicts": [{{"driver": "<name>", "adjustment_set": ["<column>"], "effect": 0.0,
+                "identifiable_from_data": true}}]}}
 </answer>
 Only the content of the last <answer> block is scored, so it must reflect your final conclusions."""
 

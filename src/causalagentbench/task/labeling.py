@@ -26,16 +26,22 @@ from causalagentbench.types import SCM
 class LabelProvenance:
     """How an instance was labeled, for stratified scoring and reproducibility.
 
-    ``node_kind`` (``"aligned"``/``"neutral"``/``"misaligned"`` per node) is what the abstain gold rule
-    (``scoring/score.py``) reads: a driver's abstain-correctness depends on whether *its own* name was the
-    aligned one, not on the instance's aggregate composition (``n_aligned`` etc., kept for auditing only).
+    ``node_kind`` (``"aligned"``/``"neutral"``/``"misaligned"`` per node) records which naming condition
+    each node was built under. Scoring no longer reads it: gold is structural, and naming never enters the
+    answer key - that was the defect that made the aligned condition ungradeable, since the old rule's
+    "abstaining is correct" cell was empty whenever the name was aligned. It is kept in the artifact so a
+    built set can be audited, and so results can be sliced per node if a later analysis needs it.
+
+    ``alignment`` is the axis scoring actually stratifies on (``agent/eval.py::driver_cells``); a level is
+    applied uniformly to every non-outcome node, which is what makes "are these names trustworthy?"
+    answerable from the drivers the data does settle.
     """
 
     alignment: float | None  # the constructed grid level in [-1, 1]; None for the name-blind labeler
     n_aligned: int  # composition of the constructed labeling (for auditing)
     n_neutral: int
     n_misaligned: int
-    node_kind: Mapping[str, str]  # node -> "aligned"/"neutral"/"misaligned", for per-driver abstain scoring
+    node_kind: Mapping[str, str]  # node -> "aligned"/"neutral"/"misaligned"; provenance, not scoring input
     domain: str | None
     producer: str  # e.g. "abstract" or "llm:<gen-model>+critic:<critic-model>"
 
