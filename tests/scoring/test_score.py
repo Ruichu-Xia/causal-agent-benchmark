@@ -16,7 +16,6 @@ from causalagentbench.scoring.score import (
     _adjustment_bias,
     _effect_error,
     _ranking_tau,
-    reference_scores,
     score_answer,
     score_output,
 )
@@ -93,6 +92,33 @@ def test_a_perfect_answer_scores_one():
     assert score.estimation == pytest.approx(1.0, abs=1e-9)
     assert score.overall == pytest.approx(1.0, abs=1e-9)
     assert score.ranking_tau == pytest.approx(1.0)
+    assert score.effect_mae == pytest.approx(0.0)
+
+
+def test_adjustment_quality_does_not_change_reward_for_fixed_estimates():
+    key, label = _instance()
+    exact = _perfect(key, label)
+    no_controls = Answer(verdicts=tuple(v.model_copy(update={"adjustment_set": ()}) for v in exact.verdicts))
+    correct = score_answer(exact, key)
+    wrong = score_answer(no_controls, key)
+    assert wrong.identification < correct.identification
+    assert wrong.overall == correct.overall == 1.0
+
+
+def test_reward_matches_effect_error_and_mae_remains_unclipped():
+    key, label = _instance()
+    scale = effect_scale(key.scm)
+    exact = _perfect(key, label)
+    # Independent reference: errors of 0, half a scale, and two scales.
+    offsets = (0.0, 0.5 * scale, 2.0 * scale)
+    shifted = Answer(
+        verdicts=tuple(
+            v.model_copy(update={"effect": v.effect + delta}) for v, delta in zip(exact.verdicts, offsets, strict=True)
+        )
+    )
+    score = score_answer(shifted, key)
+    assert score.overall == score.estimation == pytest.approx(0.5)
+    assert score.effect_mae == pytest.approx(2.5 * scale / 3)
 
 
 def test_an_empty_answer_cannot_beat_a_real_one():
@@ -107,6 +133,7 @@ def test_a_parse_failure_scores_zero_rather_than_raising():
     score = score_output("no answer block here", key)
     assert not score.parse_ok
     assert score.overall == 0.0
+    assert score.effect_mae is None
     assert set(score.identifiable) == set(key.scm.scaffold.drivers)  # instance property, still filled
     assert all(v is None for v in score.identifiability_judgment.values())
 
@@ -205,12 +232,19 @@ def test_ranking_is_invariant_to_rescaling_the_estimates():
     )
     assert _ranking_tau(shrunk, key) == pytest.approx(1.0)
     assert score_answer(shrunk, key).estimation < 1.0  # but estimation notices
+    assert score_answer(shrunk, key).overall < 1.0  # perfect ranking cannot rescue reward
 
 
 def test_a_missing_verdict_forfeits_the_ranking():
     key, label = _instance()
     partial = Answer(verdicts=(_verdict(label, "A", ("C",), 1.0),))
     assert _ranking_tau(partial, key) == 0.0
+
+
+def test_equal_estimates_do_not_gain_ranking_credit_from_hidden_order():
+    key, label = _instance()
+    answer = Answer(verdicts=tuple(_verdict(label, node, effect=0.0) for node in key.scm.scaffold.drivers))
+    assert _ranking_tau(answer, key) == 0.0
 
 
 # ---- the identifiability judgement ----------------------------------------------------------------------
@@ -257,26 +291,6 @@ def test_identifiable_is_a_property_of_the_graph_not_the_naming():
     by_node_a = score_output("x", key_a).identifiable
     by_node_b = score_output("x", key_b).identifiable
     assert by_node_a == by_node_b
-
-
-def test_knowing_the_orientation_beats_data_only():
-    """The headroom the naming axis measures: the gap between these two is what a name can buy."""
-    keys = []
-    for seed in range(4):
-        scm = generate(seed, _SCAFFOLD)
-        data = sample(scm, 64, seed=seed)
-        _, key = build_instance(scm, data, seed=seed)
-        keys.append(key)
-    refs = reference_scores(keys)
-    assert refs["knows the orientation"] == pytest.approx(1.0, abs=1e-9)
-    assert refs["data-only"] < refs["knows the orientation"]
-    assert refs["correlation only"] <= refs["data-only"]
-    # The ceiling is the coin flip between the two admissible orientations, not the give-up branch. Taking
-    # the pessimistic branch as the ceiling doubled the headroom the naming axis appeared to have.
-    assert refs["data-only (gives up)"] < refs["data-only"]
-    assert refs["data-only"] == pytest.approx(
-        (refs["knows the orientation"] + refs["data-only (gives up)"]) / 2, abs=1e-9
-    )
 
 
 def test_answer_score_is_invariant_to_the_display_names():

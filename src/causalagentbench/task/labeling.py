@@ -1,15 +1,7 @@
-"""Labeler seam: how a hidden SCM becomes the data card the agent sees.
+"""Column naming and provenance for public task presentation.
 
-A ``Labeler`` maps an SCM to a ``Labeling`` - a node->name map plus a short domain ``context`` and a
-per-column ``schema``. Two implementations exist:
-
-* ``abstract_labels`` - role-free ``X1..Xk``, empty context/schema; the name-blind control and the
-  off-axis anchor of the naming axis.
-* ``LLMLabeler`` (in ``causalagentbench.generation``) - an LLM authors real names, context, and schema
-  for one instance at a target naming alignment ``alpha``.
-
-Whatever the labels, the gold answer is computed on the hidden SCM via ``label_to_node``, so naming is a
-pure presentation transform and the reward is alignment-invariant.
+CauseNetLabeler assigns exact source concepts with edge-preserving matches. Abstract labels are useful
+for numeric tests and data-only controls. Naming never changes the hidden numerical answer key.
 """
 
 from __future__ import annotations
@@ -24,17 +16,10 @@ from causalagentbench.types import SCM
 
 @dataclass(frozen=True)
 class LabelProvenance:
-    """How an instance was labeled, for stratified scoring and reproducibility.
+    """Label source and optional historical naming metadata.
 
-    ``node_kind`` (``"aligned"``/``"neutral"``/``"misaligned"`` per node) records which naming condition
-    each node was built under. Scoring no longer reads it: gold is structural, and naming never enters the
-    answer key - that was the defect that made the aligned condition ungradeable, since the old rule's
-    "abstaining is correct" cell was empty whenever the name was aligned. It is kept in the artifact so a
-    built set can be audited, and so results can be sliced per node if a later analysis needs it.
-
-    ``alignment`` is the axis scoring actually stratifies on (``agent/eval.py::driver_cells``); a level is
-    applied uniformly to every non-outcome node, which is what makes "are these names trustworthy?"
-    answerable from the drivers the data does settle.
+    ``producer`` records the CauseNet dump's SHA-256 for the default builder. The alignment fields remain
+    readable for older dataset artifacts; the default benchmark has no naming manipulation or sweep.
     """
 
     alignment: float | None  # the constructed grid level in [-1, 1]; None for the name-blind labeler
@@ -43,7 +28,7 @@ class LabelProvenance:
     n_misaligned: int
     node_kind: Mapping[str, str]  # node -> "aligned"/"neutral"/"misaligned"; provenance, not scoring input
     domain: str | None
-    producer: str  # e.g. "abstract" or "llm:<gen-model>+critic:<critic-model>"
+    producer: str  # "abstract" or "causenet:sha256:<digest>"
 
 
 @dataclass(frozen=True)

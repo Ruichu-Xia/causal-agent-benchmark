@@ -1,6 +1,6 @@
 [project]
 name = "causalagentbench"
-version = "0.0.0"
+version = "0.1.0"
 description = "CausalAgentBench — a verifiable causal-reasoning benchmark and RL environment for tool-using agents."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,13 +14,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The default LLM path (LiteLLM): naming generation (causalagentbench.generation) and the real
-# tool-calling agent client (causalagentbench.agent.clients.LiteLLMClient). Never needed to build or
-# score an instance with the always-available abstract labeler.
-generation = ["litellm>=1.50", "python-dotenv>=1.0", "tenacity>=8.0"]
+# Only model evaluation needs a provider client. Dataset generation is local and deterministic.
+agents = ["litellm>=1.50", "python-dotenv>=1.0"]
 
 # Only for causalagentbench.agent.clients.DatabricksClient - comparing the agent against a model served
-# behind a Databricks AI Gateway. Not part of the default path; most users only need `generation`.
+# behind a Databricks AI Gateway. Not part of the default path; most users only need `agents`.
 databricks = ["openai>=1.50", "python-dotenv>=1.0"]
 discovery = [
     "causal-learn>=0.1.4.8",
@@ -30,6 +28,7 @@ discovery = [
 Homepage = "https://github.com/causal-agent-benchmark/causalagentbench"
 
 [project.scripts]
+causalagentbench = "causalagentbench.cli:main"
 causalagentbench-smoke = "causalagentbench.smoke:main"
 
 [build-system]

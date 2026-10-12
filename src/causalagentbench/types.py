@@ -44,7 +44,7 @@ class Scaffold:
         node_names: Canonical node order indexing every SCM matrix row/column.
         roles: Node name to its causal role (must cover exactly ``node_names``).
         edges: Directed edges as ``(parent, child)`` pairs.
-        drivers: Candidate drivers to be ranked.
+        drivers: Candidates whose signed total causal effects must be estimated.
         outcome: The outcome node name.
         correct_adjustment: Minimal valid backdoor adjustment set per driver.
     """

@@ -1,7 +1,7 @@
 """Real ``ToolCallingClient`` implementations: any LiteLLM-supported model, or the Databricks AI Gateway.
 
 Kept separate from ``loop.py`` so the loop stays importable (and testable with a stub) without the
-``generation`` extra; provider SDKs are imported lazily, same pattern as ``generation.clients``.
+``agents`` extra; provider SDKs are imported lazily.
 """
 
 from __future__ import annotations
@@ -15,7 +15,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from causalagentbench.agent.loop import ModelTurn, ToolCall
-from causalagentbench.generation.clients import load_env
+
+
+def load_env() -> None:
+    """Load optional provider credentials from .env without overriding environment variables."""
+    from dotenv import load_dotenv
+
+    load_dotenv(override=False)
+
 
 _LITELLM_DEFAULT_MAX_RETRIES = 2
 _DATABRICKS_NUM_RETRIES = 6

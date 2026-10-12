@@ -5,7 +5,7 @@ and deliberately carries no roles, graph, or SCM. ``InstanceKey`` holds the hidd
 the label<->node map, and the labeling provenance) for the scorer. ``build_instance`` applies a
 ``Labeler``, shuffles the display column order, and pairs them.
 
-The prompt states only the *question* - the outcome and the candidate drivers to rank - plus the domain
+The prompt states only the *question* - the outcome and the candidate drivers to estimate effects for - plus the domain
 context and schema. It never reveals causal roles, and it does not tell the agent which columns to adjust
 for: discovering that is the task. Its wording is turn-agnostic, fitting a single-shot call or a
 multi-turn tool-use loop.
@@ -13,6 +13,7 @@ multi-turn tool-use loop.
 
 from __future__ import annotations
 
+import csv
 import io
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -48,7 +49,7 @@ class Instance:
     def to_csv(self) -> str:
         """Render the table as CSV with a header row of ``columns``."""
         buffer = io.StringIO()
-        buffer.write(",".join(self.columns) + "\n")
+        csv.writer(buffer, lineterminator="\n").writerow(self.columns)
         np.savetxt(buffer, self.data, delimiter=",", fmt="%.6g")
         return buffer.getvalue()
 
@@ -70,65 +71,40 @@ def build_prompt(
     context: str = "",
     column_schema: Mapping[str, str] | None = None,
 ) -> str:
-    """Return the task prompt: optional context/schema, then the question and the answer shape.
-
-    Any task-level assumptions the agent should work under are carried in ``context`` by the labeler, not
-    hard-coded here. Presents the remaining columns only as other data columns; it does not say which to
-    adjust for.
-    """
-    preamble = ""
-    if context:
-        preamble += f"Context: {context}\n\n"
-    # The single place the column set is stated - described where a description exists, bare otherwise.
-    # The CSV header is deliberately not repeated inline below: the full list runs to ~130 tokens on a
-    # named 18-column instance and is resent on every turn, and the message history is ~93% of what a run
-    # actually costs. Emitted unconditionally so a schema-less caller still sees the columns, and so the
-    # name-blind control keeps the same prompt *shape* as a named condition (see
-    # ``task/labeling.py::abstract_labels`` - identical layout is what stops naming and layout varying at
-    # once).
+    """Describe the analysis task without revealing graph structure."""
     schema = column_schema or {}
     lines = "\n".join(f"  {col}: {schema[col]}" if col in schema else f"  {col}" for col in columns)
-    preamble += f"Columns:\n{lines}\n\n"
-    return f"""\
-{preamble}You are given an observational dataset (CSV) with the columns listed above.
-All columns are standardized (mean 0, standard deviation 1), so magnitudes are directly comparable across
-variables regardless of what they measure.
-The outcome variable is "{outcome}". Evaluate these candidate drivers: {", ".join(candidate_drivers)}.
-The dataset also contains other columns; it is part of the task to work out what role each plays.
+    return f"""Context: {context or "A synthetic observational study."}
 
-For each candidate driver, decide which columns form a valid adjustment set for estimating its total
-causal effect on the outcome (some candidates may have little or no causal effect; the adjustment set may
-be empty), then report "effect": your estimate of that total causal effect, as a number. Because every
-column is standardized, this is the expected change in the outcome, in standard deviations, per one
-standard deviation increase in the driver. The drivers are ranked by the size of these estimates, so their
-relative magnitudes matter as well as each one's accuracy.
+Columns:
+{lines}
 
-Some drivers cannot be resolved from this data alone - two different underlying explanations fit the same
-observations equally well, and no amount of analysis distinguishes them. For every candidate, report
-"identifiable_from_data": true or false - whether the data by itself pins that driver's effect down. Judge
-this from the data only; it does not depend on what the columns are called.
+Outcome: {outcome}
+Candidate drivers: {", ".join(candidate_drivers)}
 
-Where a driver is not identifiable, the column names are your only remaining evidence. They come from a
-domain source that may be accurate or may be misleading, and nothing states which. You can find out, and
-the sharpest check needs no graph: compare each name against the effect you measured for it. If a column
-whose name implies a well-known, strong cause of the outcome measures essentially no effect - or one whose
-name implies an incidental or procedural measurement carries a large effect - then the names contradict the
-data and cannot be relied on anywhere. If instead the names line up with the effects you measured, they can
-be relied on for the parts the data left open.
+Assume an acyclic linear causal model with independent Gaussian noise. All common causes are observed.
+Assume the population distribution is faithful to the graph. Variables have population mean zero and
+standard deviation one; sample moments can differ. Names identify concepts; use your domain knowledge
+together with the data to infer their causal relationships.
 
-You must give an "effect" for every candidate, including the ones you judged not identifiable - there is no
-option to decline. Where the data alone cannot settle a driver, use the names if you have found them
-trustworthy, and otherwise give the best estimate you can from the data. Reporting
-"identifiable_from_data": false is how you record that the data was insufficient; it is a judgement about
-the data, not a refusal to answer.
+Estimate each candidate's signed TOTAL causal effect on the outcome. Report the adjustment set used
+for each estimate; it may be empty. The effect is the signed expected change in the outcome
+per one-unit intervention increase in the driver, including effects through intermediate variables.
+Some candidates have no causal effect. Answer order does not matter.
 
-Work through the problem step by step, inspecting the data as needed. When your analysis is complete,
-give your final answer as JSON inside a single <answer>...</answer> block, with this shape:
+Use the statistical tools to investigate and estimate the effects. Discovery is imperfect at finite sample
+size: check its results when needed.
+
+Return every candidate exactly once, with a finite numerical effect, in this format:
 <answer>
-{{"verdicts": [{{"driver": "<name>", "adjustment_set": ["<column>"], "effect": 0.0,
-                "identifiable_from_data": true}}]}}
+{{"verdicts": [{{"driver": "<column>", "adjustment_set": ["<column>"], "effect": 0.23}}]}}
 </answer>
-Only the content of the last <answer> block is scored, so it must reflect your final conclusions."""
+The last answer block is scored. The benchmark reports total absolute estimation error divided by total
+absolute true effect across all tasks and candidates; lower is better, and zero-effect predictions score 1.
+Invalid answers count as zero-effect predictions in that metric and reduce the reported answer-validity rate.
+RL reward depends only on signed effect accuracy: one minus the average
+absolute estimation error, divided by the task's median absolute true effect and capped at one per
+candidate. Adjustment quality and ranking agreement are diagnostics only; neither contributes to reward."""
 
 
 def outcome_and_drivers(

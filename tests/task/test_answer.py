@@ -2,6 +2,14 @@ import pytest
 
 from causalagentbench.task.answer import Answer, AnswerParseError, parse_answer, parse_answer_for_instance
 
+
+@pytest.mark.parametrize("value", ['"NaN"', "NaN", "Infinity", "-Infinity", "1e999"])
+def test_nonfinite_effects_are_rejected(value):
+    text = '<answer>{"verdicts":[{"driver":"X1","effect":' + value + "}]}</answer>"
+    with pytest.raises(AnswerParseError):
+        parse_answer_for_instance(text, ("X1",))
+
+
 _VALID = """
 reasoning here...
 <answer>

@@ -155,3 +155,27 @@ def test_load_dataset_rejects_a_structurally_invalid_scaffold(tmp_path):
 
     with pytest.raises(ValueError, match="roles must cover"):
         load_dataset(out)
+
+
+def test_save_dataset_freezes_exact_prompt_and_never_overwrites(tmp_path):
+    from dataclasses import replace
+
+    from causalagentbench.task.dataset import save_dataset
+
+    scm, report = generate_gated_procedural(0, n_candidates=5)
+    instance, key = build_instance(scm, report.data, 0)
+    instance = replace(instance, prompt="A frozen prompt independent of the current prompt builder.")
+    path = tmp_path / "frozen"
+    save_dataset(path, [(instance, key)])
+    loaded, _ = load_dataset(path)[0]
+    assert loaded.prompt == instance.prompt
+    np.testing.assert_array_equal(loaded.data, instance.data)
+    with pytest.raises(FileExistsError):
+        save_dataset(path, [(instance, key)])
+
+
+def test_save_dataset_rejects_empty_build(tmp_path):
+    from causalagentbench.task.dataset import save_dataset
+
+    with pytest.raises(ValueError, match="empty"):
+        save_dataset(tmp_path / "empty", [])
