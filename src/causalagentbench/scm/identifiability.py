@@ -72,7 +72,9 @@ def unoriented_edges(scaffold: Scaffold) -> frozenset[tuple[str, str]]:
 
 
 def unidentifiable_drivers(scaffold: Scaffold) -> tuple[str, ...]:
-    """Return every candidate driver whose effect is not identified from data alone, in canonical order.
+    """Return ambiguous candidates in the generated gadget family, in canonical order.
+
+    This role-based shortcut is specific to these gadgets, not a general effect-identification algorithm.
 
     Only counts ambiguity from an unoriented **confounder** edge, not an unoriented **instrument** edge -
     edge-orientation ambiguity and effect/adjustment identifiability are not the same thing, and for an

@@ -1,26 +1,8 @@
-"""A scripted causal-analysis agent: discovery -> adjustment set -> regression, with no LLM.
+"""A data-only baseline: PC discovery, candidate-parent adjustment, then OLS.
 
-This is the control that decides what the benchmark is a benchmark *of*. The task decomposes into a
-mechanical part - run causal discovery, read an adjustment set off the result, regress - and a
-non-mechanical part, which is using the column names on the edges the data provably cannot orient. If a
-fifty-line script matches the models, the mechanical part is all anyone is measuring and the paper has to
-say so. If the script falls well short, the models are competing against a real baseline.
-
-The policy is the textbook one, and deliberately a *competent* implementation rather than a strawman: in
-any DAG the treatment's parent set is a valid backdoor adjustment set, so the script estimates the parents
-of each driver from the CPDAG and adjusts for them. Where PC leaves an edge undirected it cannot tell a
-parent from a child, and that is exactly the ambiguity the naming axis exists to probe - so the two
-admissible readings are both provided:
-
-* ``AmbiguityPolicy.EXCLUDE`` - treat an undirected neighbour as not a parent (do not adjust)
-* ``AmbiguityPolicy.INCLUDE`` - treat it as a parent (adjust)
-
-Neither is better a priori without the names, so a name-blind script's expected score is their mean. That
-mean is the same quantity ``score.py::reference_scores`` calls ``data-only``, but computed from *estimated*
-structure on finite data rather than from the true graph - so the gap between them is the price of
-discovery error, which is the thing an oracle baseline cannot show you.
-
-Needs the optional ``discovery`` extra (causal-learn), imported lazily.
+Undirected neighbors can be included or excluded explicitly. Neither policy is an information-theoretic
+ceiling. This baseline uses no CauseNet lookup and no hidden key. The agent and baseline share the PC
+configuration and the answer scorer.
 """
 
 from __future__ import annotations
@@ -31,13 +13,11 @@ from enum import Enum
 
 import numpy as np
 
+from causalagentbench.agent.discovery import DEFAULT_ALPHA, discover_graph
 from causalagentbench.scoring.metrics import regression_coefficient
 from causalagentbench.scoring.score import AnswerScore, score_answer
 from causalagentbench.task.answer import Answer, DriverVerdict
 from causalagentbench.task.instance import Instance, InstanceKey
-
-#: The alpha ``agent/tools.py::discover`` defaults to, so the script and the agent see the same tool.
-DEFAULT_ALPHA = 0.05
 
 
 class AmbiguityPolicy(Enum):
@@ -66,10 +46,7 @@ class _Cpdag:
 
 
 def _fit_cpdag(instance: Instance, alpha: float) -> _Cpdag:
-    from causallearn.search.ConstraintBased.PC import pc
-
-    graph = pc(np.asarray(instance.data), alpha=alpha, show_progress=False).G.graph
-    return _Cpdag(graph, instance.columns)
+    return _Cpdag(discover_graph(instance, alpha), instance.columns)
 
 
 def scripted_answer(instance: Instance, *, policy: AmbiguityPolicy, alpha: float = DEFAULT_ALPHA) -> Answer:

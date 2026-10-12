@@ -69,3 +69,18 @@ def test_prompt_names_outcome_and_drivers_but_not_roles():
     # The prompt must not leak causal-role vocabulary.
     for word in ("confounder", "mediator", "decoy", "adjust for these"):
         assert word not in instance.prompt.lower()
+
+
+def test_bundled_prompts_match_the_effect_estimation_task():
+    from pathlib import Path
+
+    from causalagentbench.task.dataset import load_dataset
+    from causalagentbench.task.instance import build_prompt
+
+    dataset = Path(__file__).resolve().parents[2] / "data" / "example"
+    for instance, _ in load_dataset(dataset):
+        assert instance.prompt == build_prompt(
+            instance.columns, instance.outcome, instance.candidate_drivers, instance.context, instance.column_schema
+        )
+        assert "RL reward depends only on signed effect accuracy" in instance.prompt
+        assert "benchmark reports total absolute estimation error" in instance.prompt

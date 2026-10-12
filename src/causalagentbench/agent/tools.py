@@ -22,6 +22,7 @@ the toolset works without it.
 
 from __future__ import annotations
 
+import csv
 import io
 import itertools
 import math
@@ -30,11 +31,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from causalagentbench.agent.discovery import DEFAULT_ALPHA, discover_graph
 from causalagentbench.task.instance import Instance
 from causalagentbench.types import FloatArray
 
 _MAX_PREVIEW_ROWS = 20
-_DEFAULT_ALPHA = 0.01
+_DEFAULT_ALPHA = DEFAULT_ALPHA
 """Significance level for ``discover``'s conditional-independence tests.
 
 Documented and exposed rather than hidden: it is the one knob that materially changes what PC returns, and
@@ -86,7 +88,7 @@ class CausalTools:
         assert isinstance(n, int)
         rows = max(1, min(n, _MAX_PREVIEW_ROWS))
         buffer = io.StringIO()
-        buffer.write(",".join(self.instance.columns) + "\n")
+        csv.writer(buffer, lineterminator="\n").writerow(self.instance.columns)
         np.savetxt(buffer, self.instance.data[:rows], delimiter=",", fmt="%.6g")
         return buffer.getvalue()
 
@@ -150,11 +152,10 @@ class CausalTools:
         if isinstance(alpha, bool) or not isinstance(alpha, int | float) or not 0.0 < float(alpha) < 1.0:
             return "Error: alpha must be a number strictly between 0 and 1 (e.g. 0.01)."
         try:
-            from causallearn.search.ConstraintBased.PC import pc
+            graph = discover_graph(self.instance, float(alpha))
         except ImportError:  # pragma: no cover - depends on whether the `discovery` extra is installed
             return "Error: the causal discovery tool is not available in this environment."
 
-        graph = pc(self.instance.data, alpha=float(alpha), show_progress=False).G.graph
         columns = self.instance.columns
         oriented: list[str] = []
         undecided: list[str] = []

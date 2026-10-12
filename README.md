@@ -1,351 +1,214 @@
 # CausalAgentBench
 
-A synthetic causal-reasoning benchmark on procedurally-composed, exactly-solvable graphs.
+A small benchmark and RL environment for causal analysis with statistical tools.
 
-Data is generated from a **hidden linear-Gaussian structural causal model (SCM)**, so the SCM is the
-exact answer key. An agent sees a labeled observational table and must rank the candidate drivers of an
-outcome by causal effect and choose a valid backdoor adjustment set for each. The SCM itself never
-changes what's identifiable or what the gold answer is — what varies is whether the column **names**
-agree with or actively mislead about the true causal structure. That's the axis the benchmark
-measures: where the data provably cannot orient an edge, does the agent use the names — and does it
-refuse to when the names have proven to be lying?
+An agent receives an observational dataset, an outcome, and five candidate drivers. It chooses an
+adjustment set and estimates the signed **total causal effect** of each driver. The headline metric is
+normalized absolute estimation error (lower is better). RL uses a separate bounded reward.
+A hidden linear-Gaussian structural causal model supplies the exact answer key.
 
-**Naming is an experimental condition, never part of the answer key.** Gold is the true effects and the
-population CPDAG, both identical across an SCM's three naming skins. Every candidate driver is graded on
-every metric, with no way to decline, so no denominator is ever the agent's to choose.
+**Names come directly from CauseNet. Every simulated directed edge must match an actual directed
+relation in the source dump.** No LLM generates names. The agent sees concept names and data, with no
+relationship descriptions, graph edges, roles, or adjustment hints. CauseNet relations are used only
+by the offline task builder; they are not a tool available to the agent.
 
-Every instance composes its own topology from a small gadget catalog (clean, confounded, multi-confounder,
-instrumented, collider, and M-bias drivers, plus confounder-fed decoys), so driver count, archetype mix,
-and per-driver identifiability all vary by seed. The collider and M-bias drivers need *no* adjustment at
-all — the trap is that conditioning on the wrong node manufactures bias a correct analysis would never
-introduce, the mirror image of the other archetypes' "adjust for the right thing" traps. Exact effects come from `τ = (I − W)⁻¹ − I`; UUMC weight sampling keeps
-marginal variance free of causal-order signal; driver effects, mediated shares, and confounding margins are
-*constructed* rather than sampled-and-hoped-for; and a reject loop's soundness gates guarantee every
-instance requires genuine causal reasoning (naive correlation *and* "adjust-for-everything" both provably
-fail). Each instance is guaranteed at least one driver whose confounder edge is unresolvable from data
-alone and one that is resolvable — which is what makes the naming axis load-bearing rather than decorative.
-See [`backlog.md`](backlog.md) for open design questions and known characteristics of this setup (in
-particular §4, on the interpretation floor that identifiability ambiguity imposes on any results write-up).
+## Try it
 
-## Scope of the claim
-
-What this benchmark measures, stated narrowly, so results are not read as broader than the evidence.
-
-**The graph family is one family.** Linear-Gaussian, causally sufficient (every variable is observed —
-there is no unmeasured confounding), six motifs composed around a single outcome sink. Every column is
-continuous and standardized. Procedural recombination prevents memorizing a fixed graph, but not learning
-strategies specific to *this* grammar; there is no held-out-family test yet, so out-of-family transfer is
-unmeasured.
-
-**"Requires causal reasoning" means three policies, not all of them.** The acceptance gate certifies that
-marginal correlation, adjust-for-everything, and adjust-for-other-candidates each miss the true effect by
-at least 25% of a typical effect. That is a strong, checkable guarantee about *those* policies. It is not
-a proof that no shortcut exists — a discovery-based, text-only, or learned baseline has not been run.
-
-**Identifiability is a population statement.** Which drivers are unresolvable is computed from the true
-DAG's exact CPDAG — i.e. what *no* amount of data could settle. The agent has 2,000 rows. Measured against
-PC at the shipped tool's own significance level, finite-sample discovery agrees with that population
-verdict on ~88% of drivers, and more data barely helps (5× rows → 91%) because the dominant error is
-multiple testing across a 24–33 node graph, whose rate does not shrink with sample size. On roughly one
-driver in eight the gold therefore encodes a distinction the shipped discovery tool cannot reproduce.
-Note the agent is not required to use that tool — `correlate` and `regress` reach the same conclusions by
-a shorter route — so treat this as a bound on one solution path, not on the task.
-
-**A shipped set is the ground truth, not a recipe.** Naming runs an LLM at temperature 0.7 with no request
-seed, so a build is *not* reproducible; this is why the artifact is frozen rather than regenerated. Each
-set records the models, the CauseNet dump's MD5, the code commit, and how many SCMs were attempted versus
-accepted — a build that loses SCMs to naming failure is visible in the artifact rather than only in a log.
-
-**Column names carry no structural vocabulary.** Role and relationship words are rejected deterministically
-at build time, in names and descriptions alike, because an earlier pilot leaked them 7× more often in the
-misaligned condition — enough that counting keywords identified the condition on 9 of 10 instances and beat
-the no-calibration ceiling without any causal reasoning. The current set measures 0 such leaks in either
-condition.
-
-## Quickstart
+Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required for these commands.
 
 ```bash
-uv sync                      # create the environment
-uv run pytest                # run the test suite
-uv run causalagentbench-smoke   # generate gated instances and print acceptance/gate stats
+uv sync --extra agents --extra discovery
+
+# Free: run a data-only PC → adjustment → regression baseline on the included 10-task dataset.
+uv run causalagentbench baseline --dataset data/example --out outputs/pc.jsonl
+
+# Evaluate a tool-calling model using its LiteLLM provider/model identifier.
+# Set the provider's API key in your environment or .env, and set MODEL to the desired identifier.
+uv run causalagentbench eval --dataset data/example --model "$MODEL" --out outputs/model.jsonl
 ```
 
-## Using the benchmark
+Each result file contains a run configuration and dataset checksum, one record per completed task,
+then a summary. Results are flushed as tasks finish. Invalid answers count as zero-effect predictions in
+the reported error; provider failures leave the run incomplete with no headline metric and a nonzero exit
+code. Output files are never overwritten.
 
-Building an instance needs nothing beyond this package — no LLM, key, or download:
+Use `--limit 2` for a quick check and `--workers 4` for concurrent episodes. Repeat `--model` to compare
+models on the same tasks. `--max-tool-calls` and `--max-turns` control the investigation budget; defaults
+are 100 calls and 25 model replies, plus at most one tool-free formatting repair. The agent is told its
+remaining budgets. Token usage, runtime and available cost estimates are recorded.
+
+Three other free references are available:
+
+```bash
+uv run causalagentbench baseline --dataset data/example --agent zero --out outputs/zero.jsonl
+uv run causalagentbench baseline --dataset data/example --agent correlation --out outputs/correlation.jsonl
+uv run causalagentbench baseline --dataset data/example --agent oracle --out outputs/oracle.jsonl
+```
+
+`zero` reports zero for every effect without inspecting the data. `correlation` uses unadjusted regression.
+`oracle` uses hidden correct adjustment sets, but estimates
+coefficients from the sample; it is an estimation reference, not a competing agent. The PC baseline
+uses the same discovery configuration as the agent tool and excludes unresolved neighbors.
+
+Measured on all ten bundled tasks with `normalized-error-v1` reporting (no model API calls):
+
+| Reference | Normalized effect error ↓ | Effect MAE ↓ |
+| --- | ---: | ---: |
+| Always predict zero | 1.000 | 0.1481 |
+| Unadjusted regression | 0.867 | 0.1283 |
+| PC discovery → regression | 0.722 | 0.1069 |
+| Oracle adjustment → regression | 0.123 | 0.0183 |
+
+The oracle uses finite samples, so its effects are not exact and its error is not a strict lower bound.
+These are small-sample reference results, not evidence of language-model performance.
+
+## Build more tasks
+
+Download [CauseNet-Precision](https://causenet.org/), then:
+
+```bash
+uv run causalagentbench build \
+  --causenet /path/to/causenet-precision.jsonl.bz2 \
+  --out outputs/train --seed 1000 -n 100
+```
+
+Generation is local and deterministic. It needs neither an API key nor the `agents` extra. The dump is
+loaded once per build. A bounded matcher assigns distinct source concepts to graph nodes and verifies
+all edge directions. A task that cannot be grounded is retried with a new SCM; exhausting the retry
+budget fails the build. There is no invented-name fallback or silent partial dataset.
+
+The `.json` / `.npz` pair freezes the exact prompts, data, names, source hash and evaluator keys. Different
+seed ranges can be used for training and evaluation. The included dataset is a small example, not a
+claim of broad domain coverage. Its source attribution and build command are in [data/README.md](data/README.md).
+
+**Dataset JSON files contain the hidden answer keys.** Keep them in the evaluator process; give an agent
+only the public prompt and tool results. The Python object boundary is not a security sandbox for an agent
+with unrestricted access to the evaluator's filesystem or process.
+
+## Task, evaluation metric and reward
+
+Available tools are `preview`, `correlate` (including partial correlation), `regress` (OLS with an
+adjustment set and uncertainty), and `discover` (PC). Statistical tools use only the observed table.
+
+The final answer is:
+
+```json
+{"verdicts": [
+  {"driver": "<concept>", "adjustment_set": ["<concept>"], "effect": 0.23}
+]}
+```
+
+A model wraps this JSON in `<answer>...</answer>`. Every candidate must appear exactly once. Effects
+must be finite; adjustment sets cannot contain unknown columns, duplicates, the driver or the outcome.
+
+**The headline metric is `normalized_effect_error`**, pooled over all tasks and candidates. With true
+signed effects `t_i` and estimates `e_i`:
+
+```text
+normalized_effect_error = sum(|e_i - t_i|) / sum(|t_i|)
+effect_mae = mean(|e_i - t_i|)
+```
+
+Zero means exact estimates, 1 equals the error of always predicting zero, and values above 1 are worse
+than that reference. There is no clipping. Errors and true magnitudes are pooled before division; this
+is not an average of per-task ratios. Larger-effect tasks therefore carry more weight. All candidates,
+including zero-effect candidates, count. The denominator is positive on generated benchmarks; for an
+external all-zero ground-truth dataset, normalized error is undefined and reported as null.
+
+Report `effect_mae` (standardized effect units, lower is better) and `answer_validity_rate` alongside the
+headline. An invalid answer replaces the whole task's estimates with zeros for both reported error
+metrics. It remains in the denominator and reduces validity; it is never silently excluded. This gives
+an invalid answer the same error as an explicit all-zero answer, not a correctness judgment.
+
+Provider/runtime failures are separate from invalid answers. If any task fails, the summary's headline
+error and MAE are null and the CLI exits nonzero; partial diagnostic averages remain available. Validity
+is the fraction of all attempted tasks with a valid answer. A complete all-invalid run has normalized
+error 1 and validity 0. Results record `reporting_version: "normalized-error-v1"`.
+
+**RL reward is separate**, on `[0, 1]`, using each task's scale `s = median(|t_i|)`:
+
+```text
+reward = effect_score = 1 - mean(min(|e_i - t_i| / s, 1))
+```
+
+All candidates count, including zero-effect candidates. Generated tasks have positive `s`. Exact effects
+earn 1; reward is partial credit, not percent correct or improvement over chance. Predicting zero earns
+credit on zero and small effects, so compare against the zero baseline. Invalid answers earn zero reward.
+
+The CLI also records this reward as a diagnostic. The RL scorer's MAE is null for invalid submissions;
+evaluation applies the explicit zero-prediction policy above when building its reports.
+
+Two diagnostics do **not** contribute to reward:
+
+- `adjustment_score`: one minus normalized, clipped population regression bias from the proposed controls.
+  This evaluates their induced bias, not an exact match to a preferred variable list.
+- `ranking_tau`: pairwise agreement in absolute effect order on `[-1, 1]`; true ties are excluded and
+  submitted ties receive zero ordering credit. Estimates can rank perfectly while having incorrect sizes or signs.
+
+The RL rule remains `scoring_version: "effect-v1"`; older results used an adjustment/effect average and
+their rewards are not directly comparable. The bundled prompts describe both the headline metric and
+the RL reward. Previously frozen datasets retain their original prompts; rebuild those before new model runs.
+
+The SCM is acyclic, linear and Gaussian, with independent noise and observed common causes. All columns
+have population unit variance. Graphs combine clean, confounded, mediated, instrumented, collider and
+M-bias patterns with zero-effect decoys. Each task has 2,000 rows. Generation gates ensure an oracle can
+recover the ranking on the released table and three specified naive adjustment policies have material bias.
+
+Some orientations are not identifiable from observational data alone; concept names provide domain
+knowledge but do not guarantee unique identification. The score measures recovery of the selected
+**synthetic** SCM, including effects that require semantic assumptions. It is not a pure test of statistical
+identification. CauseNet supplies claimed
+relations, not numerical effect sizes or a complete real-world causal graph. Additional relations in
+CauseNet may be omitted from the selected subgraph. This benchmark does not measure real-world causal
+effects or require instrumental-variable estimation.
+
+## RL interface
+
+No Gymnasium or training framework is required. `CausalEnv` exposes `reset` and `step`:
 
 ```python
-from causalagentbench import generate_gated_procedural, build_instance, score_output
+from causalagentbench import CausalEnv, load_dataset
 
-scm, report = generate_gated_procedural(seed=0)   # a sound instance: composed topology + gated effects
-instance, key = build_instance(scm, report.data, seed=0)   # abstract labels (X1..Xk) by default
+tasks = load_dataset("data/example")
+env = CausalEnv(max_tool_calls=40)
+observation, info = env.reset(task=tasks[0])
 
-instance.prompt            # what the agent sees (context + schema + question)
-instance.to_csv()          # the data table
-key.scm.true_ranking()      # hidden gold ranking, computed on the SCM (label-invariant)
+observation, reward, terminated, truncated, info = env.step({
+    "type": "tool", "name": "preview", "arguments": {"n": 3}
+})
 
-# ... an agent reads instance.prompt/instance.to_csv() and replies with an <answer> block ...
-score = score_output(agent_reply_text, key)
-score.overall               # THE headline: mean of identification and estimation, every driver graded
-score.identification        # 1 - the bias the proposed adjustment sets actually induce (continuous)
-score.estimation            # 1 - mean normalized error of the per-driver effect estimates
-score.ranking_tau           # Kendall agreement with the true order; scale-invariant, secondary
-score.identifiability_judgment   # per driver: did the agent say the data alone settles it? (diagnostic)
+# The policy chooses further tool actions, then submits its answer:
+# env.step({"type": "submit", "answer": {"verdicts": [...]}})
 ```
 
-Read `overall` against the reference points, which are recomputed per built set because they move with the
-realized identifiable/unidentifiable mix. On the shipped `testset_v2`:
+Reset returns the public prompt, tool schemas and query budget. Each tool attempt, including an invalid
+one, costs one query and gives zero reward. After the final query, a submission is still allowed. Another
+tool attempt truncates the episode with zero reward. Submission always ends the episode; invalid answers
+score zero. Calls after termination require a new reset. RL submissions have no automatic format repair.
 
-| reference | score | meaning |
-|---|---|---|
-| `knows the orientation` | 1.000 | handed the edges data cannot orient |
-| `data-only` | 0.803 | **ceiling for any agent ignoring names** — beating it proves name use |
-| scripted agent (best fixed policy) | 0.634 | measured: PC → adjustment set → regress, no LLM |
-| `correlation only` | 0.321 | floor |
-
-The gap between the scripted agent and `data-only` (0.256) is the cost of finite-sample discovery error;
-the gap between `data-only` and 1.000 (0.197) is all the naming axis can be worth.
-
-`report.data` is the exact table the oracle gate certified — reuse it rather than drawing a fresh sample,
-since gate acceptance is tied to that one draw.
-
-## Generating naming-alignment data (optional)
-
-Naming is done by an LLM: a generator proposes, per node, aligned / misaligned name variants in
-one coherent CauseNet-grounded domain (an optional critic verifies them), and the alignment level is then
-*constructed* from those variants — this is the manipulated axis described above. This path needs the
-`generation` extra, an LLM key, and a CauseNet dump — three one-time steps:
-
-```bash
-# 1. install the extra
-uv sync --extra generation
-
-# 2. set up credentials + data path
-cp .env.example .env         # then edit .env: add your API key(s) and the CauseNet path
-#    keys are read by provider, e.g. model "anthropic/claude-opus-4-8" uses ANTHROPIC_API_KEY
-
-# 3. download CauseNet grounding (causenet-precision.jsonl.bz2) from https://causenet.org
-#    and set CAUSENET_DUMP in .env to its path
-```
-
-Naming alignment is a fixed discrete grid `{−1, +1}` — misaligned / aligned, applied uniformly to every
-non-outcome node — plus a name-blind control, so a full sweep is 3 views per SCM. It is **constructed** per
-instance from per-node name pairs — one generator call (+ an optional correctness critic) per SCM.
-`alpha_sweep` builds every level of one SCM from a
-single proposal (paired skins, `.env` loaded automatically):
+For procedural training, load the source once:
 
 ```python
-import os
-from causalagentbench.generation import alpha_sweep, GRID
+from causalagentbench import CausalEnv, CauseNetLabeler
 
-skins = alpha_sweep(
-    seed=7, levels=GRID,
-    gen_model="openai/gpt-5",
-    causenet_dump=os.environ["CAUSENET_DUMP"],
-    critic_model="openai/gpt-5",              # correctness critic; None to skip
-)
-for level, instance, key in skins:            # same SCM/data, only names change across levels
-    key.provenance.alignment                  # the constructed level in {-1,+1}
+labeler = CauseNetLabeler.from_path("/path/to/causenet-precision.jsonl.bz2")
+env = CausalEnv(labeler=labeler)
+observation, info = env.reset(seed=123)
 ```
 
-Generate a batch of instances offline — models and size come from a versioned build config
-(`configs/testset_v1.yaml`), so a run is reproducible (each SCM → all grid levels + name-blind):
-
-```bash
-uv run python scripts/build_testset.py --config configs/testset_v1.yaml --out outputs/my_run
-```
-
-There is currently no packaged/shipped fixed test set — every dataset is generated on demand, either
-abstractly (free, above) or via this CauseNet+LLM path. `load_dataset` reads a build's output back into
-`(Instance, InstanceKey)` pairs (no LLM calls, no extra needed) — build once, then evaluate several
-models against the identical frozen instances via `scripts/run_eval.py --dataset outputs/my_run`.
-
-## Evaluating a tool-using agent
-
-`causalagentbench.agent` is a minimal tool-using agent: a fixed, safe causal toolset (`preview`,
-`correlate`, `regress`, and `discover` — PC causal discovery, the tool a practitioner would actually reach
-for; no arbitrary code execution, so there is no sandboxing surface beyond validating column names) plus a
-model-agnostic tool-calling loop. The agent never sees the raw table in its prompt;
-it must call a tool to learn anything about the data, then answer:
-
-`discover` needs the separate `discovery` extra (causal-learn). Install it for any run whose numbers you
-intend to report — without it the tool returns an error to the agent and the run still completes, at
-depressed and non-comparable scores. `scripts/run_eval.py` preflights the import and refuses to start
-rather than degrade silently.
-
-```python
-from causalagentbench import generate_gated_procedural, build_instance
-from causalagentbench.agent.clients import LiteLLMClient      # needs the `generation` extra + an LLM key
-from causalagentbench.agent.eval import run_evaluation, driver_cells, semantic_contrasts
-
-instances = []
-for seed in range(5):
-    scm, report = generate_gated_procedural(seed)
-    instances.append(build_instance(scm, report.data, seed=seed))
-
-scores = run_evaluation(instances, LiteLLMClient(model="anthropic/claude-opus-4-8"))
-for cell in driver_cells(scores):   # identification / estimation per (identifiability x naming) cell
-    print(cell)
-
-# The result: does the model use correct names, and reject misleading ones? Measured on the drivers whose
-# effect the data provably cannot settle, paired within SCM. Run it again with identifiable=True for the
-# negative control - see `SemanticContrast` for the pre-registered reading of the pair.
-keyed = list(zip([key for _instance, key in instances], scores, strict=True))
-print(semantic_contrasts(keyed, identifiable=False))
-```
-
-Or from the CLI:
-
-```bash
-uv run python scripts/run_eval.py --model anthropic/claude-opus-4-8 -n 5
-```
-
-For a comparable multi-model sweep, use one frozen, non-empty dataset and pass the LiteLLM model IDs as a
-comma-separated list. Every model is evaluated sequentially on exactly the same SCMs and naming conditions;
-the JSONL output is flushed after every model call, instance, and model summary so an interrupted run retains
-completed work:
-
-```bash
-uv sync --extra generation --extra discovery
-uv run python scripts/build_testset.py --config configs/testset_v1.yaml --out outputs/my_testset
-uv run python scripts/run_eval.py \
-  --dataset outputs/my_testset \
-  --models openai/gpt-5,anthropic/claude-opus-4-8 \
-  --max-turns 20 \
-  --out outputs/litellm_eval_results.jsonl
-```
-
-LiteLLM selects credentials from the model prefix (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and so on) in
-`.env`; this evaluation path does not use Databricks credentials or the Databricks client. `--model` remains
-available for a one-model run. With `--dataset`, `-n` selects approximately that many instances while keeping
-the full paired naming-condition set for each selected SCM together.
-
-For an `openrouter/...` model ID, LiteLLM sends the request through OpenRouter and charges the OpenRouter
-account identified by `OPENROUTER_API_KEY`; LiteLLM itself is only the client library. The default
-`--temperature 0 --sampling-seed 0` and a stable per-model OpenRouter session keep a multi-turn run
-reproducible as far as the provider permits. Override the session namespace with
-`--openrouter-session-prefix experiment-42` when intentionally separating routing experiments.
-
-### The scripted baseline (no LLM, no API calls)
-
-The control that says what the benchmark is a benchmark *of*. It runs the textbook pipeline — PC, read the
-adjustment set off the CPDAG, regress — through the same answer contract and the same scorer a model goes
-through, so the comparison cannot drift:
-
-```bash
-uv run python scripts/run_scripted_baseline.py --dataset outputs/testset_v2
-```
-
-It reports both readings of every edge PC leaves undirected (adjust for the ambiguous neighbour, or don't),
-since no data can choose between them — that choice is exactly what the naming axis probes. It also prints a
-naming control: the script cannot read column names, so its Gain and Harm must come out at exactly `0.0000`.
-A non-zero value there would mean the *pipeline* leaks naming into the score and would invalidate any
-contrast measured on a model. Run it before reporting model numbers.
-
-For full request/response observability, add `--transcript-out` with a different JSONL path. It writes one
-record per model call, including the system and user messages, tool schemas, previous tool results, returned
-text/tool calls, token counts, and LiteLLM's cost estimate. Treat this file as sensitive run data and do not
-commit it:
-
-```bash
-uv run python scripts/run_eval.py \
-  --model openrouter/meta-llama/llama-3.3-70b-instruct \
-  -n 1 --max-turns 3 \
-  --out outputs/llama_metrics.jsonl \
-  --transcript-out outputs/llama_transcript.jsonl
-```
-
-When a model stops without a syntactically valid `<answer>` block, the agent makes one additional tool-free
-formatting repair request. A valid answer, regardless of its score, is never retried; the repair is one extra
-model call and is included in the run's cost total.
-
-Every `model_summary` record includes the evaluation configuration, final `estimated_cost_usd`, and the
-number of successfully scored and provider-failed instances. A provider failure is written as an
-`instance_error` record and excluded from score averages, rather than being reported as a parse failure.
-
-Alongside `summaries` (per naming-alignment level, one row per instance), each `model_summary` carries
-`driver_cells`: the same run pooled at *driver* grain, crossing alignment with whether a driver's effect is
-identifiable from data at all — so a failure on a driver the data cannot resolve is no longer averaged
-together with one it can. Each instance record also keeps raw per-driver rows under `drivers`, so a
-completed run can be re-sliced offline without re-running it.
-
-For a fast provider smoke comparison without building names, omit `--dataset`; one generated abstract-label
-batch is shared by every model in that invocation:
-
-```bash
-uv run python scripts/run_eval.py \
-  --models openai/gpt-5,anthropic/claude-opus-4-8 \
-  -n 5 \
-  --out outputs/litellm_smoke_results.jsonl
-```
-
-`DatabricksClient` (same module) is a second `ToolCallingClient`, for comparing against a model served
-behind a Databricks AI Gateway — not part of the default path above; needs `uv sync --extra databricks`
-plus `DATABRICKS_TOKEN` + `DATABRICKS_HOST` in `.env` (see `.env.example`):
-
-```python
-from causalagentbench.agent.clients import DatabricksClient
-scores = run_evaluation(instances, DatabricksClient(model="databricks-claude-opus-4-7"))
-```
-
-`run_agent`/`run_evaluation` take any `ToolCallingClient` (a tiny `Protocol`), so a stub client with no
-network drives the loop's own tests — see `tests/agent/`.
+Use `make_task(seed, labeler=labeler)` directly when you need the public instance and evaluator key.
 
 ## Development
 
 ```bash
-uv run ruff check .          # lint
-uv run ruff format .         # format
-uv run mypy src              # strict type check
+uv sync --all-extras
+uv run pytest
+uv run ruff check .
+uv run mypy src
 ```
 
-## Layout
+The tests cover source-edge grounding, generation, exact effects, answer validation, scoring, tools,
+episode budgets and termination, serialization, CLI output, and provider-error handling. No live API calls
+are needed. Provider-specific tests need the optional SDKs installed by `--all-extras`.
 
-```
-src/causalagentbench/
-  types.py          Role, Scaffold, SCM — the shared domain vocabulary
-  config.py         GeneratorConfig
-  smoke.py          acceptance-rate / gate-statistics report
-  scm/              build & simulate the hidden SCM
-    gadgets.py        the gadget catalog + procedural_scaffold (a fresh topology per seed)
-    identifiability.py  CPDAG/Meek-rule discovery of which edges data alone cannot orient
-    generate.py       UUMC structural generation (unit-variance, neutral sortability)
-    target_effects.py direct construction of driver effects, mediated shares, confounding margins
-    effects.py        total-effect matrix τ and marginal covariance Σ
-    sample.py         draw a data table from an SCM
-    sortability.py    varsortability / R²-sortability diagnostics
-  task/             the agent-facing interface
-    instance.py       Instance (public) / InstanceKey (hidden) + prompt
-    labeling.py       Labeler seam + abstract-label placeholder
-    answer.py         the Pydantic Answer contract + parser
-    dataset.py        load a pre-built dataset back into (Instance, InstanceKey) pairs
-  scoring/          verification against the hidden SCM
-    gates.py          soundness gates + the construct-then-gate generator
-    baselines.py      oracle / correlation / full-adjustment reference solvers
-    metrics.py        ranking metrics (Kendall-τ)
-    score.py          score an agent's Answer against the hidden SCM; reference policies
-  generation/       optional, LLM-backed naming (needs the `generation` extra)
-    grounding.py      CauseNet dump loading + role-candidate menu sampling
-    labeler.py        propose → critique → revise naming triples; construct the alpha grid
-    clients.py        provider-agnostic LLM seam (LiteLLM default)
-    config.py         versioned build configuration
-  agent/            a minimal tool-using agent
-    tools.py          the fixed causal toolset (preview, correlate, regress, discover)
-    loop.py           model-agnostic tool-calling loop (ToolCallingClient Protocol)
-    clients.py        the real LiteLLM-backed ToolCallingClient (needs the `generation` extra)
-    eval.py           batch the loop over instances; aggregate scores by naming alignment
-```
-
-Tests mirror this layout under `tests/{scm,task,scoring,generation,agent}/`.
-
-## Design docs
-
-The design rationale lives in the code: every threshold, gate and construction step carries a docstring
-explaining why it holds the value it does and what was measured to choose it. Start at
-`scm/target_effects.py` (how effects are constructed), `scoring/gates.py` (what an instance must prove),
-and `scoring/score.py` (how an answer is graded).
-
-`backlog.md` is the living record of open design questions and known characteristics — read it before
-extending the SCM/naming/scoring layers.
-
-License: Apache-2.0.
+Code is Apache-2.0. CauseNet-derived example data is CC BY 4.0; see [data/README.md](data/README.md).

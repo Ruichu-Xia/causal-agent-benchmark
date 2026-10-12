@@ -8,7 +8,6 @@ column names.
 import pytest
 
 from causalagentbench import build_instance, sample
-from causalagentbench.agent.eval import naming_result
 from causalagentbench.scoring.gates import generate_gated_procedural
 from causalagentbench.scoring.scripted_agent import AmbiguityPolicy, scripted_answer, scripted_scores
 from causalagentbench.task.answer import validate_answer_contract
@@ -109,18 +108,3 @@ def test_the_script_is_blind_to_the_column_names():
     skins = [_renamed(*base, alignment, prefix) for alignment, prefix in ((1.0, "aa"), (-1.0, "bb"), (None, "cc"))]
     scores = scripted_scores(skins, policy=AmbiguityPolicy.EXCLUDE)
     assert len({round(s.overall, 12) for s in scores}) == 1
-
-
-def test_naming_contrasts_on_the_script_are_exactly_zero():
-    """The same control expressed through the metric the result is actually reported in."""
-    scm, _ = generate_gated_procedural(0)
-    data = sample(scm, 200, seed=0)
-    base = build_instance(scm, data, seed=0)
-    skins = [_renamed(*base, alignment, prefix) for alignment, prefix in ((1.0, "aa"), (-1.0, "bb"), (None, "cc"))]
-    scores = scripted_scores(skins, policy=AmbiguityPolicy.EXCLUDE)
-    keyed = [(k, s) for (_i, k), s in zip(skins, scores, strict=True)]
-    for metric in ("identification", "estimation"):
-        row = naming_result(keyed, metric, identifiable=False)
-        assert row.correctness.delta == pytest.approx(0.0, abs=1e-12)
-        assert row.gain.delta == pytest.approx(0.0, abs=1e-12)
-        assert row.harm.delta == pytest.approx(0.0, abs=1e-12)

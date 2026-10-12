@@ -1,31 +1,7 @@
-"""A provider-agnostic tool-calling loop over the causal toolset.
+"""A bounded, provider-independent loop over the benchmark's statistical tools.
 
-``ToolCallingClient`` abstracts one model turn (messages + tool schemas in, a text reply or tool calls
-out) behind a tiny ``Protocol``, so ``run_agent`` is fully testable with a stub - no network, no API key -
-the same seam pattern as ``generation.clients.LabelProposer``. ``LiteLLMClient`` is the real
-implementation, reaching any provider LiteLLM supports via native function calling.
-
-The agent never sees the raw data table: it must call ``preview``/``correlate``/``regress`` to learn
-anything about it, which is the point of a tool-using agent rather than a single-shot prompt.
-
-Three limits bound a run, doing deliberately different jobs. ``MAX_TOOL_CALLS`` bounds *investigation* in
-the unit the task is made of - evidence gathered. ``MAX_TURNS`` bounds *round trips*, which is what a run
-actually costs: tool calls are local numpy computations that cost nothing, while every turn replays the
-whole message history (measured here: ~93% of all tokens a run spends are resent prompt tokens).
-``MAX_TOKEN_BUDGET`` is the backstop under both, in case context grows in a way neither anticipates.
-
-The two the agent controls - calls and turns - are *told to it* and counted down after every batch of
-results (``_budget_notice``), so it can pace itself instead of being cut off mid-investigation. They also
-interact on purpose: spending the full call budget within the turn budget requires batching independent
-calls, which is the behaviour that actually makes a run cheaper. A model that issues one call per turn
-runs out of turns first, and that is the intended pressure rather than a defect.
-
-An earlier revision dropped the turn cap on the theory that it unfairly penalises models that batch less.
-That was true while nothing told models they *could* batch; once the system prompt says so, the measured
-penalty largely disappears (the smaller model moved from 1.82 to 2.52 calls per turn on being told), and
-direct comparison showed the extra turns bought almost nothing: instances allowed past the old 20-turn cap
-improved by +0.054 against +0.031 for those that never reached it - a difference well inside noise at that
-sample size, with one instance scoring identically on 28 turns and 48 calls as it had on 16 turns and 21.
+The model receives a prompt and tool schemas. Tool results are appended to its history until submission
+or budget exhaustion. One tool-free format repair is allowed; hidden scores never enter the conversation.
 """
 
 from __future__ import annotations
@@ -42,50 +18,13 @@ from causalagentbench.task.answer import AnswerParseError, parse_answer_for_inst
 from causalagentbench.task.instance import Instance
 
 MAX_TOOL_CALLS = 100
-"""Investigation guardrail: tool calls an agent may execute on one instance before its answer is forced.
-
-Set from the *solved-run* distribution, since that is the population a guardrail must not censor. Measured
-across two models on the shipped generator, no run scoring >=0.6 ever exceeded **74** tool calls, and
-nothing above that ever produced a solved run at all - the least efficient run observed (82 calls) scored
-a mediocre 0.580, and the largest (97) scored 0.431. High call counts track floundering, not thoroughness:
-within a model, calls and score correlate *negatively* (-0.68 for the smaller model, -0.10 for the
-larger). 100 leaves ~35% headroom over the worst solved run while still cutting off an agent that is
-plainly not converging.
-
-Deliberately not tuned tighter. This is a guardrail, not a scored constraint - if it starts binding on
-runs that would otherwise succeed, the efficiency numbers it produces become right-censored and the
-comparison it was meant to make fair is corrupted instead."""
+"""Maximum executed tool attempts per task, including invalid requests."""
 
 MAX_TURNS = 25
-"""Round-trip budget: model replies on one instance before the answer is forced.
-
-The cost instrument, because a turn is what costs money - each one replays the entire message history,
-and resent prompt tokens are ~93% of everything a run spends, while the tool calls themselves are local
-computations costing nothing. Capping turns therefore bounds both spend and wall clock in the unit they
-are actually denominated in.
-
-25 from the observed distribution, not preference. Uncapped, the smaller model's turn counts across 15
-instances were 8-30 (median 16); a 25-turn cap truncates 2 of those 15, and those two gained +0.000 and
-+0.062 from the turns past it. Tighter caps get expensive fast - 20 truncates 5/15, 15 truncates 9/15 -
-and looser ones stop binding at all (30 truncates none).
-
-Interacts with ``MAX_TOOL_CALLS`` by design: 100 calls across 25 turns needs 4 calls per turn, above what
-any model here batches unprompted, so the turn budget is what makes batching worth doing. The agent is
-told both budgets and both remaining counts, so this is a constraint it can plan against rather than one
-that ambushes it."""
+"""Maximum model replies before a forced answer, excluding the optional format repair."""
 
 MAX_TOKEN_BUDGET = 600_000
-"""Backstop guardrail: prompt + completion tokens for one instance before the answer is forced.
-
-Sits under the call and turn budgets for the case neither anticipates - context that grows faster than
-turn count suggests. Unlike those two it is *not* announced to the agent, because it is set not to bind:
-measured per instance on the shipped generator, ~186-189k tokens median for both models tested and 426k at
-the observed maximum, against a 600k limit.
-
-Prompt tokens are counted, not just completion tokens: the message history is resent every turn, so it is
-the larger and faster-growing half of what a long run actually costs. Clients that do not report usage
-contribute nothing here and are governed by ``MAX_TOOL_CALLS`` alone - a budget cannot be enforced on a
-quantity the provider declines to measure."""
+"""Prompt-plus-completion token backstop; enforced when the provider reports usage."""
 
 _SYSTEM_PROMPT = (
     "You are a careful causal data scientist. Dataset values are not in the messages - call the provided "
@@ -95,21 +34,6 @@ _SYSTEM_PROMPT = (
     "batch calls that do not depend on each other's results. Both remaining counts follow each batch of "
     "results; when either runs out you must answer immediately, from whatever you have."
 )
-"""Fixed instructions prepended to every instance. Kept terse deliberately: it is resent on every turn, and
-resent prompt tokens are ~93% of what a run costs.
-
-The batching clause is the largest cost instrument available. Tool calls here are local numpy computations
-that cost nothing; a *turn* costs a full replay of the message history. Measured on real runs, the same
-investigation batched at 3.5 calls/turn instead of 1.8 would have cost ~48% less, and models differ
-several-fold in whether they batch unprompted - so stating it also removes an accidental advantage for the
-ones that already knew. It is scoped to *independent* calls on purpose: an instruction to batch
-unconditionally would push a model to fire off uninformed parallel calls instead of letting each result
-inform the next query, trading investigation quality this benchmark scores for cost it does not.
-
-Why the turn budget is explained by its *cost rule* ("a reply spends one turn however many calls it
-carries") rather than by naming a number: the rule is what makes batching worth doing, and the numbers
-themselves arrive with every batch of results anyway (``_budget_notice``)."""
-
 _FINAL_TURN_REMINDER = (
     "This is your final turn - no further tool calls are possible. You must give your complete final "
     "answer now, as a single <answer>...</answer> JSON block per the instructions above. Your reply has a "
@@ -153,7 +77,7 @@ def _budget_notice(calls_used: int, call_limit: int, turns_used: int, turn_limit
 
 _FORMAT_REPAIR_REMINDER = (
     "Your previous reply was not a valid final answer. Do not call any tools. Reply now with only one "
-    "<answer>...</answer> block containing JSON that exactly follows the requested verdicts and ranking shape."
+    "<answer>...</answer> block containing JSON that exactly follows the requested verdicts shape."
 )
 """Sent once after a tool-free reply fails the public answer contract.
 

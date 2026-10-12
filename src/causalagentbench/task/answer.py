@@ -1,20 +1,4 @@
-"""The agent's answer contract.
-
-A minimal, validated deliverable: per candidate driver an adjustment set, an estimate of its total causal
-effect, and a judgement of whether the data alone settles that effect. The agent emits this as JSON inside
-an ``<answer>...</answer>`` block; ``parse_answer`` extracts and validates its JSON shape.
-``validate_answer_contract`` then checks the public instance contract (every displayed candidate exactly
-once, an effect estimate on every one) without consulting any hidden causal ground truth.
-
-There is deliberately **no way to decline a driver**. An abstention option let the agent choose its own
-denominator on three metrics at once, and made the correct answer depend on the column names - the very
-thing the naming axis is supposed to vary independently. Uncertainty is now expressed by
-``identifiable_from_data``, which is a judgement about the data rather than a refusal to answer, so it is
-gradeable on every driver in every naming condition.
-
-The ranking the task asks for is derived from those estimates rather than stated separately - see
-``Answer``.
-"""
+"""Validated answers: one adjustment set and finite signed effect per candidate."""
 
 from __future__ import annotations
 
@@ -30,41 +14,19 @@ class AnswerParseError(ValueError):
 
 
 class DriverVerdict(BaseModel):
-    """The agent's adjustment set and effect estimate for one candidate driver, or an abstention.
+    """An adjustment set and signed total-effect estimate for one candidate."""
 
-    ``effect`` is the estimated total causal effect, and it is what makes the deliverable gradeable beyond a
-    shortcut. Measured on the generator: blind policies (marginal correlation, adjust-for-everything) rank
-    the drivers at tau 0.68-0.78 but estimate them ~25% of a typical effect away, while correct adjustment
-    recovers the truth exactly. An order alone cannot separate those; a number can.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     driver: str
     adjustment_set: tuple[str, ...] = ()
     effect: float | None = None
     identifiable_from_data: bool | None = None
-    """Whether the *data alone* pins this driver's effect down, independent of what the columns are called.
-
-    A judgement, not a refusal: the agent still owes an ``effect`` either way. Identifiability is a property
-    of the graph, so this is well defined - and scored against the same driver population - in every naming
-    condition, which an abstention was not (measured: n=0 gold-abstain drivers at alpha=+1 against n=20 at
-    alpha=-1, so half the design had nothing to grade).
-
-    ``None`` means the agent did not judge, and counts against it in the pooled precision/recall - otherwise
-    omitting the field would be free.
-    """
+    """Optional legacy diagnostic, not requested or rewarded in the default task."""
 
 
 class Answer(BaseModel):
-    """The agent's full deliverable for one instance.
-
-    No separate ranking field: the ranking is *derived* from the per-driver ``effect`` estimates
-    (``scoring/score.py::_ranking_tau``). A separately stated order could be produced by ranking on raw
-    correlation - the measured tau=+0.627 shortcut - independently of the estimates, so scoring it as its own
-    deliverable left the ranking metric reachable without causal reasoning. Deriving it means ranking credit
-    can only be earned through the estimates, which no blind policy gets right.
-    """
+    """Signed total-effect estimates and the adjustment sets used to obtain them."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -101,7 +63,7 @@ def validate_answer_contract(
     if len(verdict_labels) != len(candidate_drivers) or set(verdict_labels) != expected:
         raise AnswerParseError("verdicts must contain every candidate driver exactly once")
     for verdict in answer.verdicts:
-        # The ranking is derived from these, so a driver without one has no position to hold.
+        # Every candidate contributes to the estimation objective.
         if verdict.effect is None:
             raise AnswerParseError("every driver must carry an effect estimate")
     if columns is not None:

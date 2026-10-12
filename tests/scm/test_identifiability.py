@@ -23,7 +23,7 @@ _EXAMPLE = Scaffold(
 
 
 def test_example_has_exactly_the_known_unoriented_edges():
-    """backlog.md §4: C-A, A-M, and C-Dz are unresolvable from data alone; nothing else in the example is."""
+    """C-A, A-M, and C-Dz are unresolvable from data alone; nothing else in the example is."""
     assert unoriented_edges(_EXAMPLE) == frozenset({("C", "A"), ("A", "M"), ("C", "Dz")})
 
 

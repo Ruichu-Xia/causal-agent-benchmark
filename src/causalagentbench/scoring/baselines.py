@@ -80,8 +80,8 @@ def normalized_effect_error(scm: SCM, estimates: dict[str, float]) -> float:
     driver first, which agreed only while nothing clipped - measured to disagree (0.554 vs 0.471) as soon as
     one driver did.
 
-    Clipped per driver so a single absurd estimate cannot swamp an instance, and so 1.0 has a fixed meaning:
-    "no better than asserting no effect".
+    Clipped per driver so a single absurd estimate cannot swamp an instance. Loss 1 means every error
+    reaches the task's effect scale; predicting zero can have lower loss, especially on zero-effect candidates.
     """
     scale = effect_scale(scm)
     errors = [min(abs(estimates[d] - scm.total_effect_on_outcome(d)) / scale, 1.0) for d in scm.scaffold.drivers]
