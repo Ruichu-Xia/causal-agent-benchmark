@@ -1,175 +1,128 @@
+import inspect
+
 import numpy as np
 import pytest
 
-from causalagentbench import sample
-from causalagentbench.scm.identifiability import unidentifiable_drivers, unoriented_edges
-from causalagentbench.scm.target_effects import MIN_MEDIATED_SHARE
-from causalagentbench.scoring.baselines import (
-    correlation_effects,
-    full_adjustment_effects,
-    oracle_effects,
-    population_coefficient,
-    ranking,
-    shortcut_effects,
-)
+from causalagentbench.scm.generate import draw_correlation
+from causalagentbench.scm.identifiability import equivalence_class, name_critical_candidates
+from causalagentbench.scoring import gates
 from causalagentbench.scoring.gates import (
-    ORACLE_TAU_THRESHOLD,
-    SHORTCUT_ERROR_THRESHOLD,
-    _has_balanced_identifiability,
-    generate_gated_procedural,
+    MIN_TOTAL_EFFECT,
+    GateReport,
+    attempt,
+    capped_error,
+    evaluate_gates,
+    generate_scm,
 )
-from causalagentbench.scoring.metrics import kendall_tau
 from causalagentbench.types import Role, Scaffold
 
-SEEDS = list(range(20))
-#: Curated, not just range(5): each of these is verified to have at least one decoy, which the "naive
-#: correlation gets fooled" assertion below needs - procedural composition can legitimately draw zero
-#: decoys (`DECOY_COUNT_RANGE`), and plain range(5) doesn't guarantee that under the current RNG sequence.
-PROCEDURAL_EMPIRICAL_SEEDS = [1, 4, 6, 10, 14]
-LARGE_N = 20_000
+GATES = ("structure", "names_matter", "no_shortcut", "decoy_tempting", "effect_scale", "orientable")
 
 
-@pytest.mark.parametrize("seed", SEEDS)
-def test_gated_procedural_instance_passes_every_gate(seed):
-    _, report = generate_gated_procedural(seed)
-    assert report.passed
-    assert report.structure_valid
-    assert report.confounding_realized
-    assert report.mediation_realized
-    assert report.shortcut_defeated
-    assert report.oracle_recovers
-    assert report.min_shortcut_error >= SHORTCUT_ERROR_THRESHOLD
+def _report(**gate_values) -> GateReport:
+    """A report with every gate passing unless overridden."""
+    fields = dict.fromkeys(GATES, True) | gate_values
+    return GateReport(**fields, class_size=1, name_critical=(), min_shortcut_error=0.5, min_orientation_margin=0.5)
 
 
-@pytest.mark.parametrize("seed", SEEDS)
-def test_the_true_ranking_is_recoverable_on_every_accepted_instance(seed):
-    """Ranking the drivers is the task's deliverable, so an order no analyst could recover is ill-posed.
-
-    Not a claim that ranking is easy - on the accepted set the oracle reaches tau 0.934 while blind marginal
-    correlation manages 0.367. It is a claim that the question has an answer at the published sample size.
-    """
-    _, report = generate_gated_procedural(seed)
-    assert report.oracle_tau >= ORACLE_TAU_THRESHOLD
+def test_passed_requires_every_gate():
+    assert _report().passed
+    for gate in GATES:
+        assert not _report(**{gate: False}).passed
 
 
-@pytest.mark.parametrize("seed", SEEDS)
-def test_correct_adjustment_is_exact_at_the_population_level(seed):
-    """The claim the shortcut gate rests on: with a correct backdoor set there is nothing left to estimate.
-
-    ``SHORTCUT_ERROR_THRESHOLD`` certifies a *gap* between what correct adjustment achieves and what a blind
-    policy achieves. That gap is only meaningful if the oracle end of it is pinned at zero rather than
-    merely small - otherwise the threshold would be comparing two noisy quantities.
-    """
-    scm, _ = generate_gated_procedural(seed)
-    for driver in scm.scaffold.drivers:
-        estimate = population_coefficient(scm, driver, scm.scaffold.correct_adjustment.get(driver, ()))
-        assert abs(estimate - scm.total_effect_on_outcome(driver)) < 1e-9
+def test_capped_error_pools_capped_absolute_errors():
+    truth = {"a": 0.2, "b": -0.5}
+    assert capped_error({"a": 0.5, "b": 3.0}, truth) == pytest.approx((0.3 + 1.0) / 0.7)
+    assert capped_error(dict.fromkeys(truth, 0.0), truth) == pytest.approx(1.0)
+    assert capped_error(truth, truth) == 0.0
 
 
-@pytest.mark.parametrize("seed", PROCEDURAL_EMPIRICAL_SEEDS)
-def test_population_coefficient_matches_a_large_sample_regression(seed):
-    """``population_coefficient`` reads the same quantity off ``sigma`` that OLS estimates from a table.
-
-    Guards the substitution the gate depends on - it runs the blind panel closed-form, before sampling, so
-    a drift between the two would silently gate on a different quantity than the one being claimed.
-    """
-    scm, _ = generate_gated_procedural(seed)
-    data = sample(scm, LARGE_N, seed=seed)
-    sampled = correlation_effects(data, scm)
-    for driver in scm.scaffold.drivers:
-        assert abs(population_coefficient(scm, driver) - sampled[driver]) < 0.05
+def test_evaluate_gates_takes_no_true_graph():
+    """The gates see the motif, sigma and the class; the drawn member never reaches them."""
+    assert list(inspect.signature(evaluate_gates).parameters) == ["motif", "sigma", "members"]
 
 
-@pytest.mark.parametrize("seed", SEEDS)
-def test_every_blind_policy_estimates_every_driver(seed):
-    """Key-space contract: the gate indexes each policy by driver, so a missing one must be a loud failure."""
-    scm, _ = generate_gated_procedural(seed)
-    expected = set(scm.scaffold.drivers)
-    panel = shortcut_effects(scm)
-    assert set(panel) == {"correlation", "full_adjustment", "candidate_adjustment"}
-    for estimates in panel.values():
-        assert set(estimates) == expected
+def _spied_attempt(monkeypatch, seed: int):
+    """Run ``attempt`` and also return the exact inputs it handed to ``evaluate_gates``."""
+    calls = []
+
+    def spy(motif, sigma, members):
+        """Record the gate inputs, then evaluate them for real."""
+        calls.append((motif, sigma, members))
+        return evaluate_gates(motif, sigma, members)
+
+    monkeypatch.setattr(gates, "evaluate_gates", spy)
+    scm, report = attempt(np.random.SeedSequence(seed))
+    [(motif, sigma, members)] = calls
+    return scm, report, motif, sigma, members
 
 
-@pytest.mark.parametrize("seed", PROCEDURAL_EMPIRICAL_SEEDS)
-def test_procedural_oracle_recovers_truth_but_naive_shortcuts_fail(seed):
-    scm, _ = generate_gated_procedural(seed)
-    data = sample(scm, LARGE_N, seed=seed)
-    truth = scm.true_ranking()
-
-    # The oracle (correct adjustment sets) recovers the true ranking - matching the gate's own bar
-    # (tau >= ORACLE_TAU_THRESHOLD), not exact equality: the gate only guarantees a *minimum* effect gap,
-    # not a wide one, so two adjacent drivers can legitimately sit close enough that finite-sample noise
-    # occasionally swaps their estimated order even at a large sample size, without tau dropping below it.
-    oracle = oracle_effects(data, scm)
-    drivers = scm.scaffold.drivers
-    true_effects = [abs(scm.total_effect_on_outcome(d)) for d in drivers]
-    oracle_estimates = [abs(oracle[d]) for d in drivers]
-    assert kendall_tau(true_effects, oracle_estimates) >= ORACLE_TAU_THRESHOLD
-    # ...while the "no adjustment" shortcut (raw correlation) mis-ranks (the decoy fools it).
-    assert ranking(correlation_effects(data, scm)) != truth
-    # ...and the "adjust for everything" shortcut biases a mediated driver (mediator trap). No slot is
-    # special-cased anymore (§11), but the gate's guaranteed resolved-but-confounded driver is always
-    # `confounded`/`multi_confounder` archetype (never `instrumented`, which has no adjustment set to be
-    # non-empty) - both of those archetypes have a mediator, so at least one always exists.
-    mediated_drivers = [d for d in scm.scaffold.drivers if scm.scaffold.mediator_of(d) is not None]
-    assert mediated_drivers
-    mediated_driver = mediated_drivers[0]
-    full_estimate = full_adjustment_effects(data, scm)[mediated_driver]
-    # Relative, not absolute: the mediated path is now a *share* of the driver's own effect
-    # (`MIN_MEDIATED_SHARE`), so the bias it induces scales with that effect rather than sitting above some
-    # fixed magnitude. Half the guaranteed share, so this tests the guarantee with headroom instead of
-    # restating construction's own arithmetic back to itself.
-    true_effect = scm.total_effect_on_outcome(mediated_driver)
-    assert abs(full_estimate - true_effect) > 0.5 * MIN_MEDIATED_SHARE * abs(true_effect)
+@pytest.mark.parametrize("seed", [0, 3, 5])
+def test_attempt_gates_on_the_motif_and_class_not_the_drawn_member(monkeypatch, seed):
+    scm, report, motif, sigma, members = _spied_attempt(monkeypatch, seed)
+    assert sorted(motif.edges) != sorted(scm.scaffold.edges)  # the drawn member differs from the motif
+    assert tuple(sorted(scm.scaffold.edges)) in members
+    assert members == equivalence_class(motif)
+    assert sigma is scm.sigma
+    assert report == evaluate_gates(motif, sigma, members)
 
 
-def test_gated_procedural_generation_is_deterministic():
-    a, _ = generate_gated_procedural(7)
-    b, _ = generate_gated_procedural(7)
-    assert np.array_equal(a.W, b.W)
+@pytest.mark.parametrize("seed", [0, 3])
+def test_gate_report_is_the_same_whichever_member_represents_the_class(monkeypatch, seed):
+    """Every gate is a function of the class: passing any member in place of the motif changes nothing."""
+    _, report, motif, sigma, members = _spied_attempt(monkeypatch, seed)
+    for edges in members[:10]:
+        member = Scaffold(motif.node_names, motif.roles, edges, motif.drivers, motif.outcome)
+        assert evaluate_gates(member, sigma, members) == report
 
 
-def test_gated_procedural_respects_n_candidates():
-    """`n_candidates` is total task size - decoys included - so the agent sees exactly that many columns."""
-    for n_candidates in (5, 7, 9):
-        scm, report = generate_gated_procedural(0, n_candidates=n_candidates)
-        assert len(scm.scaffold.drivers) == n_candidates
-        assert report.passed
-
-
-def test_gated_procedural_respects_resolve_probability():
-    """resolve_probability survives the full gate/retry loop, not just raw composition."""
-    for seed in range(5):
-        scm, report = generate_gated_procedural(seed, n_candidates=6, resolve_probability=1.0)
-        ambiguous = set(unidentifiable_drivers(scm.scaffold)) & set(scm.scaffold.non_decoy_drivers())
-        assert len(ambiguous) == 1
-        assert report.passed
-
-
-def test_has_balanced_identifiability_rejects_a_lopsided_composition():
-    """A single confounded_driver, with nothing else - ambiguous but nothing resolved.
-
-    The exact shape §11.3's guarantee rules out of `procedural_scaffold`'s real output - tested directly
-    here since composition itself can no longer produce it.
-    """
-    scaffold = Scaffold(
-        node_names=("Y", "C0", "A0", "M0"),
-        roles={"Y": Role.OUTCOME, "C0": Role.CONFOUNDER, "A0": Role.DRIVER_CONFOUNDED, "M0": Role.MEDIATOR},
-        edges=(("C0", "A0"), ("C0", "Y"), ("A0", "M0"), ("A0", "Y"), ("M0", "Y")),
-        drivers=("A0",),
+def test_structure_gate_rejects_a_motif_without_name_critical_candidates():
+    motif = Scaffold(
+        node_names=("B0", "B1", "Y", "O"),
+        roles={"B0": Role.DRIVER_CLEAN, "B1": Role.DRIVER_CLEAN, "Y": Role.OUTCOME, "O": Role.OUTCOME_CHILD},
+        edges=(("B0", "Y"), ("B1", "Y"), ("Y", "O")),
+        drivers=("B0", "B1"),
         outcome="Y",
-        correct_adjustment={"A0": ("C0",)},
     )
-    assert ("C0", "A0") in unoriented_edges(scaffold)  # confirms the setup: genuinely ambiguous
-    assert _has_balanced_identifiability(scaffold) is False
+    members = equivalence_class(motif)
+    report = evaluate_gates(motif, draw_correlation(motif, np.random.default_rng(0)), members)
+    assert report.class_size == 1
+    assert report.name_critical == ()
+    assert not report.structure
+    assert not report.passed
 
 
-def test_every_generated_instance_has_both_an_ambiguous_and_a_resolved_driver():
-    """What §11.3's gate actually guarantees, measured on real accepted instances.
+def test_generate_scm_is_deterministic_for_a_fixed_seed_sequence():
+    a, report_a = generate_scm(np.random.SeedSequence(5))
+    b, report_b = generate_scm(np.random.SeedSequence(5))
+    assert a.scaffold.edges == b.scaffold.edges
+    assert np.array_equal(a.W, b.W)
+    assert np.array_equal(a.sigma, b.sigma)
+    assert report_a == report_b
 
-    Not just trusted from the gate's own logic.
-    """
-    for seed in range(30):
-        scm, _ = generate_gated_procedural(seed)
-        assert _has_balanced_identifiability(scm.scaffold) is True
+
+@pytest.mark.parametrize("seed", range(6))
+def test_generate_scm_returns_an_accepted_scm(seed):
+    scm, report = generate_scm(np.random.SeedSequence(seed))
+    assert report.passed
+    assert all(getattr(report, gate) for gate in GATES)
+    # The scorer's view (the true graph's class) agrees with the gate's view (the motif's class).
+    assert set(name_critical_candidates(scm)) == set(report.name_critical)
+    assert report.class_size == len(equivalence_class(scm.scaffold))
+    truth = [scm.total_effect_on_outcome(d) for d in scm.scaffold.drivers]
+    assert all(abs(t) < 1.0 for t in truth)
+    assert sum(abs(t) for t in truth) >= MIN_TOTAL_EFFECT
+    assert scm.scaffold.roles["O"] is Role.OUTCOME_CHILD
+    assert len(scm.scaffold.drivers) == 5
+    assert report.min_shortcut_error >= gates.SHORTCUT_ERROR_THRESHOLD
+    assert report.min_orientation_margin >= gates.ORIENTATION_MARGIN
+
+
+def test_generate_scm_gives_up_after_max_attempts(monkeypatch):
+    seed = np.random.SeedSequence(0)
+    _, first = attempt(np.random.SeedSequence(0).spawn(1)[0])
+    assert not first.passed  # precondition: this seed's first attempt is rejected
+    monkeypatch.setattr(gates, "MAX_ATTEMPTS", 1)
+    with pytest.raises(RuntimeError, match="no accepted SCM"):
+        generate_scm(seed)

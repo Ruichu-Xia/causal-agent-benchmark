@@ -1,28 +1,25 @@
-"""Procedural scaffold composition: a small catalog of graph fragments, composed per seed.
+"""Motif composition: a small catalog of graph fragments wired into one shared outcome, composed per seed.
 
-Each "gadget" below is a self-contained local pattern contributing one candidate driver (or, for a decoy,
-one candidate that is a trap): a clean driver, a confounded driver, a richer multi-confounder driver, an
-instrumented driver, a collider driver, an M-bias driver, and a decoy. ``procedural_scaffold`` draws a
-random count of drivers and decoys per seed and wires every gadget's terminal edge into one shared outcome
-- the same anchor-based composition CausalDS uses to keep the naming/verbalization problem tractable,
-since a gadget only ever touches the rest of the graph through the shared outcome, never another gadget
-directly.
+Each gadget contributes one candidate:
 
-The collider and M-bias drivers are a different kind of trap from the other four: every other archetype's
-driver needs adjustment (or is trivially clean), and the failure mode being tested is "did you adjust for
-the wrong thing / not enough." These two need *no* adjustment at all, and the failure mode is the opposite:
-adjusting for the wrong thing actively creates bias that correct reasoning would never introduce. See
-``_collider_driver``/``_mbias_driver``.
+* clean: ``B -> Y``.
+* confounded: ``C -> A -> Y``, ``C -> Y``, plus a mediator ``A -> M -> Y``.
+* multi_confounder: the same with two linked confounders.
+* collider: ``A -> Y``, ``A -> Co <- U -> Y``; adjusting for ``Co`` creates bias.
+* mbias: ``V -> A -> Y``, ``V -> Mb <- U -> Y``; adjusting for ``Mb`` creates bias.
+* decoy: ``C -> D`` from an existing confounder, with no path to ``Y``.
 
-No gadget declares whether its confounder/instrument edge is ambiguous - that is discovered separately
-(``scm/identifiability.py``), never assumed here. Whether a driver's ambiguity ends up resolved is also not
-tied to its archetype: any confounder- or instrument-bearing driver can independently get the resolving
-modifier (``_add_upstream_cause``) or not, discovered the same way. Exactly two driver slots are reserved to
-guarantee the composed topology always has both an ambiguous driver and a resolved (identifiable-but-still-
-confounded) driver - constructed directly, not left to a topology-gate retry (the
-original design checked this after the fact and rejected ~32% of raw draws; every
-other driver slot stays fully free, exactly as before). Their *archetype* is still drawn, not declared -
-only which two properties get guaranteed is fixed, never which gadget shape produces them.
+Every task also gets an outcome child ``Y -> O``: adjusting for it biases every estimate (Cinelli, Forney &
+Pearl's "bad control" for a descendant of the outcome).
+
+A confounder-bearing gadget can get two extra exogenous parents of its confounder(s) (``U1 -> C <- U2``).
+That v-structure lets the data orient the confounder edge, so the candidate is confounded but its effect is
+identified from data alone. Without it, the confounder-driver edges stay undirected in the CPDAG, and the
+candidate's effect depends on a direction only the variable names can settle.
+
+The composed graph is the *motif graph* ``G0``. Roles describe positions in ``G0``. The true graph is later
+redrawn uniformly from ``G0``'s Markov equivalence class (``scoring/gates.py``), so a node's causal role in
+the true graph can differ from its motif role.
 """
 
 from __future__ import annotations
@@ -34,280 +31,136 @@ import numpy as np
 from causalagentbench.types import Role, Scaffold, SeedLike
 
 OUTCOME = "Y"
+OUTCOME_CHILD = "O"
 
-#: Stage 0 invariants (mirrors the constants already in ``scoring/gates.py``); migrate to
-#: ``GeneratorConfig`` once tunable difficulty is wired up.
-CANDIDATE_COUNT_RANGE = (4, 9)
-"""Total candidate columns per instance - gadget drivers *plus* decoys, i.e. the task size the agent sees."""
 DECOY_COUNT_RANGE = (1, 2)
-"""Decoys carved out of the candidate budget, never added on top of it.
+"""Decoys per task, carved out of the fixed candidate count so task size never varies."""
 
-At least one, so the correlation trap exists in every instance: measured under the old ``(0, 2)``, 39-42%
-of accepted instances contained no decoy at all, leaving the "a strong correlate can have zero effect"
-lesson absent from two of every five tasks.
+FREE_ARCHETYPES = ("clean", "confounded", "multi_confounder", "collider", "mbias")
 
-Carved out rather than added because task size must not vary with the draw. A varying candidate count makes
-``ranking_tau`` incomparable across instances (its achievable granularity and its chance variance both
-depend on the count) and gives an RL policy a varying action-space size. Varying the *split* instead keeps
-the size fixed while leaving the decoy count unmemorizable."""
-FREE_ARCHETYPES = ("clean", "confounded", "multi_confounder", "instrumented", "collider", "mbias")
-#: Chance that a confounder-/instrument-bearing driver gets its ambiguity resolved (§11.1/§11.2). One coin
-#: flip per driver, not per confounder - a multi-confounder driver's two confounders are always resolved
-#: together, never independently (§11.1: the partial case is real but scores identically to fully ambiguous
-#: under the binary abstain schema, so isn't worth tracking separately).
 RESOLVE_PROBABILITY = 0.25
-#: 0.25 rather than 0.5, chosen so the four quadrants come out equally weighted. This probability sets how
-#: many candidates the data can settle on its own, which is exactly the split between "trust the data" and
-#: "fall back on the name": at 0.25 an instance averages 3.6 unidentifiable and 3.4 identifiable candidates
-#: of 7, giving ~25% in each of `scoring/score.py::Quadrant`'s four cells across the paired naming
-#: conditions. Lower is tempting - 0.0 widens the oracle-vs-data-only margin from 25.7% to 28.9% - but it
-#: shrinks the identifiable half (where "don't be swayed by a misleading name" is tested) to 3.0 of 7 and
-#: drops orientable edges from 72% to 67%, eroding the name-consistency check the whole design rests on.
-#: Acceptance is flat across this range, so the choice costs nothing to generate either way.
+"""Chance that a free confounder-bearing gadget gets the upstream causes that make it data-identified."""
+
+_CONFOUNDED_ARCHETYPES = ("confounded", "multi_confounder")
 
 
 @dataclass(frozen=True)
 class _Gadget:
-    """One composed fragment: its nodes/roles, its edges, and its contributed candidate driver."""
+    """One composed fragment: its nodes/roles, its edges, and its candidate."""
 
     roles: dict[str, Role]
     edges: list[tuple[str, str]]
-    driver: str
-    adjustment: tuple[str, ...]
+    candidate: str
 
 
-def _clean_driver(i: int) -> _Gadget:
+def _clean(i: int) -> _Gadget:
+    """A driver with only a direct edge into the outcome."""
     b = f"B{i}"
-    return _Gadget(roles={b: Role.DRIVER_CLEAN}, edges=[(b, OUTCOME)], driver=b, adjustment=())
+    return _Gadget(roles={b: Role.DRIVER_CLEAN}, edges=[(b, OUTCOME)], candidate=b)
 
 
-def _confounded_driver(i: int) -> _Gadget:
+def _confounded(i: int) -> _Gadget:
+    """A driver with one confounder and one mediator."""
     c, a, m = f"C{i}", f"A{i}", f"M{i}"
     roles = {c: Role.CONFOUNDER, a: Role.DRIVER_CONFOUNDED, m: Role.MEDIATOR}
     edges = [(c, a), (c, OUTCOME), (a, m), (a, OUTCOME), (m, OUTCOME)]
-    return _Gadget(roles=roles, edges=edges, driver=a, adjustment=(c,))
+    return _Gadget(roles=roles, edges=edges, candidate=a)
 
 
-def _multi_confounder_driver(i: int) -> _Gadget:
+def _multi_confounder(i: int) -> _Gadget:
+    """A driver with two linked confounders and one mediator."""
     c1, c2, a, m = f"C{i}", f"C{i}_2", f"A{i}", f"M{i}"
     roles = {c1: Role.CONFOUNDER, c2: Role.CONFOUNDER, a: Role.DRIVER_CONFOUNDED, m: Role.MEDIATOR}
     edges = [
-        (c1, a), (c1, OUTCOME), (c1, c2),  # c1-c2 keeps the collider at `a` shielded, not unshielded
+        (c1, a), (c1, OUTCOME), (c1, c2),  # c1-c2 keeps the collider at `a` shielded
         (c2, a), (c2, OUTCOME),
         (a, m), (a, OUTCOME), (m, OUTCOME),
     ]  # fmt: skip
-    return _Gadget(roles=roles, edges=edges, driver=a, adjustment=(c1, c2))
+    return _Gadget(roles=roles, edges=edges, candidate=a)
 
 
-def _instrumented_driver(i: int) -> _Gadget:
-    z, a = f"Z{i}", f"A{i}"
-    roles = {z: Role.INSTRUMENT, a: Role.DRIVER_CONFOUNDED}
-    edges = [(z, a), (a, OUTCOME)]
-    return _Gadget(roles=roles, edges=edges, driver=a, adjustment=())
-
-
-def _collider_driver(i: int) -> _Gadget:
-    """A driver that needs no adjustment at all, plus a trap for adjusting anyway.
-
-    ``A`` is exogenous (like ``_clean_driver``) with a clean direct effect on ``Y``. ``U`` is a genuine,
-    independent second cause of ``Y`` - structurally a confounder, just of ``{Co, Y}`` rather than of a
-    driver, which is exactly what ``Role.CONFOUNDER``'s existing construction machinery
-    (``target_effects.py::_construct_confounder_edge``) already builds without any change. ``A`` and ``U``
-    both cause ``Co``, an unshielded collider with no children of its own (a pure sink, zero total effect on
-    ``Y`` - it looks like a decoy from that angle, but for a different reason).
-
-    ``A``'s correct adjustment set is empty: the only other route from ``A`` to ``Y`` is
-    ``A -> Co <- U -> Y``, and a collider blocks a path by default rather than opening it. Conditioning on
-    ``Co`` - the naive "it's correlated with both, so adjust for it" move - does the opposite of what
-    adjustment is supposed to do: it *creates* the very confounding the driver never had, contaminating
-    ``A``'s estimate with a fraction of ``U``'s unrelated effect on ``Y``.
-    """
+def _collider(i: int) -> _Gadget:
+    """A clean driver plus a collider shared with an independent cause of the outcome."""
     a, u, co = f"A{i}", f"U{i}", f"Co{i}"
     roles = {a: Role.DRIVER_CLEAN, u: Role.CONFOUNDER, co: Role.COLLIDER}
-    edges = [(a, OUTCOME), (u, OUTCOME), (a, co), (u, co)]
-    return _Gadget(roles=roles, edges=edges, driver=a, adjustment=())
+    return _Gadget(roles=roles, edges=[(a, OUTCOME), (u, OUTCOME), (a, co), (u, co)], candidate=a)
 
 
-def _mbias_driver(i: int) -> _Gadget:
-    """A sharper collider trap: ``Co`` looks confounder-adjacent, but nothing about ``A`` needs fixing.
-
-    ``V`` causes both ``A`` and the collider ``Mb``, but - unlike ``_collider_driver``'s ``U`` - has no edge
-    to ``Y`` at all, so it is not a confounder in any sense: it cannot bias ``A``'s effect through any path
-    that does not first pass through the blocked collider. ``U`` causes ``Mb`` and (via the same
-    ``Role.CONFOUNDER`` construction) ``Y``. The classic "M-bias" configuration (Pearl): ``Mb`` sits between
-    two variables that are each connected to one side of the ``A -> Y`` relationship, so a superficial glance
-    - "something upstream of my driver is linked to something downstream" - misreads it as confounder-like.
-
-    ``A``'s correct adjustment set is empty, exactly as if ``V`` and ``U`` were not there at all - ``A``
-    would need no adjustment even without this whole apparatus. Conditioning on ``Mb`` does not just
-    contaminate a real effect (``_collider_driver``'s failure mode) - it manufactures an association between
-    ``A`` and ``Y`` out of a graph with no other route between them, the sharper form of the same mistake.
-    """
+def _mbias(i: int) -> _Gadget:
+    """A clean driver whose parent and an independent cause of the outcome share a collider (M-bias)."""
     a, v, u, mb = f"A{i}", f"V{i}", f"U{i}", f"Mb{i}"
     roles = {a: Role.DRIVER_CLEAN, v: Role.UPSTREAM_CAUSE, u: Role.CONFOUNDER, mb: Role.COLLIDER}
-    edges = [(v, a), (a, OUTCOME), (v, mb), (u, mb), (u, OUTCOME)]
-    return _Gadget(roles=roles, edges=edges, driver=a, adjustment=())
+    return _Gadget(roles=roles, edges=[(v, a), (a, OUTCOME), (v, mb), (u, mb), (u, OUTCOME)], candidate=a)
 
 
 def _decoy(j: int, confounder: str) -> _Gadget:
+    """A candidate caused by an existing confounder, with no path to the outcome in the motif graph."""
     dz = f"Dz{j}"
-    return _Gadget(roles={dz: Role.DECOY}, edges=[(confounder, dz)], driver=dz, adjustment=(confounder,))
+    return _Gadget(roles={dz: Role.DECOY}, edges=[(confounder, dz)], candidate=dz)
 
 
 _BUILDERS = {
-    "clean": _clean_driver,
-    "confounded": _confounded_driver,
-    "multi_confounder": _multi_confounder_driver,
-    "instrumented": _instrumented_driver,
-    "collider": _collider_driver,
-    "mbias": _mbias_driver,
+    "clean": _clean,
+    "confounded": _confounded,
+    "multi_confounder": _multi_confounder,
+    "collider": _collider,
+    "mbias": _mbias,
 }
 
 
-def _resolvable_targets(archetype: str, i: int) -> tuple[str, ...]:
-    """The node(s) in driver ``i``'s gadget whose incoming edge could be resolved (§11.1).
-
-    The confounder(s) for ``confounded``/``multi_confounder``, the instrument for ``instrumented``; empty
-    for ``clean`` (an exogenous root has nothing to resolve - it's already always identifiable).
-    """
-    if archetype == "confounded":
-        return (f"C{i}",)
-    if archetype == "multi_confounder":
-        return (f"C{i}", f"C{i}_2")
-    if archetype == "instrumented":
-        return (f"Z{i}",)
-    return ()
+def _resolve(gadget: _Gadget, archetype: str, i: int) -> _Gadget:
+    """Give each confounder of a confounded gadget two exogenous, non-adjacent parents."""
+    targets = (f"C{i}",) if archetype == "confounded" else (f"C{i}", f"C{i}_2")
+    roles, edges = dict(gadget.roles), list(gadget.edges)
+    for j, target in enumerate(targets):
+        u1, u2 = f"U{i}_{2 * j + 1}", f"U{i}_{2 * j + 2}"
+        roles |= {u1: Role.UPSTREAM_CAUSE, u2: Role.UPSTREAM_CAUSE}
+        edges += [(u1, target), (u2, target)]
+    return _Gadget(roles=roles, edges=edges, candidate=gadget.candidate)
 
 
-def _add_upstream_cause(gadget: _Gadget, target: str, names: tuple[str, str]) -> _Gadget:
-    """Return ``gadget`` with two new exogenous, non-adjacent parents added to ``target``.
+def procedural_scaffold(seed: SeedLike, n_candidates: int = 5) -> Scaffold:
+    """Compose the motif graph ``G0`` deterministically from ``seed``.
 
-    Gives ``target`` (a confounder or instrument node) its own v-structure - `X1 -> target <- X2`, `X1`/`X2`
-    otherwise unconnected. Ordinary v-structure detection orients both new edges, and Meek rule 1 then
-    forces ``target``'s own edge into the driver as well - resolving
-    it from data alone while the driver stays genuinely confounded (its `correct_adjustment` is unchanged).
-    Never declares this outcome - it's read back off `scm/identifiability.py::unoriented_edges`, exactly as
-    for every other edge.
-    """
-    u1, u2 = names
-    roles = {**gadget.roles, u1: Role.UPSTREAM_CAUSE, u2: Role.UPSTREAM_CAUSE}
-    edges = [*gadget.edges, (u1, target), (u2, target)]
-    return _Gadget(roles=roles, edges=edges, driver=gadget.driver, adjustment=gadget.adjustment)
-
-
-def _force_resolve(gadget: _Gadget, archetype: str, i: int) -> _Gadget:
-    """Unconditionally apply ``_add_upstream_cause`` to every resolvable target in driver ``i``'s gadget.
-
-    One call per driver, not per confounder - a ``multi_confounder`` driver's two confounders are always
-    resolved together (§11.1: the partial, one-of-two-resolved outcome is real but scores identically to
-    fully ambiguous under the binary abstain schema, so isn't worth tracking separately).
-    """
-    for j, target in enumerate(_resolvable_targets(archetype, i)):
-        names = (f"U{i}_{2 * j + 1}", f"U{i}_{2 * j + 2}")
-        gadget = _add_upstream_cause(gadget, target, names)
-    return gadget
-
-
-def _maybe_resolve(
-    gadget: _Gadget, archetype: str, i: int, rng: np.random.Generator, resolve_probability: float
-) -> _Gadget:
-    """Randomly apply ``_force_resolve`` to driver ``i``'s gadget, or don't (``resolve_probability``)."""
-    if not _resolvable_targets(archetype, i) or rng.random() >= resolve_probability:
-        return gadget
-    return _force_resolve(gadget, archetype, i)
-
-
-#: Archetypes eligible for the forced-resolved *and* forced-ambiguous slots alike: only a confounder's
-#: orientation actually changes a driver's identification status (``scm/identifiability.py`` - a
-#: confounder always has its own direct edge into the outcome, so whether it points into the driver or
-#: not determines whether it must be adjusted for). ``instrumented`` is excluded from both: its adjustment
-#: set is always empty and its instrument has no other path to the outcome, so its edge's orientation
-#: never changes the driver's effect or adjustment set either way - forcing it "ambiguous" wouldn't
-#: guarantee anything, and forcing it "resolved" wouldn't produce a "resolved-but-still-confounded" driver.
-#: ``clean`` is excluded from both for the same reason it's excluded from ``FREE_ARCHETYPES``'s resolve
-#: coin flip: already always identifiable, nothing to force either way.
-_RESOLVABLE_CONFOUNDED_ARCHETYPES = ("confounded", "multi_confounder")
-_AMBIGUITY_CAPABLE_ARCHETYPES = _RESOLVABLE_CONFOUNDED_ARCHETYPES
-
-
-def procedural_scaffold(
-    seed: SeedLike, n_candidates: int | None = None, resolve_probability: float = RESOLVE_PROBABILITY
-) -> Scaffold:
-    """Compose a fresh ``Scaffold`` deterministically from ``seed``.
-
-    Two driver slots are reserved: one forced resolved-but-confounded, one forced ambiguous - the
-    guarantee needs, constructed directly instead of checked after the
-    fact and retried (its original design rejected ~32% of raw draws). Every other slot draws its archetype
-    freely from ``FREE_ARCHETYPES`` and, independently, whether its own ambiguity gets resolved
-    (``_maybe_resolve``, at ``resolve_probability``) - not special-cased. Decoys attach to a random
-    already-placed confounder; neither a decoy's identifiability is assumed here - it's discovered
-    afterward, on the composed graph as a whole (a decoy sharing a resolved confounder resolves too, for
-    free, via the same Meek-rule propagation - no separate decoy-resolution mechanism needed).
-
-    ``n_candidates`` is the *total* candidate count the agent sees, decoys included; it defaults to a random
-    value in ``CANDIDATE_COUNT_RANGE`` drawn from ``seed``. Decoys are drawn first and the remainder become
-    gadget drivers, so fixing ``n_candidates`` fixes task size exactly while the decoy count still varies.
-    Must leave at least 2 gadget drivers - one slot for each reserved guarantee - so the minimum is
-    ``DECOY_COUNT_RANGE[1] + 2``.
-
-    ``resolve_probability`` only affects the free slots - the two reserved ones are always forced either
-    way, so the "at least one ambiguous, one resolved" guarantee holds at any value. ``0.0``/``1.0`` push
-    every free slot to the same extreme (mostly ambiguous / mostly resolved) for a controlled ambiguity
-    sweep; the default is ``RESOLVE_PROBABILITY`` (0.25) - see that constant's docstring for how the value
-    was chosen.
+    Two driver slots are reserved: one confounded gadget left unresolved (its effect depends on an
+    orientation only names can settle) and one resolved (confounded but identified from data). The other
+    slots draw an archetype from ``FREE_ARCHETYPES`` and are resolved with ``RESOLVE_PROBABILITY``. Decoys
+    attach to a random confounder. ``n_candidates`` counts drivers plus decoys.
     """
     minimum = DECOY_COUNT_RANGE[1] + 2
-    if n_candidates is not None and n_candidates < minimum:
-        raise ValueError(
-            f"n_candidates must be at least {minimum} - up to {DECOY_COUNT_RANGE[1]} decoys plus one "
-            f"forced-ambiguous and one forced-resolved driver (§11.3), got {n_candidates}"
-        )
-    if not 0.0 <= resolve_probability <= 1.0:
-        raise ValueError(f"resolve_probability must be in [0, 1], got {resolve_probability}")
+    if n_candidates < minimum:
+        raise ValueError(f"n_candidates must be at least {minimum}, got {n_candidates}")
     rng = np.random.default_rng(seed)
-    if n_candidates is None:
-        n_candidates = int(rng.integers(CANDIDATE_COUNT_RANGE[0], CANDIDATE_COUNT_RANGE[1] + 1))
-    # Decoys first, drivers from what is left: the total is what must stay fixed, not the split.
     n_decoys = int(rng.integers(DECOY_COUNT_RANGE[0], DECOY_COUNT_RANGE[1] + 1))
-    n_gadget_drivers = n_candidates - n_decoys
-
-    resolved_slot, ambiguous_slot = (int(x) for x in rng.choice(n_gadget_drivers, size=2, replace=False))
+    n_drivers = n_candidates - n_decoys
+    resolved_slot, ambiguous_slot = (int(x) for x in rng.choice(n_drivers, size=2, replace=False))
 
     gadgets = []
-    for i in range(n_gadget_drivers):
-        if i == resolved_slot:
-            archetype = str(rng.choice(_RESOLVABLE_CONFOUNDED_ARCHETYPES))
-            gadget = _force_resolve(_BUILDERS[archetype](i), archetype, i)
-        elif i == ambiguous_slot:
-            archetype = str(rng.choice(_AMBIGUITY_CAPABLE_ARCHETYPES))
-            gadget = _BUILDERS[archetype](i)  # left untouched - ambiguous by construction (§11.0)
+    for i in range(n_drivers):
+        if i in (resolved_slot, ambiguous_slot):
+            archetype = str(rng.choice(_CONFOUNDED_ARCHETYPES))
+            resolve = i == resolved_slot
         else:
             archetype = str(rng.choice(FREE_ARCHETYPES))
-            gadget = _maybe_resolve(_BUILDERS[archetype](i), archetype, i, rng, resolve_probability)
-        gadgets.append(gadget)
+            resolve = archetype in _CONFOUNDED_ARCHETYPES and rng.random() < RESOLVE_PROBABILITY
+        gadget = _BUILDERS[archetype](i)
+        gadgets.append(_resolve(gadget, archetype, i) if resolve else gadget)
 
-    # resolved_slot is always confounder-bearing, so this is never empty - not special-cased, still a real
-    # guard: it's an emergent consequence of the guarantee above, not something duplicated here.
     confounders = [name for g in gadgets for name, role in g.roles.items() if role is Role.CONFOUNDER]
-    if confounders:
-        for j in range(n_decoys):
-            gadgets.append(_decoy(j, confounder=str(rng.choice(confounders))))
+    for j in range(n_decoys):
+        gadgets.append(_decoy(j, confounder=str(rng.choice(confounders))))
 
     roles: dict[str, Role] = {OUTCOME: Role.OUTCOME}
     edges: list[tuple[str, str]] = []
-    drivers: list[str] = []
-    correct_adjustment: dict[str, tuple[str, ...]] = {}
     for gadget in gadgets:
         roles.update(gadget.roles)
         edges.extend(gadget.edges)
-        drivers.append(gadget.driver)
-        correct_adjustment[gadget.driver] = gadget.adjustment
-
+    roles[OUTCOME_CHILD] = Role.OUTCOME_CHILD
+    edges.append((OUTCOME, OUTCOME_CHILD))
     return Scaffold(
         node_names=tuple(roles),
         roles=roles,
         edges=tuple(edges),
-        drivers=tuple(drivers),
+        drivers=tuple(g.candidate for g in gadgets),
         outcome=OUTCOME,
-        correct_adjustment=correct_adjustment,
     )

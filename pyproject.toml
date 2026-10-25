@@ -1,10 +1,11 @@
 [project]
 name = "causalagentbench"
-version = "0.1.0"
+version = "0.2.0"
 description = "CausalAgentBench — a verifiable causal-reasoning benchmark and RL environment for tool-using agents."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0 AND CC-BY-4.0"
+license-files = ["LICENSE", "data/README.md"]
 authors = [{ name = "CausalAgentBench" }]
 keywords = ["causal-inference", "benchmark", "rl-environment", "agents", "evaluation"]
 dependencies = [
@@ -29,7 +30,6 @@ Homepage = "https://github.com/causal-agent-benchmark/causalagentbench"
 
 [project.scripts]
 causalagentbench = "causalagentbench.cli:main"
-causalagentbench-smoke = "causalagentbench.smoke:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -79,7 +79,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D100", "D103", "D104", "ANN"]  # tests need no docstrings / annotations
-"src/causalagentbench/smoke.py" = ["T201"]     # smoke script prints
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

@@ -57,15 +57,16 @@ def test_missing_field_raises():
         parse_answer("<answer>{}</answer>")
 
 
-def test_unknown_verdict_field_raises():
-    # e.g. a stale "identifiable" field from prompt drift - the contract has no such field.
-    verdict = '{"driver": "X1", "identifiable": true, "adjustment_set": []}'
-    with pytest.raises(AnswerParseError, match="invalid answer"):
+@pytest.mark.parametrize("field", ['"identifiable": true', '"identifiable_from_data": true', '"rank": 1'])
+def test_unknown_verdict_field_raises(field):
+    """Stale fields from earlier task designs (identifiability, ranking) are not part of the contract."""
+    verdict = f'{{"driver": "X1", {field}, "adjustment_set": [], "effect": 0.1}}'
+    with pytest.raises(AnswerParseError, match="extra_forbidden"):
         parse_answer(f'<answer>{{"verdicts": [{verdict}]}}</answer>')
 
 
 def test_every_driver_must_carry_an_effect_estimate():
-    """The ranking is derived from the estimates, so a driver without one has no position to hold."""
+    """Every candidate is scored on its estimate, so omitting one is a contract violation."""
     missing_estimate = """<answer>{"verdicts": [
         {"driver": "X1", "adjustment_set": []},
         {"driver": "X3", "adjustment_set": [], "effect": 0.2}
@@ -86,20 +87,6 @@ def test_there_is_no_way_to_decline_a_driver():
     ]}</answer>"""
     with pytest.raises(AnswerParseError, match="extra_forbidden"):
         parse_answer_for_instance(abstained, ("X1", "X3"))
-
-
-def test_the_identifiability_judgement_is_optional_to_parse_but_recorded():
-    """A missing judgement parses but is penalized at scoring time.
-
-    Keeping the two layers separate is what makes "malformed answer" and "declined one field"
-    distinguishable in the results.
-    """
-    without = """<answer>{"verdicts": [
-        {"driver": "X1", "adjustment_set": [], "effect": 0.1},
-        {"driver": "X3", "adjustment_set": [], "effect": 0.2}
-    ]}</answer>"""
-    answer = parse_answer_for_instance(without, ("X1", "X3"))
-    assert answer.verdicts[0].identifiable_from_data is None
 
 
 def test_instance_contract_requires_each_candidate_exactly_once_in_verdicts():
@@ -141,3 +128,15 @@ def test_instance_contract_rejects_invalid_adjustment_columns():
             columns=("X1", "X2", "X3", "Y"),
             outcome="Y",
         )
+
+
+@pytest.mark.parametrize(
+    ("adjustment", "message"), [('["X2", "X2"]', "repeat a column"), ('["X1"]', "cannot contain its driver")]
+)
+def test_instance_contract_rejects_repeated_or_self_adjustment(adjustment, message):
+    text = f"""<answer>{{"verdicts": [
+        {{"driver": "X1", "adjustment_set": {adjustment}, "effect": 0.1}},
+        {{"driver": "X3", "adjustment_set": [], "effect": 0.3}}
+    ]}}</answer>"""
+    with pytest.raises(AnswerParseError, match=message):
+        parse_answer_for_instance(text, ("X1", "X3"), columns=("X1", "X2", "X3", "Y"), outcome="Y")

@@ -2,9 +2,9 @@ import re
 
 import numpy as np
 
-from causalagentbench import build_instance, generate, sample
+from causalagentbench import build_instance, draw_correlation, realize, sample
 from causalagentbench.agent.tools import CausalTools
-from causalagentbench.scoring.baselines import oracle_effects
+from causalagentbench.scoring.metrics import regression_coefficient
 from causalagentbench.types import Role, Scaffold
 
 # A small, hand-built example graph (confounder C, confounded driver A + mediator M, clean driver B,
@@ -23,18 +23,24 @@ _SCAFFOLD = Scaffold(
     edges=(("C", "A"), ("C", "Y"), ("C", "Dz"), ("A", "M"), ("A", "Y"), ("M", "Y"), ("B", "Y")),
     drivers=("A", "B", "Dz"),
     outcome="Y",
-    correct_adjustment={"A": ("C",), "B": (), "Dz": ("C",)},
 )
 
 
+def _scm(seed: int = 0):
+    """An SCM on ``_SCAFFOLD`` with a seeded random correlation matrix."""
+    return realize(_SCAFFOLD, draw_correlation(_SCAFFOLD, np.random.default_rng(seed)))
+
+
 def _tools(seed: int = 0, n: int = 2000) -> tuple[CausalTools, dict[str, str]]:
-    scm = generate(seed, _SCAFFOLD)
+    """Tools over a placeholder-named instance, plus the node -> label map."""
+    scm = _scm(seed)
     data = sample(scm, n, seed=seed)
     instance, key = build_instance(scm, data, seed=seed)
     return CausalTools(instance), dict(key.node_to_label)  # node -> label
 
 
 def _value(result: str) -> float:
+    """The number a tool reports after ``=``."""
     match = re.search(r"= ([+-]?\d+(?:\.\d+)?)", result)
     assert match is not None
     return float(match.group(1))
@@ -103,21 +109,21 @@ def test_correlate_handles_an_inherently_singular_matrix_as_a_tool_error():
     assert "singular" in singular_tools.correlate(label["A"], label["B"])
 
 
-def test_regress_matches_the_oracle_solver_on_the_same_data():
-    # instance.data is data with columns permuted+renamed for display; the OLS coefficient does not
-    # depend on column order, so regress() under the gold adjustment set must match oracle_effects()
-    # (an already-tested reference solver) computed on the identical draw, near-exactly.
-    scm = generate(0, _SCAFFOLD)
+def test_regress_matches_the_reference_regression_on_the_hidden_order_data():
+    # instance.data is data with columns permuted and renamed for display; the OLS coefficient does not
+    # depend on column order, so regress() on the true parents must match regression_coefficient() on the
+    # canonical-order draw, up to the tool's 4-decimal formatting.
+    scm = _scm(0)
     data = sample(scm, 2000, seed=0)
     instance, key = build_instance(scm, data, seed=0)
     tools = CausalTools(instance)
     label = dict(key.node_to_label)
-    oracle = oracle_effects(data, scm)
 
     for node in ("A", "B", "Dz"):
-        adjust = [label[z] for z in scm.scaffold.correct_adjustment.get(node, ())]
-        coef = _value(tools.regress(label[node], adjust=adjust))
-        assert abs(coef - oracle[node]) < 5e-5  # tool formats to 4 decimals
+        parents = list(scm.scaffold.parents(node))
+        expected = regression_coefficient(data, scm.scaffold.node_names, "Y", node, parents)
+        coef = _value(tools.regress(label[node], adjust=[label[z] for z in parents]))
+        assert abs(coef - expected) < 5e-5
 
 
 def test_regress_reports_sample_size_and_uncertainty():

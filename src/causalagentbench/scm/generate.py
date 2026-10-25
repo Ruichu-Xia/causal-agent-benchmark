@@ -1,76 +1,81 @@
-"""Structural generation via the UUMC parameterization.
+"""Numeric generation: a correlation matrix drawn on the motif graph, then realized on the true graph.
 
-Given a ``Scaffold`` (fixed topology + roles), this draws the numeric payload of an ``SCM``: edge
-weights and noise variances. It uses UUMC (Herman, Wahl, Ninad & Runge, "Unitless Unrestricted
-Markov-Consistent SCM Generation", CLeaR 2025, PMLR v275; arXiv:2503.17037), which makes every node
-unit-variance so the causal order is not inferable from marginal variance.
+Two steps keep the data from saying anything about edge directions beyond the CPDAG:
 
-This is a faithful, independent reimplementation of the UUMC coefficient step (the authors' ``UUMCdata``
-package is GPL-3.0; this project stays permissively licensed and cites the paper). Per node with ``d``
-parents::
+1. ``draw_correlation`` draws a unit-variance linear-Gaussian model on the motif graph ``G0`` and returns
+   its correlation matrix ``Sigma``.
+2. ``realize`` takes the true DAG ``D``, drawn from ``G0``'s Markov equivalence class independently of
+   ``Sigma``, and sets each node's weights to its population regression on its parents in ``D``:
 
-    a ~ N(0, 1) per parent;  norm = sum(a^2);  r = U(0, 1)^(1/d)
-    S     = a.T @ Sigma_pa @ a                 (raw signal, using the parent covariance)
-    scale = sqrt(r^2 * S + (1 - r^2) * norm)
-    coef  = (r / scale) * a                    (rescaled edge weights)
-    noise_var = (1 - r^2) * norm / scale^2
+       beta_j = Sigma[pa(j), pa(j)]^-1 Sigma[pa(j), j],   noise_j = 1 - Sigma[j, pa(j)] beta_j
 
-which gives ``Var(X_j) = coef.T @ Sigma_pa @ coef + noise_var = 1`` exactly. Roots (d = 0) are
-unit-variance noise. The parent covariance ``Sigma_pa`` is accumulated exactly in topological order.
-Only Gaussian noise and the UUMC scheme are supported; alternatives would slot in here as siblings.
+   Markov equivalent DAGs encode the same conditional independences, so ``D`` reproduces ``Sigma``
+   exactly. The observational distribution is therefore identical whichever member was drawn, and no
+   statistic of the data (variance, R^2, coefficient sizes) can predict an orientation the CPDAG leaves
+   open ("covariance transfer").
+
+Every variable has unit variance, so marginal variances carry no ordering (varsortability is 1/2).
+Per-parent weights are bounded away from zero and each non-root's explained variance is bounded, which
+keeps effects estimable at the benchmark's sample size; random signs keep effect signs unpredictable.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from causalagentbench.scm.effects import total_effects
-from causalagentbench.types import SCM, Scaffold, SeedLike
+from causalagentbench.scm.effects import marginal_covariance, total_effects
+from causalagentbench.types import SCM, FloatArray, Scaffold
+
+EDGE_MAGNITUDE = (0.5, 1.5)
+"""Relative per-parent weight magnitude before rescaling; bounded away from zero so no edge is negligible."""
+
+EXPLAINED_VARIANCE = (0.5, 0.9)
+"""R^2 of each non-root node given its parents in the motif graph."""
 
 
-def generate(seed: SeedLike, scaffold: Scaffold) -> SCM:
-    """Return an ``SCM`` realizing ``scaffold`` with UUMC-sampled parameters, seeded by ``seed``."""
-    rng = np.random.default_rng(seed)
-    n_nodes = len(scaffold.node_names)
+def draw_correlation(scaffold: Scaffold, rng: np.random.Generator) -> FloatArray:
+    """Return the correlation matrix of a random unit-variance linear-Gaussian model on ``scaffold``.
+
+    Per node, parent weights are drawn with random signs and magnitudes in ``EDGE_MAGNITUDE``, then
+    rescaled so the parents explain a fraction drawn from ``EXPLAINED_VARIANCE`` of its unit variance.
+    """
     index = {name: i for i, name in enumerate(scaffold.node_names)}
-
-    weights = np.zeros((n_nodes, n_nodes))
-    noise_var = np.zeros(n_nodes)
-    sigma = np.zeros((n_nodes, n_nodes))
-    processed: list[int] = []
-
+    sigma = np.eye(len(index))
     for name in scaffold.topological_order():
-        node = index[name]
-        parent_idx = [index[p] for p in scaffold.parents(name)]
-        degree = len(parent_idx)
+        parents = [index[p] for p in scaffold.parents(name)]
+        if not parents:
+            continue
+        raw = rng.uniform(*EDGE_MAGNITUDE, size=len(parents)) * rng.choice((-1.0, 1.0), size=len(parents))
+        r2 = rng.uniform(*EXPLAINED_VARIANCE)
+        weights = raw * np.sqrt(r2 / float(raw @ sigma[np.ix_(parents, parents)] @ raw))
+        # Covariances with every earlier node follow from the parents' covariances; later nodes fill
+        # their own rows when they are reached in topological order.
+        column = sigma[:, parents] @ weights
+        j = index[name]
+        sigma[j, :] = column
+        sigma[:, j] = column
+        sigma[j, j] = 1.0
+    return sigma
 
-        if degree == 0:
-            noise_var[node] = 1.0
-            sigma[node, node] = 1.0
-        else:
-            raw = rng.standard_normal(degree)
-            norm = float(raw @ raw)
-            r = float(rng.random() ** (1.0 / degree))
-            parent_cov = sigma[np.ix_(parent_idx, parent_idx)]
-            raw_signal = float(raw @ parent_cov @ raw)
-            scale = np.sqrt(r * r * raw_signal + (1.0 - r * r) * norm)
 
-            coef = (r / scale) * raw
-            weights[parent_idx, node] = coef
-            noise_var[node] = (1.0 - r * r) * norm / (scale * scale)
+def realize(scaffold: Scaffold, sigma: FloatArray) -> SCM:
+    """Return the SCM on ``scaffold`` whose population distribution is exactly ``N(0, sigma)``.
 
-            sigma[node, node] = 1.0
-            for other in processed:
-                covariance = float(coef @ sigma[parent_idx, other])
-                sigma[node, other] = covariance
-                sigma[other, node] = covariance
-
-        processed.append(node)
-
-    return SCM(
-        scaffold=scaffold,
-        W=weights,
-        noise_var=noise_var,
-        sigma=sigma,
-        tau=total_effects(weights),
-    )
+    Raises ``ValueError`` if ``scaffold`` is not Markov to ``sigma`` (for example, a DAG outside the
+    equivalence class ``sigma`` was drawn on).
+    """
+    n = len(scaffold.node_names)
+    index = {name: i for i, name in enumerate(scaffold.node_names)}
+    weights = np.zeros((n, n))
+    noise_var = np.ones(n)
+    for name in scaffold.node_names:
+        parents = [index[p] for p in scaffold.parents(name)]
+        if not parents:
+            continue
+        j = index[name]
+        beta = np.linalg.solve(sigma[np.ix_(parents, parents)], sigma[parents, j])
+        weights[parents, j] = beta
+        noise_var[j] = 1.0 - float(sigma[j, parents] @ beta)
+    if np.max(np.abs(marginal_covariance(weights, noise_var) - sigma)) > 1e-8:
+        raise ValueError("scaffold is not Markov to sigma")
+    return SCM(scaffold=scaffold, W=weights, noise_var=noise_var, sigma=sigma, tau=total_effects(weights))

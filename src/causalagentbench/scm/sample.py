@@ -1,9 +1,7 @@
 """Draw an observational data table from an SCM.
 
-A pure, generator-agnostic simulator that returns the raw draws. Because the SCM has population unit
-variance (UUMC), the draws are already ~unit-variance, and standardization is an affine-invariant
-transform that changes neither identification nor the ranking. Normalization or rescaling for the agent
-is a separate presentation concern handled by later stages.
+A generator-agnostic simulator that returns the raw draws. Every variable has population unit variance,
+so the draws are already close to standardized.
 """
 
 from __future__ import annotations

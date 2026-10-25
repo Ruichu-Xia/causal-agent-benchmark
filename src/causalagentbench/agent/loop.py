@@ -111,6 +111,7 @@ class ModelTurn:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     cost_usd: float | None = None
+    model: str | None = None  # the model identifier the provider reported serving
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,7 @@ class TurnTrace:
     prompt_tokens: int | None
     completion_tokens: int | None
     cost_usd: float | None = None
+    model: str | None = None
     budget_used: int = 0
     """Tool calls spent *before* this turn - the budget state the model saw when it chose these calls.
 
@@ -162,6 +164,7 @@ class TurnTranscript:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     cost_usd: float | None = None
+    model: str | None = None
     error: str | None = None
 
 
@@ -328,6 +331,7 @@ def run_agent(
                     prompt_tokens=reply.prompt_tokens,
                     completion_tokens=reply.completion_tokens,
                     cost_usd=reply.cost_usd,
+                    model=reply.model,
                     budget_used=tool_calls_used,
                     budget_limit=max_tool_calls,
                 )
@@ -345,6 +349,7 @@ def run_agent(
                     prompt_tokens=reply.prompt_tokens,
                     completion_tokens=reply.completion_tokens,
                     cost_usd=reply.cost_usd,
+                    model=reply.model,
                 )
             )
         return reply

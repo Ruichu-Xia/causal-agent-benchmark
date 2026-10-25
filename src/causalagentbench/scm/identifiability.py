@@ -13,7 +13,12 @@ of observational data, not merely "hard with the data we happened to sample."
 
 from __future__ import annotations
 
-from causalagentbench.types import Role, Scaffold
+import itertools
+
+import networkx as nx
+import numpy as np
+
+from causalagentbench.types import SCM, FloatArray, Scaffold
 
 
 def unoriented_edges(scaffold: Scaffold) -> frozenset[tuple[str, str]]:
@@ -71,25 +76,66 @@ def unoriented_edges(scaffold: Scaffold) -> frozenset[tuple[str, str]]:
     return frozenset((p, c) for p, c in scaffold.edges if frozenset((p, c)) in undirected)
 
 
-def unidentifiable_drivers(scaffold: Scaffold) -> tuple[str, ...]:
-    """Return ambiguous candidates in the generated gadget family, in canonical order.
+MAX_UNDIRECTED_EDGES = 16
+"""Brute force enumerates 2^k orientations; motif scaffolds stay far below this (measured maximum 13)."""
 
-    This role-based shortcut is specific to these gadgets, not a general effect-identification algorithm.
 
-    Only counts ambiguity from an unoriented **confounder** edge, not an unoriented **instrument** edge -
-    edge-orientation ambiguity and effect/adjustment identifiability are not the same thing, and for an
-    instrumented driver (``scm/gadgets.py``) they come apart. A confounder always has its own direct edge
-    into the outcome, so whether it's oriented confounder->driver or driver->confounder changes whether
-    it's a legitimate common cause that must be adjusted for - the driver's correct adjustment set (and
-    hence its effect estimate) genuinely depends on that orientation. An instrument has no path to the
-    outcome except through its own driver, so reversing instrument<->driver can never introduce or remove
-    confounding: the driver's total effect and its (always-empty) adjustment set are identical either way,
-    regardless of which way that edge points - the driver is genuinely identified, just not fully oriented.
+def v_structures(graph: nx.DiGraph) -> frozenset[tuple[str, str, str]]:
+    """Return the unshielded colliders ``(a, c, b)`` of ``graph``, with ``a < b``."""
+    found = set()
+    for c in graph:
+        for a, b in itertools.combinations(sorted(graph.predecessors(c)), 2):
+            if not graph.has_edge(a, b) and not graph.has_edge(b, a):
+                found.add((a, c, b))
+    return frozenset(found)
 
-    Returns a tuple, not a set: this feeds a naming-priority order (``generation/labeler.py``), which must
-    stay deterministic - set/frozenset iteration order is not guaranteed stable.
+
+def equivalence_class(scaffold: Scaffold) -> list[tuple[tuple[str, str], ...]]:
+    """Return every DAG Markov equivalent to ``scaffold``, each as a sorted tuple of edges.
+
+    Markov equivalent DAGs share the skeleton and the unshielded colliders (Verma & Pearl, 1990), so they
+    differ only on the CPDAG's undirected edges. Every orientation of those edges is tried and kept if it
+    is acyclic and creates no new unshielded collider. The true scaffold is always a member.
     """
-    ambiguous_children = {
-        child for parent, child in unoriented_edges(scaffold) if scaffold.roles[parent] is Role.CONFOUNDER
-    }
-    return tuple(driver for driver in scaffold.drivers if driver in ambiguous_children)
+    undirected = sorted(unoriented_edges(scaffold))
+    if len(undirected) > MAX_UNDIRECTED_EDGES:
+        raise ValueError(f"{len(undirected)} undirected edges exceed the brute-force limit")
+    fixed = [edge for edge in scaffold.edges if edge not in set(undirected)]
+    target = v_structures(scaffold.digraph())
+    members = []
+    for flips in itertools.product((False, True), repeat=len(undirected)):
+        graph = nx.DiGraph(fixed + [(c, p) if flip else (p, c) for (p, c), flip in zip(undirected, flips, strict=True)])
+        graph.add_nodes_from(scaffold.node_names)
+        if nx.is_directed_acyclic_graph(graph) and v_structures(graph) == target:
+            members.append(tuple(sorted(graph.edges)))
+    return members
+
+
+def possible_effects(
+    sigma: FloatArray, node_names: tuple[str, ...], members: list[tuple[tuple[str, str], ...]], x: str, y: str
+) -> list[float]:
+    """Total effect of ``x`` on ``y`` implied by ``sigma`` under each member DAG, in ``members`` order.
+
+    Regressing ``y`` on ``x`` and its parents in a DAG gives that DAG's total effect (parents block every
+    back-door path). This is global IDA (Maathuis et al., 2009): the multiset of values, with one entry per
+    member, is all that data alone can say about the effect. It depends only on ``sigma`` and the CPDAG.
+    """
+    index = {name: i for i, name in enumerate(node_names)}
+    values = []
+    for edges in members:
+        parents = sorted(p for p, c in edges if c == x)
+        rows = [index[x], *(index[p] for p in parents)]
+        coefficients = np.linalg.solve(sigma[np.ix_(rows, rows)], sigma[rows, index[y]])
+        values.append(float(coefficients[0]))
+    return values
+
+
+def name_critical_candidates(scm: SCM) -> tuple[str, ...]:
+    """Candidates whose total effect differs across the equivalence class: only names can settle them."""
+    members = equivalence_class(scm.scaffold)
+    critical = []
+    for candidate in scm.scaffold.drivers:
+        values = possible_effects(scm.sigma, scm.scaffold.node_names, members, candidate, scm.scaffold.outcome)
+        if max(values) - min(values) > 1e-9:
+            critical.append(candidate)
+    return tuple(critical)

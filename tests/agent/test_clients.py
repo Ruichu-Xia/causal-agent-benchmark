@@ -1,17 +1,22 @@
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from causalagentbench.agent.clients import (
+    DatabricksClient,
+    LiteLLMClient,
     _databricks_client,
     _extract_max_tokens_ceiling,
     _parse_tool_call,
     _require_litellm_params,
+    _validate_litellm_params,
 )
 
 
 @pytest.fixture(autouse=True)
 def _clear_databricks_client_cache(monkeypatch):
+    """Isolate each test from the cached gateway client and from any ambient .env file."""
     # Also stub load_env to a no-op: python-dotenv's load_dotenv(override=False) fills in any var a
     # test just monkeypatch.delenv'd from a real ambient .env, undoing the test's own setup - these
     # tests must control every DATABRICKS_* var themselves, independent of what's on disk.
@@ -22,6 +27,7 @@ def _clear_databricks_client_cache(monkeypatch):
 
 
 def _raw(arguments: str, *, id_: str = "1", name: str = "correlate"):
+    """A wire-format tool call."""
     return SimpleNamespace(id=id_, function=SimpleNamespace(name=name, arguments=arguments))
 
 
@@ -108,3 +114,72 @@ def test_litellm_parameter_preflight_rejects_missing_or_unknown_capability_metad
     unknown = SimpleNamespace(get_supported_openai_params=lambda model: None)
     with pytest.raises(RuntimeError, match="no parameter-support metadata"):
         _require_litellm_params(unknown, "provider/model", {"tools", "tool_choice"})
+
+
+def _response(model: str = "provider/served-model"):
+    """An OpenAI-shaped completion with plain text content and usage."""
+    message = SimpleNamespace(content="hello", tool_calls=None)
+    usage = SimpleNamespace(prompt_tokens=3, completion_tokens=4, cost=0.002)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage, model=model)
+
+
+@pytest.fixture
+def fake_litellm(monkeypatch):
+    """Replace the ``litellm`` module with a recorder that supports only the tool parameters."""
+    requests = []
+
+    def completion(**kwargs):
+        """Record the request and return a fixed response."""
+        requests.append(kwargs)
+        return _response()
+
+    module = SimpleNamespace(completion=completion, get_supported_openai_params=lambda model: ["tools", "tool_choice"])
+    monkeypatch.setitem(sys.modules, "litellm", module)
+    _validate_litellm_params.cache_clear()
+    yield requests
+    _validate_litellm_params.cache_clear()
+
+
+def test_litellm_client_uses_provider_sampling_defaults(fake_litellm):
+    turn = LiteLLMClient(model="provider/model").complete([], [], force_final=False)
+    [request] = fake_litellm
+    assert "temperature" not in request and "seed" not in request
+    assert request["tool_choice"] == "auto"
+    assert (turn.content, turn.prompt_tokens, turn.completion_tokens, turn.cost_usd) == ("hello", 3, 4, 0.002)
+    assert turn.model == "provider/served-model"
+
+
+def test_litellm_client_sends_sampling_parameters_only_when_set(fake_litellm, monkeypatch):
+    supported = ["tools", "tool_choice", "temperature", "seed"]
+    monkeypatch.setattr(sys.modules["litellm"], "get_supported_openai_params", lambda model: supported)
+    LiteLLMClient(model="provider/model", temperature=0.0, seed=3).complete([], [], force_final=True)
+    [request] = fake_litellm
+    assert request["temperature"] == 0.0 and request["seed"] == 3
+    assert request["tool_choice"] == "none"
+
+
+def test_capability_check_requires_temperature_and_seed_only_when_set(fake_litellm):
+    LiteLLMClient(model="provider/model").validate_tool_capability()
+    with pytest.raises(RuntimeError, match="temperature"):
+        LiteLLMClient(model="provider/model", temperature=0.5).validate_tool_capability()
+    with pytest.raises(RuntimeError, match="seed"):
+        LiteLLMClient(model="provider/model", seed=1).validate_tool_capability()
+
+
+def test_databricks_client_omits_temperature_by_default_and_reports_the_served_model(monkeypatch):
+    pytest.importorskip("openai")
+    requests = []
+
+    def create(**kwargs):
+        """Record the request and return a fixed response."""
+        requests.append(kwargs)
+        return _response("served")
+
+    completions = SimpleNamespace(create=create)
+    gateway = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    monkeypatch.setattr("causalagentbench.agent.clients._databricks_client", lambda: gateway)
+    turn = DatabricksClient(model="gateway-model").complete([], [], force_final=False)
+    DatabricksClient(model="gateway-model", temperature=0.2).complete([], [], force_final=False)
+    assert "temperature" not in requests[0]
+    assert requests[1]["temperature"] == 0.2
+    assert turn.model == "served"

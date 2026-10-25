@@ -1,181 +1,129 @@
+import dataclasses
+import itertools
 import json
 
+import networkx as nx
 import numpy as np
 import pytest
 
-from causalagentbench import build_instance, sample
-from causalagentbench.scoring.gates import generate_gated_procedural
-from causalagentbench.task.dataset import load_dataset, serialize_scaffold
-from causalagentbench.task.labeling import Labeling, LabelProvenance
+from causalagentbench.generation.causenet import CauseNetLabeler
+from causalagentbench.scm.sample import sample
+from causalagentbench.scoring.gates import generate_scm
+from causalagentbench.task.dataset import CANARY, DATASET_VERSION, concept_pairs, load_dataset, save_dataset
+from causalagentbench.task.instance import build_instance
 
 
-def _fake_labeler(scm, rng):
-    """A stub Labeler with no LLM call - mirrors the shape a real LLMLabeler would produce."""
-    node_to_label = {n: f"col_{n.lower()}" for n in scm.scaffold.node_names}
-    return Labeling(
-        node_to_label=node_to_label,
-        context="a test domain",
-        column_schema={label: f"description of {label}" for label in node_to_label.values()},
-        provenance=LabelProvenance(
-            alignment=0.5,
-            n_aligned=2,
-            n_neutral=3,
-            n_misaligned=1,
-            node_kind=dict.fromkeys(scm.scaffold.node_names, "neutral"),
-            domain="test",
-            producer="fake",
-        ),
-    )
+def _tasks(seeds=(0, 1)):
+    """Accepted tasks named by a synthetic CauseNet graph built from each SCM's own edges.
 
-
-def _write_dataset(out, records_and_data):
-    """Serialize (id, Instance, InstanceKey) triples exactly as scripts/build_testset.py does."""
-    records = []
-    tables = {}
-    for rid, instance, key in records_and_data:
-        prov = key.provenance
-        records.append(
-            {
-                "id": rid,
-                "seed": 0,
-                "scaffold": serialize_scaffold(key.scm.scaffold),
-                "W": key.scm.W.tolist(),
-                "noise_var": key.scm.noise_var.tolist(),
-                "sigma": key.scm.sigma.tolist(),
-                "tau": key.scm.tau.tolist(),
-                "node_to_label": dict(key.node_to_label),
-                "columns": list(instance.columns),
-                "context": instance.context,
-                "column_schema": dict(instance.column_schema),
-                "provenance": {
-                    "alignment": prov.alignment,
-                    "n_aligned": prov.n_aligned,
-                    "n_neutral": prov.n_neutral,
-                    "n_misaligned": prov.n_misaligned,
-                    "node_kind": dict(prov.node_kind),
-                    "domain": prov.domain,
-                    "producer": prov.producer,
-                },
-            }
-        )
-        tables[rid] = instance.data
-    out.with_suffix(".json").write_text(
-        json.dumps({"version": "test", "scaffold": "procedural", "n_samples": 200, "records": records})
-    )
-    np.savez_compressed(out.with_suffix(".npz"), **tables)
-    return out
-
-
-def test_load_dataset_round_trips_a_built_instance(tmp_path):
-    scm, _ = generate_gated_procedural(0)
-    data = sample(scm, 200, seed=0)
-    instance, key = build_instance(scm, data, seed=0, labeler=_fake_labeler)
-
-    out = _write_dataset(tmp_path / "testset", [("s0000", instance, key)])
-    [(loaded_instance, loaded_key)] = load_dataset(out)
-
-    assert loaded_instance.columns == instance.columns
-    assert loaded_instance.outcome == instance.outcome
-    assert loaded_instance.candidate_drivers == instance.candidate_drivers
-    assert loaded_instance.context == instance.context
-    assert dict(loaded_instance.column_schema) == dict(instance.column_schema)
-    assert loaded_instance.prompt == instance.prompt  # rebuilt via build_prompt, must match byte-for-byte
-    np.testing.assert_array_equal(loaded_instance.data, instance.data)
-    assert dict(loaded_key.node_to_label) == dict(key.node_to_label)
-    assert loaded_key.provenance == key.provenance
-    np.testing.assert_array_equal(loaded_key.scm.W, key.scm.W)
-    np.testing.assert_array_equal(loaded_key.scm.tau, key.scm.tau)
-
-
-def test_load_dataset_accepts_stem_or_either_file_path(tmp_path):
-    scm, _ = generate_gated_procedural(1)
-    data = sample(scm, 200, seed=1)
-    instance, key = build_instance(scm, data, seed=1, labeler=_fake_labeler)
-    out = _write_dataset(tmp_path / "testset", [("s0001", instance, key)])
-
-    assert len(load_dataset(out)) == 1
-    assert len(load_dataset(out.with_suffix(".json"))) == 1
-    assert len(load_dataset(str(out) + ".npz")) == 1
-
-
-def test_load_dataset_round_trips_a_procedural_instance(tmp_path):
-    """Each record carries its own topology now, not a name looked up in a small fixed set.
-
-    A procedural instance's genuinely different node set/edges/drivers must survive the round trip intact.
+    The tables are rounded to float32 precision, as ``make_task`` does, since datasets store float32.
     """
-    scm, _ = generate_gated_procedural(0, n_candidates=5)
-    data = sample(scm, 200, seed=0)
-    instance, key = build_instance(scm, data, seed=0, labeler=_fake_labeler)
-
-    out = _write_dataset(tmp_path / "testset", [("s0000", instance, key)])
-    [(loaded_instance, loaded_key)] = load_dataset(out)
-
-    assert loaded_key.scm.scaffold.node_names == scm.scaffold.node_names
-    assert loaded_key.scm.scaffold.edges == scm.scaffold.edges
-    assert loaded_key.scm.scaffold.drivers == scm.scaffold.drivers
-    assert dict(loaded_key.scm.scaffold.correct_adjustment) == dict(scm.scaffold.correct_adjustment)
-    assert loaded_instance.candidate_drivers == instance.candidate_drivers
-    np.testing.assert_array_equal(loaded_key.scm.W, key.scm.W)
+    tasks = []
+    for seed in seeds:
+        scm, _ = generate_scm(np.random.SeedSequence(seed))
+        graph = nx.relabel_nodes(scm.scaffold.digraph(), lambda n: "concept" + n.replace("_", "x"))
+        labeler = CauseNetLabeler(graph, source="causenet:sha256:test")
+        data = sample(scm, 200, seed).astype(np.float32).astype(np.float64)
+        tasks.append(build_instance(scm, data, seed, labeler=labeler))
+    return tasks
 
 
-def test_load_dataset_rejects_a_structurally_invalid_scaffold(tmp_path):
-    """A malformed embedded scaffold (here: roles missing a node) must fail loudly, not silently."""
-    out = tmp_path / "bad"
-    record = {
-        "id": "r0",
-        "scaffold": {
-            "node_names": ["A", "Y"],
-            "roles": {"A": "driver_clean"},  # missing "Y" - Scaffold requires roles to cover every node
-            "edges": [["A", "Y"]],
-            "drivers": ["A"],
-            "outcome": "Y",
-            "correct_adjustment": {"A": []},
-        },
-        "W": [[0, 1], [0, 0]],
-        "noise_var": [1, 1],
-        "sigma": [[1, 0], [0, 1]],
-        "tau": [[0, 1], [0, 0]],
-        "node_to_label": {},
-        "columns": [],
-        "context": "",
-        "column_schema": {},
-        "provenance": {
-            "alignment": None,
-            "n_aligned": 0,
-            "n_neutral": 0,
-            "n_misaligned": 0,
-            "node_kind": {},
-            "domain": None,
-            "producer": "x",
-        },
-    }
-    blob = {"version": "x", "scaffold": "?", "n_samples": 1, "records": [record]}
-    out.with_suffix(".json").write_text(json.dumps(blob))
-    np.savez_compressed(out.with_suffix(".npz"), r0=np.zeros((1, 1)))
-
-    with pytest.raises(ValueError, match="roles must cover"):
-        load_dataset(out)
+def test_round_trip_reproduces_every_public_and_hidden_field(tmp_path):
+    tasks = _tasks()
+    save_dataset(tmp_path / "dev", tasks, split="dev")
+    loaded = load_dataset(tmp_path / "dev")
+    assert len(loaded) == len(tasks)
+    for (instance, key), (got, got_key) in zip(tasks, loaded, strict=True):
+        assert got.columns == instance.columns
+        assert got.outcome == instance.outcome
+        assert got.candidate_drivers == instance.candidate_drivers
+        assert got.prompt == instance.prompt
+        np.testing.assert_array_equal(got.data, instance.data)
+        scaffold, got_scaffold = key.scm.scaffold, got_key.scm.scaffold
+        assert got_scaffold.node_names == scaffold.node_names
+        assert got_scaffold.edges == scaffold.edges
+        assert dict(got_scaffold.roles) == dict(scaffold.roles)
+        assert got_scaffold.drivers == scaffold.drivers
+        assert got_scaffold.outcome == scaffold.outcome
+        np.testing.assert_array_equal(got_key.scm.sigma, key.scm.sigma)
+        np.testing.assert_allclose(got_key.scm.W, key.scm.W, atol=1e-12)
+        np.testing.assert_allclose(got_key.scm.tau, key.scm.tau, atol=1e-12)
+        assert dict(got_key.node_to_label) == dict(key.node_to_label)
+        assert dict(got_key.label_to_node) == dict(key.label_to_node)
+        assert got_key.producer == key.producer == "causenet:sha256:test"
 
 
-def test_save_dataset_freezes_exact_prompt_and_never_overwrites(tmp_path):
-    from dataclasses import replace
+def test_tables_are_stored_as_float32_and_reloaded_as_float64(tmp_path):
+    save_dataset(tmp_path / "dev", _tasks((0,)), split="dev")
+    with np.load(tmp_path / "dev.npz") as tables:
+        assert [tables[name].dtype for name in tables.files] == [np.float32]
+    assert load_dataset(tmp_path / "dev")[0][0].data.dtype == np.float64
 
-    from causalagentbench.task.dataset import save_dataset
 
-    scm, report = generate_gated_procedural(0, n_candidates=5)
-    instance, key = build_instance(scm, report.data, 0)
-    instance = replace(instance, prompt="A frozen prompt independent of the current prompt builder.")
-    path = tmp_path / "frozen"
-    save_dataset(path, [(instance, key)])
-    loaded, _ = load_dataset(path)[0]
-    assert loaded.prompt == instance.prompt
-    np.testing.assert_array_equal(loaded.data, instance.data)
+def test_the_saved_prompt_is_frozen_verbatim(tmp_path):
+    instance, key = _tasks((0,))[0]
+    frozen = dataclasses.replace(instance, prompt="x")
+    save_dataset(tmp_path / "frozen", [(frozen, key)], split="test")
+    assert load_dataset(tmp_path / "frozen")[0][0].prompt == "x"
+
+
+def test_json_carries_version_canary_and_split(tmp_path):
+    save_dataset(tmp_path / "dev", _tasks((0,)), split="dev")
+    text = (tmp_path / "dev.json").read_text(encoding="utf-8")
+    blob = json.loads(text)
+    assert CANARY in text
+    assert blob["canary"] == CANARY
+    assert blob["version"] == DATASET_VERSION
+    assert blob["split"] == "dev"
+
+
+def test_load_accepts_the_stem_or_either_file(tmp_path):
+    save_dataset(tmp_path / "dev", _tasks((0,)), split="dev")
+    for path in (tmp_path / "dev", tmp_path / "dev.json", tmp_path / "dev.npz"):
+        assert len(load_dataset(path)) == 1
+
+
+@pytest.mark.parametrize("existing", [".json", ".npz"])
+def test_save_refuses_to_overwrite_either_file(tmp_path, existing):
+    (tmp_path / f"dev{existing}").write_text("")
     with pytest.raises(FileExistsError):
-        save_dataset(path, [(instance, key)])
+        save_dataset(tmp_path / "dev", _tasks((0,)), split="dev")
 
 
-def test_save_dataset_rejects_empty_build(tmp_path):
-    from causalagentbench.task.dataset import save_dataset
-
+def test_save_refuses_an_empty_dataset(tmp_path):
     with pytest.raises(ValueError, match="empty"):
-        save_dataset(tmp_path / "empty", [])
+        save_dataset(tmp_path / "empty", [], split="dev")
+
+
+def _edit_json(stem, edit) -> None:
+    """Apply ``edit`` to a saved dataset's JSON blob in place."""
+    path = stem.with_suffix(".json")
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    edit(blob)
+    path.write_text(json.dumps(blob), encoding="utf-8")
+
+
+def test_load_rejects_another_dataset_version(tmp_path):
+    stem = tmp_path / "dev"
+    save_dataset(stem, _tasks((0,)), split="dev")
+    _edit_json(stem, lambda blob: blob.update(version="causalagentbench-v1"))
+    with pytest.raises(ValueError, match="unsupported dataset version"):
+        load_dataset(stem)
+
+
+def test_load_rechecks_the_graph_against_sigma(tmp_path):
+    """A hidden graph that no longer matches the frozen correlation matrix fails loudly on load."""
+    stem = tmp_path / "dev"
+    save_dataset(stem, _tasks((0,)), split="dev")
+    _edit_json(stem, lambda blob: blob["records"][0]["graph"]["edges"].pop())
+    with pytest.raises(ValueError, match="not Markov"):
+        load_dataset(stem)
+
+
+def test_concept_pairs_lists_every_pair_of_columns_used_together(tmp_path):
+    tasks = _tasks()
+    pairs = concept_pairs(tasks)
+    expected = {frozenset(p) for instance, _ in tasks for p in itertools.combinations(instance.columns, 2)}
+    assert pairs == expected
+    a, b = tasks[0][0].columns[:2]
+    assert frozenset((a, b)) in pairs and frozenset((b, a)) in pairs

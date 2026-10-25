@@ -1,45 +1,34 @@
 import numpy as np
 
-from causalagentbench.scoring.gates import generate_gated_procedural
-from causalagentbench.task.labeling import Labeling, abstract_labels
+from causalagentbench.scoring.gates import generate_scm
+from causalagentbench.task.labeling import Labeling, placeholder_labels
 
 
 def _scm(seed: int = 0):
-    scm, _ = generate_gated_procedural(seed)
+    """An accepted SCM."""
+    scm, _ = generate_scm(np.random.SeedSequence(seed))
     return scm
 
 
-def test_abstract_labels_returns_labeling_with_xlabels():
+def test_placeholder_labels_are_a_permutation_of_x_names():
     scm = _scm()
-    labeling = abstract_labels(scm, np.random.default_rng(0))
-    assert isinstance(labeling, Labeling)
+    labeling = placeholder_labels(scm, np.random.default_rng(0))
     names = scm.scaffold.node_names
+    assert isinstance(labeling, Labeling)
+    assert labeling.producer == "placeholder"
     assert set(labeling.node_to_label) == set(names)
     assert sorted(labeling.node_to_label.values()) == sorted(f"X{i + 1}" for i in range(len(names)))
-    assert labeling.provenance.alignment is None
-    assert labeling.provenance.producer == "abstract"
 
 
-def test_abstract_labels_carry_a_schema_that_is_uniform_and_therefore_informationless():
-    """Present so the prompt has the same shape as a named condition, identical so it says nothing.
-
-    Without a context/schema, `build_prompt` omits both blocks, and a name-blind instance would differ
-    from a named one in layout as well as naming - making the naming axis uninterpretable, since two
-    things would vary at once. Every column sharing one description is what keeps the block contentless.
-    """
-    labeling = abstract_labels(_scm(), np.random.default_rng(0))
-    assert labeling.context  # non-empty, so the `Context:` block is emitted
-    assert set(labeling.column_schema) == set(labeling.node_to_label.values())  # every column described
-    assert len(set(labeling.column_schema.values())) == 1  # ...with the very same sentence
-
-
-def test_abstract_labels_is_deterministic_in_rng():
+def test_placeholder_labels_are_deterministic_in_the_rng():
     scm = _scm()
-    a = abstract_labels(scm, np.random.default_rng(7))
-    b = abstract_labels(scm, np.random.default_rng(7))
-    assert a.node_to_label == b.node_to_label
+    first = placeholder_labels(scm, np.random.default_rng(7))
+    assert first == placeholder_labels(scm, np.random.default_rng(7))
+    assert first.node_to_label != placeholder_labels(scm, np.random.default_rng(8)).node_to_label
 
 
-def test_abstract_labels_leak_no_role_information():
-    labeling = abstract_labels(_scm(), np.random.default_rng(3))
-    assert all(v.startswith("X") and v[1:].isdigit() for v in labeling.node_to_label.values())
+def test_the_outcome_label_varies_with_the_rng():
+    """A fixed label for the outcome (or any role) would let the name carry the role."""
+    scm = _scm()
+    outcome_labels = {placeholder_labels(scm, np.random.default_rng(s)).node_to_label["Y"] for s in range(20)}
+    assert len(outcome_labels) > 1

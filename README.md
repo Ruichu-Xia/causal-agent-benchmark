@@ -1,214 +1,160 @@
 # CausalAgentBench
 
-A small benchmark and RL environment for causal analysis with statistical tools.
+A benchmark and RL environment for one skill: estimating causal effects by combining **statistical
+evidence** with **knowledge of what variables mean**.
 
-An agent receives an observational dataset, an outcome, and five candidate drivers. It chooses an
-adjustment set and estimates the signed **total causal effect** of each driver. The headline metric is
-normalized absolute estimation error (lower is better). RL uses a separate bounded reward.
-A hidden linear-Gaussian structural causal model supplies the exact answer key.
+An agent gets 10,000 rows of observational data whose columns are named after real concepts (from
+[CauseNet](https://causenet.org/)), an outcome, and five candidate drivers. Using four statistical tools,
+it reports the signed total causal effect of each candidate. A hidden linear-Gaussian causal model gives
+the exact answer.
 
-**Names come directly from CauseNet. Every simulated directed edge must match an actual directed
-relation in the source dump.** No LLM generates names. The agent sees concept names and data, with no
-relationship descriptions, graph edges, roles, or adjustment hints. CauseNet relations are used only
-by the offline task builder; they are not a tool available to the agent.
+Neither source of knowledge suffices alone:
 
-## Try it
+- **Data alone** cannot orient every edge. Graphs in the same Markov equivalence class produce identical
+  data, and for some candidates they imply different effects. Every task has at least one such
+  *name-critical* candidate.
+- **Names alone** cannot give the numbers. Coefficient signs and sizes are synthetic, and the prompt says so.
 
-Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required for these commands.
+A scripted pipeline (PC discovery, then regression) can settle the data-identified candidates, but it has
+to guess on the name-critical ones. An agent that reads `smoking` and `yellow_teeth` knows which way the
+arrow points.
+
+## Quick start
+
+Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync --extra agents --extra discovery
 
-# Free: run a data-only PC → adjustment → regression baseline on the included 10-task dataset.
-uv run causalagentbench baseline --dataset data/example --out outputs/pc.jsonl
+# Build a split locally (deterministic, no API key). Needs the CauseNet-Precision dump.
+uv run causalagentbench build --causenet causenet-precision.jsonl.bz2 --split dev -n 50 --workers 4 --out artifacts/dev
 
-# Evaluate a tool-calling model using its LiteLLM provider/model identifier.
-# Set the provider's API key in your environment or .env, and set MODEL to the desired identifier.
-uv run causalagentbench eval --dataset data/example --model "$MODEL" --out outputs/model.jsonl
+# Free reference baselines: zero, unadjusted, adjust_all, pc, data_only_best, oracle
+uv run causalagentbench baseline --dataset artifacts/dev --agent pc --out outputs/dev_pc.jsonl
+
+# A tool-calling model through LiteLLM (set the provider key in .env)
+uv run causalagentbench eval --dataset artifacts/dev --model "$MODEL" --out outputs/dev_model.jsonl --workers 4
+
+# The names ablation: same tasks and data, columns renamed X1..Xk
+uv run causalagentbench eval --dataset artifacts/dev --model "$MODEL" --placeholder-names --out outputs/dev_model_x.jsonl
+
+uv run causalagentbench report outputs/dev_model.jsonl                                   # headline + 95% CI
+uv run causalagentbench report outputs/dev_model.jsonl --ablation outputs/dev_model_x.jsonl  # effect of names
+uv run causalagentbench report outputs/dev_model.jsonl --compare outputs/dev_pc.jsonl        # paired difference
 ```
 
-Each result file contains a run configuration and dataset checksum, one record per completed task,
-then a summary. Results are flushed as tasks finish. Invalid answers count as zero-effect predictions in
-the reported error; provider failures leave the run incomplete with no headline metric and a nonzero exit
-code. Output files are never overwritten.
+`eval` appends to its results file only with `--resume`, which checks that the run configuration matches
+and skips finished tasks; provider failures are recorded and retried on resume, never scored. Full
+conversations go to `<out>.transcripts.jsonl`. `rescore` re-scores saved answers with the current scorer.
+Every results file starts with a header recording the dataset hash, git commit, package versions, budgets
+and sampling settings (provider defaults).
 
-Use `--limit 2` for a quick check and `--workers 4` for concurrent episodes. Repeat `--model` to compare
-models on the same tasks. `--max-tool-calls` and `--max-turns` control the investigation budget; defaults
-are 100 calls and 25 model replies, plus at most one tool-free formatting repair. The agent is told its
-remaining budgets. Token usage, runtime and available cost estimates are recorded.
+## The task
 
-Three other free references are available:
+The prompt lists the columns, the outcome and the candidates, and states the assumptions: acyclic, linear,
+Gaussian noise, all common causes observed, faithful, unit variances. It never reveals roles, edges or
+adjustment sets. Tools (budget: 100 calls, 25 turns):
 
-```bash
-uv run causalagentbench baseline --dataset data/example --agent zero --out outputs/zero.jsonl
-uv run causalagentbench baseline --dataset data/example --agent correlation --out outputs/correlation.jsonl
-uv run causalagentbench baseline --dataset data/example --agent oracle --out outputs/oracle.jsonl
-```
+| Tool | Returns |
+| --- | --- |
+| `preview(n)` | first rows, as CSV |
+| `correlate(x, y, given)` | partial correlation with a 95% interval |
+| `regress(treatment, adjust)` | OLS coefficient on the outcome with standard error |
+| `discover(alpha)` | PC algorithm: oriented and undirected edges |
 
-`zero` reports zero for every effect without inspecting the data. `correlation` uses unadjusted regression.
-`oracle` uses hidden correct adjustment sets, but estimates
-coefficients from the sample; it is an estimation reference, not a competing agent. The PC baseline
-uses the same discovery configuration as the agent tool and excludes unresolved neighbors.
-
-Measured on all ten bundled tasks with `normalized-error-v1` reporting (no model API calls):
-
-| Reference | Normalized effect error ↓ | Effect MAE ↓ |
-| --- | ---: | ---: |
-| Always predict zero | 1.000 | 0.1481 |
-| Unadjusted regression | 0.867 | 0.1283 |
-| PC discovery → regression | 0.722 | 0.1069 |
-| Oracle adjustment → regression | 0.123 | 0.0183 |
-
-The oracle uses finite samples, so its effects are not exact and its error is not a strict lower bound.
-These are small-sample reference results, not evidence of language-model performance.
-
-## Build more tasks
-
-Download [CauseNet-Precision](https://causenet.org/), then:
-
-```bash
-uv run causalagentbench build \
-  --causenet /path/to/causenet-precision.jsonl.bz2 \
-  --out outputs/train --seed 1000 -n 100
-```
-
-Generation is local and deterministic. It needs neither an API key nor the `agents` extra. The dump is
-loaded once per build. A bounded matcher assigns distinct source concepts to graph nodes and verifies
-all edge directions. A task that cannot be grounded is retried with a new SCM; exhausting the retry
-budget fails the build. There is no invented-name fallback or silent partial dataset.
-
-The `.json` / `.npz` pair freezes the exact prompts, data, names, source hash and evaluator keys. Different
-seed ranges can be used for training and evaluation. The included dataset is a small example, not a
-claim of broad domain coverage. Its source attribution and build command are in [data/README.md](data/README.md).
-
-**Dataset JSON files contain the hidden answer keys.** Keep them in the evaluator process; give an agent
-only the public prompt and tool results. The Python object boundary is not a security sandbox for an agent
-with unrestricted access to the evaluator's filesystem or process.
-
-## Task, evaluation metric and reward
-
-Available tools are `preview`, `correlate` (including partial correlation), `regress` (OLS with an
-adjustment set and uncertainty), and `discover` (PC). Statistical tools use only the observed table.
-
-The final answer is:
+The answer is one JSON block:
 
 ```json
-{"verdicts": [
-  {"driver": "<concept>", "adjustment_set": ["<concept>"], "effect": 0.23}
-]}
+{"verdicts": [{"driver": "<column>", "adjustment_set": ["<column>"], "effect": 0.23}]}
 ```
 
-A model wraps this JSON in `<answer>...</answer>`. Every candidate must appear exactly once. Effects
-must be finite; adjustment sets cannot contain unknown columns, duplicates, the driver or the outcome.
-
-**The headline metric is `normalized_effect_error`**, pooled over all tasks and candidates. With true
-signed effects `t_i` and estimates `e_i`:
+## Scoring
 
 ```text
-normalized_effect_error = sum(|e_i - t_i|) / sum(|t_i|)
-effect_mae = mean(|e_i - t_i|)
+error = Σ min(|e_i − t_i|, 1) / Σ |t_i|        over every candidate of every task
 ```
 
-Zero means exact estimates, 1 equals the error of always predicting zero, and values above 1 are worse
-than that reference. There is no clipping. Errors and true magnitudes are pooled before division; this
-is not an average of per-task ratios. Larger-effect tasks therefore carry more weight. All candidates,
-including zero-effect candidates, count. The denominator is positive on generated benchmarks; for an
-external all-zero ground-truth dataset, normalized error is undefined and reported as null.
+`e_i` is the estimate and `t_i` the true total effect in standardized units. Lower is better; predicting
+zero everywhere scores exactly 1 (every |t| < 1). The cap bounds any single blunder so confidence
+intervals stay valid. Absolute error rewards committing to the likelier direction rather than averaging.
+Reports give a task-clustered 95% interval, the error on the **name-critical** and **data-identified**
+slices, answer validity, the share of valid adjustment sets, tool calls, tokens and cost. Model
+comparisons are paired by task.
 
-Report `effect_mae` (standardized effect units, lower is better) and `answer_validity_rate` alongside the
-headline. An invalid answer replaces the whole task's estimates with zeros for both reported error
-metrics. It remains in the denominator and reduces validity; it is never silently excluded. This gives
-an invalid answer the same error as an explicit all-zero answer, not a correctness judgment.
+The names ablation reports how much placeholder names raise the error on each slice and the difference
+between the two (expected: large on name-critical, near zero on data-identified).
 
-Provider/runtime failures are separate from invalid answers. If any task fails, the summary's headline
-error and MAE are null and the CLI exits nonzero; partial diagnostic averages remain available. Validity
-is the fraction of all attempted tasks with a valid answer. A complete all-invalid run has normalized
-error 1 and validity 0. Results record `reporting_version: "normalized-error-v1"`.
+## How tasks are generated
 
-**RL reward is separate**, on `[0, 1]`, using each task's scale `s = median(|t_i|)`:
+1. **Motif graph.** Five candidates wired into one outcome from small patterns: clean cause; confounded
+   cause with a mediator; collider and M-bias traps; zero-effect decoys; plus a child of the outcome.
+   Some confounders get two extra parents, which lets the data orient them.
+2. **Correlations.** A unit-variance linear-Gaussian model on the motif graph gives the correlation
+   matrix Σ (per-parent weights bounded away from zero, random signs).
+3. **True graph.** Drawn uniformly from the motif graph's Markov equivalence class, independently of Σ.
+   Its weights come from regressing each node on its parents under Σ (*covariance transfer*), so the
+   data are identical whichever equivalent graph is true: nothing in the data predicts an orientation
+   the CPDAG leaves open.
+4. **Gates.** Computed from Σ and the equivalence class only, never the true graph, so rejection cannot
+   leak orientation either. They require a name-critical candidate and a data-identified one that needs
+   adjustment; material differences between possible effects; no fixed recipe (adjust for nothing,
+   everything, or the other candidates) within 25% error for any equivalent graph; tempting decoys;
+   effects below 1; and detectable v-structures at 10,000 rows.
+5. **Names.** Exact CauseNet concepts under four rules: every hidden edge `A → B` is a CauseNet relation
+   `A → B`; pairs CauseNet states both ways are never used; no CauseNet relation between two chosen
+   concepts points against the hidden causal order; no near-duplicate concepts (`infection`/`infections`,
+   `diabetes`/`diabetes_mellitus`). No word lists, no curation, no language model. Names must match the true
+   graph, so naming retries on the same graph rather than redrawing it; the audit finds no measurable effect
+   on which orientations are kept.
 
-```text
-reward = effect_score = 1 - mean(min(|e_i - t_i| / s, 1))
-```
+`scripts/audit.py` measures gate acceptance, orientation leakage (a structure-only model against one that
+also sees data statistics, on held-out tasks) and how well PC recovers each task's structure.
 
-All candidates count, including zero-effect candidates. Generated tasks have positive `s`. Exact effects
-earn 1; reward is partial credit, not percent correct or improvement over chance. Predicting zero earns
-credit on zero and small effects, so compare against the zero baseline. Invalid answers earn zero reward.
+**Splits.** Seeds come from separate namespaces: `train`, `dev` (public), `test` (public, frozen), and
+`private` (derived from a secret salt; `--salt-env`). Training tasks never use a CauseNet relation between
+two concepts that appear together in a dev or test task. Dataset files carry a canary GUID.
+**Dataset JSON files contain the hidden answers**; keep them in the evaluator process.
 
-The CLI also records this reward as a diagnostic. The RL scorer's MAE is null for invalid submissions;
-evaluation applies the explicit zero-prediction policy above when building its reports.
+## Reference results
 
-Two diagnostics do **not** contribute to reward:
+| Reference | All candidates | Name-critical | Data-identified |
+| --- | ---: | ---: | ---: |
+| Predict zero | 1.000 ± 0.000 | 1.000 ± 0.000 | 1.000 ± 0.000 |
+| Unadjusted regression | 0.925 ± 0.065 | 0.897 ± 0.118 | 0.949 ± 0.088 |
+| Adjust for every other column | 0.725 ± 0.026 | 0.814 ± 0.042 | 0.647 ± 0.032 |
+| PC discovery → adjust for discovered parents | 0.515 ± 0.050 | 0.852 ± 0.111 | 0.224 ± 0.038 |
+| Best data-only answer (true CPDAG, median over equivalent graphs)* | 0.262 ± 0.024 | 0.494 ± 0.046 | 0.062 ± 0.006 |
+| Oracle: adjust for the true parents* | 0.062 ± 0.004 | 0.061 ± 0.007 | 0.063 ± 0.006 |
 
-- `adjustment_score`: one minus normalized, clipped population regression bias from the proposed controls.
-  This evaluates their induced bias, not an exact match to a preferred variable list.
-- `ranking_tau`: pairwise agreement in absolute effect order on `[-1, 1]`; true ties are excluded and
-  submitted ties receive zero ordering credit. Estimates can rank perfectly while having incorrect sizes or signs.
+Headline error on the 200-task test split, with task-clustered 95% intervals (no model API calls;
+`outputs/results/`). \*Reads the hidden key; a reference, not an agent. On data-identified candidates the
+best data-only answer already matches the oracle; on name-critical candidates the best a name-blind
+analyst can expect is about 0.49, while the oracle reaches 0.06. That gap is what reading the names can buy. PC's extra error on
+data-identified candidates comes from finite-sample discovery mistakes (at 10,000 rows it recovers 86% of
+true edges and orients 91% of data-determined edges correctly).
 
-The RL rule remains `scoring_version: "effect-v1"`; older results used an adjustment/effect average and
-their rewards are not directly comparable. The bundled prompts describe both the headline metric and
-the RL reward. Previously frozen datasets retain their original prompts; rebuild those before new model runs.
+## RL environment
 
-The SCM is acyclic, linear and Gaussian, with independent noise and observed common causes. All columns
-have population unit variance. Graphs combine clean, confounded, mediated, instrumented, collider and
-M-bias patterns with zero-effect decoys. Each task has 2,000 rows. Generation gates ensure an oracle can
-recover the ranking on the released table and three specified naive adjustment policies have material bias.
-
-Some orientations are not identifiable from observational data alone; concept names provide domain
-knowledge but do not guarantee unique identification. The score measures recovery of the selected
-**synthetic** SCM, including effects that require semantic assumptions. It is not a pure test of statistical
-identification. CauseNet supplies claimed
-relations, not numerical effect sizes or a complete real-world causal graph. Additional relations in
-CauseNet may be omitted from the selected subgraph. This benchmark does not measure real-world causal
-effects or require instrumental-variable estimation.
-
-## RL interface
-
-No Gymnasium or training framework is required. `CausalEnv` exposes `reset` and `step`:
+`CausalEnv` follows TRL's `GRPOTrainer(environment_factory=...)` contract: `reset(**row)` returns the
+prompt and each tool is a named method; `submit(answer)` ends the episode.
 
 ```python
-from causalagentbench import CausalEnv, load_dataset
+from causalagentbench.environment import CausalEnv, reward_func, training_labeler
 
-tasks = load_dataset("data/example")
-env = CausalEnv(max_tool_calls=40)
-observation, info = env.reset(task=tasks[0])
-
-observation, reward, terminated, truncated, info = env.step({
-    "type": "tool", "name": "preview", "arguments": {"n": 3}
-})
-
-# The policy chooses further tool actions, then submits its answer:
-# env.step({"type": "submit", "answer": {"verdicts": [...]}})
+labeler = training_labeler("causenet-precision.jsonl.bz2", ["artifacts/dev", "artifacts/test"])
+trainer = GRPOTrainer(..., train_dataset=Dataset.from_dict({"prompt": [...], "seed": list(range(10_000))}),
+                      environment_factory=lambda: CausalEnv(labeler), reward_funcs=reward_func)
 ```
 
-Reset returns the public prompt, tool schemas and query budget. Each tool attempt, including an invalid
-one, costs one query and gives zero reward. After the final query, a submission is still allowed. Another
-tool attempt truncates the episode with zero reward. Submission always ends the episode; invalid answers
-score zero. Calls after termination require a new reset. RL submissions have no automatic format repair.
-
-For procedural training, load the source once:
-
-```python
-from causalagentbench import CausalEnv, CauseNetLabeler
-
-labeler = CauseNetLabeler.from_path("/path/to/causenet-precision.jsonl.bz2")
-env = CausalEnv(labeler=labeler)
-observation, info = env.reset(seed=123)
-```
-
-Use `make_task(seed, labeler=labeler)` directly when you need the public instance and evaluator key.
+The reward is `1 − min(task error, 2)` for a valid answer and `−1` otherwise, including an episode that
+ends without one; predicting zero earns 0, and failing on purpose never pays.
 
 ## Development
 
 ```bash
 uv sync --all-extras
-uv run pytest
-uv run ruff check .
-uv run mypy src
+uv run pytest -q
+uv run ruff check src tests scripts && uv run mypy src
 ```
 
-The tests cover source-edge grounding, generation, exact effects, answer validation, scoring, tools,
-episode budgets and termination, serialization, CLI output, and provider-error handling. No live API calls
-are needed. Provider-specific tests need the optional SDKs installed by `--all-extras`.
-
-Code is Apache-2.0. CauseNet-derived example data is CC BY 4.0; see [data/README.md](data/README.md).
+Code is Apache-2.0. CauseNet-derived data is CC BY 4.0; see [data/README.md](data/README.md).
