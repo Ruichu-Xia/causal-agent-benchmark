@@ -41,7 +41,7 @@ _DEFAULT_ALPHA = DEFAULT_ALPHA
 
 Documented and exposed rather than hidden: it is the one knob that materially changes what PC returns, and
 a discovery baseline whose hyperparameters are unstated is not reproducible. Tighter than the usual 0.05
-because these tables are large (n=2000+), where 0.05 admits noticeably more spurious edges."""
+because these tables are large (10,000 rows), where 0.05 admits noticeably more spurious edges."""
 
 
 def _row_count_error(value: object) -> str | None:

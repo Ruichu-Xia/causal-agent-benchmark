@@ -21,32 +21,31 @@ SeedLike = int | np.random.SeedSequence | np.random.Generator
 
 
 class Role(Enum):
-    """The causal role a node plays in an instance."""
+    """The position a node was composed in within the motif graph (``scm/gadgets.py``)."""
 
     CONFOUNDER = "confounder"
     DRIVER_CONFOUNDED = "driver_confounded"
     DRIVER_CLEAN = "driver_clean"
     MEDIATOR = "mediator"
     DECOY = "decoy"
-    INSTRUMENT = "instrument"
     UPSTREAM_CAUSE = "upstream_cause"
     COLLIDER = "collider"
     OUTCOME = "outcome"
+    OUTCOME_CHILD = "outcome_child"
 
 
 @dataclass(frozen=True)
 class Scaffold:
-    """A fixed causal-graph template: topology, roles, and the identification ground truth.
-
-    Adding a benchmark structure means constructing another ``Scaffold``; all consumers target this type.
+    """A causal graph with its candidates and outcome.
 
     Attributes:
         node_names: Canonical node order indexing every SCM matrix row/column.
-        roles: Node name to its causal role (must cover exactly ``node_names``).
+        roles: Node name to its motif role (must cover exactly ``node_names``). After the true graph is
+            redrawn within its equivalence class, a role names the motif position, not necessarily the
+            node's causal role in the true graph.
         edges: Directed edges as ``(parent, child)`` pairs.
         drivers: Candidates whose signed total causal effects must be estimated.
         outcome: The outcome node name.
-        correct_adjustment: Minimal valid backdoor adjustment set per driver.
     """
 
     node_names: tuple[str, ...]
@@ -54,7 +53,6 @@ class Scaffold:
     edges: tuple[tuple[str, str], ...]
     drivers: tuple[str, ...]
     outcome: str
-    correct_adjustment: Mapping[str, tuple[str, ...]]
 
     def __post_init__(self) -> None:
         """Validate structural invariants so malformed scaffolds fail fast."""
@@ -70,8 +68,6 @@ class Scaffold:
             raise ValueError("drivers must be nodes")
         if self.outcome not in names:
             raise ValueError("outcome must be a node")
-        if not set(self.correct_adjustment) <= set(self.drivers):
-            raise ValueError("correct_adjustment keys must be drivers")
         if not nx.is_directed_acyclic_graph(self.digraph()):
             raise ValueError("scaffold must be acyclic")
 
@@ -82,28 +78,6 @@ class Scaffold:
     def parents(self, name: str) -> tuple[str, ...]:
         """Return the parents of a node, in canonical order."""
         return tuple(p for p, c in self.edges if c == name)
-
-    def nodes_with_role(self, role: Role) -> tuple[str, ...]:
-        """Return the nodes carrying a given role, in canonical order."""
-        return tuple(n for n in self.node_names if self.roles[n] == role)
-
-    def non_decoy_drivers(self) -> tuple[str, ...]:
-        """Candidate drivers that aren't decoys, in canonical order.
-
-        The drivers whose effect size is actually being separated/ranked - a decoy's effect is a
-        structural zero by design, so it's a distractor, not a ranked candidate (`scm/target_effects.py`).
-        """
-        decoys = self.nodes_with_role(Role.DECOY)
-        return tuple(d for d in self.drivers if d not in decoys)
-
-    def mediator_of(self, driver: str) -> str | None:
-        """Return the driver's own mediator, if it has one.
-
-        A child carrying ``Role.MEDIATOR`` - not every driver archetype has one (instrumented and clean
-        drivers don't).
-        """
-        mediators = [c for p, c in self.edges if p == driver and self.roles[c] is Role.MEDIATOR]
-        return mediators[0] if mediators else None
 
     def digraph(self) -> nx.DiGraph:
         """Return the scaffold as a networkx directed graph."""
@@ -152,13 +126,3 @@ class SCM:
         """Return the standardized total causal effect of ``name`` on the outcome."""
         outcome_idx = self.scaffold.index(self.scaffold.outcome)
         return float(self.tau[self.scaffold.index(name), outcome_idx])
-
-    def true_ranking(self) -> tuple[str, ...]:
-        """Return drivers ordered by descending absolute total effect on the outcome."""
-        return tuple(
-            sorted(
-                self.scaffold.drivers,
-                key=lambda d: abs(self.total_effect_on_outcome(d)),
-                reverse=True,
-            )
-        )

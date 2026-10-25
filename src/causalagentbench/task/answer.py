@@ -21,8 +21,6 @@ class DriverVerdict(BaseModel):
     driver: str
     adjustment_set: tuple[str, ...] = ()
     effect: float | None = None
-    identifiable_from_data: bool | None = None
-    """Optional legacy diagnostic, not requested or rewarded in the default task."""
 
 
 class Answer(BaseModel):

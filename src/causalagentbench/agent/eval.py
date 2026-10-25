@@ -1,38 +1,45 @@
-"""Evaluate a single task with a scripted baseline or a tool-calling model."""
+"""Evaluate one task with a baseline or a tool-calling model, producing a scored episode record."""
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from typing import Any
 
-from causalagentbench.agent.loop import TurnTrace, run_agent
-from causalagentbench.scoring.metrics import regression_coefficient
-from causalagentbench.scoring.score import SCORING_VERSION, score_output
-from causalagentbench.task.answer import Answer, DriverVerdict
+from causalagentbench.agent.loop import TurnTrace, TurnTranscript, run_agent
+from causalagentbench.scoring.baselines import baseline_answer
+from causalagentbench.scoring.score import SCORING_VERSION, AnswerScore, score_output
 from causalagentbench.task.instance import Instance, InstanceKey
 
-REPORTING_VERSION = "normalized-error-v1"
-"""Aggregate absolute error relative to zero predictions, including invalid answers."""
 
-
-def _baseline(instance: Instance, key: InstanceKey, name: str) -> Answer:
-    if name not in ("zero", "pc", "correlation", "oracle"):
-        raise ValueError(f"unknown baseline: {name}")
-    if name == "pc":
-        from causalagentbench.scoring.scripted_agent import AmbiguityPolicy, scripted_answer
-
-        return scripted_answer(instance, policy=AmbiguityPolicy.EXCLUDE)
-    verdicts = []
-    for label in instance.candidate_drivers:
-        nodes = key.scm.scaffold.correct_adjustment[key.label_to_node[label]] if name == "oracle" else ()
-        adjust = tuple(key.node_to_label[node] for node in nodes)
-        estimate = (
-            0.0
-            if name == "zero"
-            else regression_coefficient(instance.data, instance.columns, instance.outcome, label, adjust)
-        )
-        verdicts.append(DriverVerdict(driver=label, adjustment_set=adjust, effect=estimate))
-    return Answer(verdicts=tuple(verdicts))
+def episode_record(index: int, model: str, answer: str, key: InstanceKey, **extra: Any) -> dict[str, Any]:
+    """Score ``answer`` and return the JSON-safe episode record, with one entry per candidate."""
+    score: AnswerScore = score_output(answer, key)
+    candidates = [
+        {
+            "node": node,
+            "label": key.node_to_label[node],
+            "estimate": score.estimate[node],
+            "truth": score.truth[node],
+            "error": abs(score.estimate[node] - score.truth[node]),
+            "capped_error": score.capped_error(node),
+            "name_critical": score.name_critical[node],
+            "adjustment_valid": score.adjustment_valid[node],
+        }
+        for node in key.scm.scaffold.drivers
+    ]
+    return {
+        "type": "episode",
+        "index": index,
+        "model": model,
+        "scoring_version": SCORING_VERSION,
+        "parse_ok": score.parse_ok,
+        "task_error": score.task_error,
+        "reward": score.reward,
+        "candidates": candidates,
+        "answer": answer,
+        **extra,
+    }
 
 
 def evaluate_task(
@@ -43,66 +50,71 @@ def evaluate_task(
     baseline: str | None,
     max_tool_calls: int,
     max_turns: int,
-) -> dict[str, Any]:
-    """Evaluate one task, recording provider errors separately from invalid model answers."""
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Run one task; return its episode (or error) record and, for models, its transcript record.
+
+    Provider failures are recorded as ``"error"`` rows, never scored, so a resumed run retries them.
+    """
     instance, key = task
     start = time.monotonic()
     turns: list[TurnTrace] = []
+    transcripts: list[TurnTranscript] = []
+    name = model or baseline
+    assert name is not None
     try:
         if baseline is not None:
-            answer = "<answer>" + _baseline(instance, key, baseline).model_dump_json() + "</answer>"
+            answer = "<answer>" + baseline_answer(baseline, instance, key).model_dump_json() + "</answer>"
         else:
             from causalagentbench.agent.clients import LiteLLMClient
 
             assert model is not None
             answer = run_agent(
                 instance,
-                LiteLLMClient(model=model, seed=None),
+                LiteLLMClient(model=model),
                 max_tool_calls=max_tool_calls,
                 max_turns=max_turns,
                 on_turn=turns.append,
+                on_transcript=transcripts.append,
             )
-        score = score_output(answer, key)
-        n_candidates = len(key.scm.scaffold.drivers)
-        zero_effect_mae = sum(
-            abs(key.scm.total_effect_on_outcome(driver)) / n_candidates for driver in key.scm.scaffold.drivers
-        )
-        result: dict[str, Any] = {
-            "type": "episode",
-            "index": index,
-            "model": model or baseline,
-            "parse_ok": score.parse_ok,
-            "reward": score.overall,
-            "adjustment_score": score.identification,
-            "effect_score": score.estimation,
-            # Invalid answers are evaluated as all-zero estimates, never dropped from the metric.
-            "effect_mae": score.effect_mae if score.parse_ok else zero_effect_mae,
-            "zero_effect_mae": zero_effect_mae,
-            "n_candidates": n_candidates,
-            "ranking_tau": score.ranking_tau,
-            "answer": answer,
-        }
     except Exception as exc:
-        result = {
-            "type": "error",
-            "index": index,
-            "model": model or baseline,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-    result.update(
-        {
-            "scoring_version": SCORING_VERSION,
-            "reporting_version": REPORTING_VERSION,
-            "seconds": time.monotonic() - start,
-            "turns": len(turns),
-            "tool_calls_requested": sum(len(t.tool_calls) for t in turns),
-            "prompt_tokens": sum(t.prompt_tokens or 0 for t in turns),
-            "completion_tokens": sum(t.completion_tokens or 0 for t in turns),
-            "estimated_cost_usd": (
-                sum(t.cost_usd for t in turns if t.cost_usd is not None)
-                if all(t.cost_usd is not None for t in turns)
-                else None
-            ),
-        }
+        record = {"type": "error", "index": index, "model": name, "error": f"{type(exc).__name__}: {exc}"}
+        return record, _transcript(index, name, transcripts, None)
+    costs = [t.cost_usd for t in turns]
+    record = episode_record(
+        index,
+        name,
+        answer,
+        key,
+        seconds=time.monotonic() - start,
+        turns=len(turns),
+        tool_calls=sum(len(t.tool_calls) for t in turns),
+        prompt_tokens=sum(t.prompt_tokens or 0 for t in turns),
+        completion_tokens=sum(t.completion_tokens or 0 for t in turns),
+        estimated_cost_usd=sum(costs) if all(c is not None for c in costs) else None,
+        served_models=sorted({t.model for t in turns if t.model}),
     )
-    return result
+    return record, _transcript(index, name, transcripts, answer if baseline is None else None)
+
+
+def _transcript(index: int, model: str, transcripts: list[TurnTranscript], final: str | None) -> dict[str, Any] | None:
+    """The full conversation: the last request's message history plus the final reply."""
+    if not transcripts:
+        return None
+    last = transcripts[-1]
+    messages = list(last.messages)
+    if last.content is not None or last.tool_calls:
+        messages.append(
+            {
+                "role": "assistant",
+                "content": last.content,
+                "tool_calls": [dataclasses.asdict(call) for call in last.tool_calls],
+            }
+        )
+    return {
+        "type": "transcript",
+        "index": index,
+        "model": model,
+        "messages": messages,
+        "final_answer": final,
+        "error": last.error,
+    }

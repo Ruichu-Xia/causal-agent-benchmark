@@ -1,5 +1,7 @@
 import json
 
+import numpy as np
+
 from causalagentbench import build_instance, sample
 from causalagentbench.agent.loop import (
     _FINAL_TURN_REMINDER,
@@ -14,21 +16,20 @@ from causalagentbench.agent.loop import (
     run_agent,
 )
 from causalagentbench.agent.tools import CausalTools
-from causalagentbench.scoring.gates import generate_gated_procedural
+from causalagentbench.scoring.gates import generate_scm
 
 
 def _instance():
-    scm, _ = generate_gated_procedural(0)
+    """A placeholder-named instance of an accepted SCM."""
+    scm, _ = generate_scm(np.random.SeedSequence(0))
     data = sample(scm, 200, seed=0)
     instance, _ = build_instance(scm, data, seed=0)
     return instance
 
 
 def _valid_answer(instance) -> str:
-    verdicts = [
-        {"driver": driver, "adjustment_set": [], "effect": 0.0, "identifiable_from_data": True}
-        for driver in instance.candidate_drivers
-    ]
+    """A contract-valid answer: a zero estimate for every candidate."""
+    verdicts = [{"driver": driver, "adjustment_set": [], "effect": 0.0} for driver in instance.candidate_drivers]
     return f"<answer>{json.dumps({'verdicts': verdicts})}</answer>"
 
 
@@ -36,10 +37,12 @@ class _ScriptedClient:
     """Pops one scripted ``ModelTurn`` per call, recording every call it received."""
 
     def __init__(self, turns: list[ModelTurn]):
+        """Queue the turns to replay."""
         self._turns = list(turns)
         self.calls: list[tuple[list[dict], list[dict], bool]] = []
 
     def complete(self, messages, tools, *, force_final: bool) -> ModelTurn:
+        """Record the request and return the next scripted turn."""
         self.calls.append((list(messages), tools, force_final))  # snapshot: run_agent mutates in place
         return self._turns.pop(0)
 
@@ -210,6 +213,23 @@ def test_on_turn_fires_once_per_turn_with_tool_names_and_token_counts():
     assert traces[1].prompt_tokens == 150 and traces[1].completion_tokens == 10
     assert traces[1].cost_usd == 0.02
     assert all(t.duration_seconds >= 0 for t in traces)
+
+
+def test_traces_and_transcripts_carry_the_model_the_provider_served():
+    instance = _instance()
+    call = ToolCall(id="1", name="preview", arguments={})
+    client = _ScriptedClient(
+        [
+            ModelTurn(content=None, tool_calls=(call,), model="provider/model-2026-01"),
+            ModelTurn(content=_valid_answer(instance)),  # a provider that reports no model
+        ]
+    )
+    traces: list[TurnTrace] = []
+    transcripts: list[TurnTranscript] = []
+    run_agent(instance, client, on_turn=traces.append, on_transcript=transcripts.append)
+
+    assert [t.model for t in traces] == ["provider/model-2026-01", None]
+    assert [t.model for t in transcripts] == ["provider/model-2026-01", None]
 
 
 def test_on_turn_is_never_called_when_omitted():

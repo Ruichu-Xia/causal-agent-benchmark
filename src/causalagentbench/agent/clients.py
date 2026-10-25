@@ -26,18 +26,23 @@ def load_env() -> None:
 
 _LITELLM_DEFAULT_MAX_RETRIES = 2
 _DATABRICKS_NUM_RETRIES = 6
-_REQUIRED_TOOL_PARAMS = frozenset({"tools", "tool_choice", "temperature"})
+_REQUIRED_TOOL_PARAMS = frozenset({"tools", "tool_choice"})
 
 
 @dataclass(frozen=True)
 class LiteLLMClient:
-    """Default ``ToolCallingClient`` on LiteLLM. Pass ``model`` like ``"anthropic/claude-opus-4-8"``."""
+    """Default ``ToolCallingClient`` on LiteLLM. Pass ``model`` like ``"anthropic/claude-opus-4-8"``.
+
+    ``temperature`` and ``seed`` are sent only when set; by default each provider's own sampling defaults
+    apply (several current models reject a non-default temperature). LiteLLM retries transport failures
+    (rate limits, timeouts, 5xx) up to ``max_retries`` times.
+    """
 
     model: str
-    temperature: float = 0.0
+    temperature: float | None = None
     request_timeout: float = 120.0
     max_retries: int = _LITELLM_DEFAULT_MAX_RETRIES
-    seed: int | None = 0
+    seed: int | None = None
     openrouter_session_id: str | None = None
 
     def validate_tool_capability(self) -> None:
@@ -45,7 +50,9 @@ class LiteLLMClient:
         load_env()
         if self.openrouter_session_id is not None and not self.model.startswith("openrouter/"):
             raise ValueError("openrouter_session_id requires an openrouter/ model ID")
-        required = _REQUIRED_TOOL_PARAMS | ({"seed"} if self.seed is not None else set())
+        required = set(_REQUIRED_TOOL_PARAMS)
+        required |= {"seed"} if self.seed is not None else set()
+        required |= {"temperature"} if self.temperature is not None else set()
         _validate_litellm_params(self.model, tuple(sorted(required)))
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, force_final: bool) -> ModelTurn:
@@ -61,13 +68,15 @@ class LiteLLMClient:
             "messages": messages,
             "tools": tools,
             "tool_choice": "none" if force_final else "auto",
-            "temperature": self.temperature,
-            "seed": self.seed,
             "num_retries": self.max_retries,
             "timeout": self.request_timeout,
             "drop_params": False,
             "_skip_mcp_handler": True,
         }
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        if self.seed is not None:
+            kwargs["seed"] = self.seed
         if self.openrouter_session_id is not None:
             # OpenRouter uses this request-body field for sticky upstream-provider routing. LiteLLM passes
             # OpenRouter-specific body fields through ``extra_body`` rather than dropping them.
@@ -85,6 +94,7 @@ class LiteLLMClient:
             prompt_tokens=usage.prompt_tokens if usage else None,
             completion_tokens=usage.completion_tokens if usage else None,
             cost_usd=cost_usd,
+            model=getattr(response, "model", None),
         )
 
 
@@ -146,7 +156,7 @@ class DatabricksClient:
     """
 
     model: str
-    temperature: float = 0.0
+    temperature: float | None = None
     max_tokens: int = 32_000
     """Generous, not a real constraint: this is a hard external cutoff the model has no awareness of - it
     keeps generating (reasoning tokens count against the same budget as answer tokens) until either it's
@@ -171,20 +181,17 @@ class DatabricksClient:
             "tool_choice": "none" if force_final else "auto",
             "max_tokens": max_tokens,
         }
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
         try:
-            response = _databricks_client().chat.completions.create(temperature=self.temperature, **kwargs)
+            response = _databricks_client().chat.completions.create(**kwargs)
         except openai.BadRequestError as exc:
-            message_text = str(exc)
-            if "temperature" in message_text:
-                # Some gateway-served models (observed: claude-opus-4-8) reject "temperature" outright,
-                # unlike LiteLLM's drop_params which handles this transparently - retry once without it.
-                response = _databricks_client().chat.completions.create(**kwargs)
-            elif (ceiling := _extract_max_tokens_ceiling(message_text, max_tokens)) is not None:
-                _max_tokens_ceiling[self.model] = ceiling
-                kwargs["max_tokens"] = ceiling
-                response = _databricks_client().chat.completions.create(temperature=self.temperature, **kwargs)
-            else:
+            ceiling = _extract_max_tokens_ceiling(str(exc), max_tokens)
+            if ceiling is None:
                 raise
+            _max_tokens_ceiling[self.model] = ceiling
+            kwargs["max_tokens"] = ceiling
+            response = _databricks_client().chat.completions.create(**kwargs)
         message = response.choices[0].message
         raw_calls = getattr(message, "tool_calls", None) or ()
         calls = tuple(_parse_tool_call(c) for c in raw_calls)
@@ -194,6 +201,7 @@ class DatabricksClient:
             tool_calls=calls,
             prompt_tokens=usage.prompt_tokens if usage else None,
             completion_tokens=usage.completion_tokens if usage else None,
+            model=getattr(response, "model", None),
         )
 
 

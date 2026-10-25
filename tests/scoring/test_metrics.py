@@ -1,40 +1,33 @@
+import numpy as np
 import pytest
 
-from causalagentbench.scoring.metrics import kendall_tau, kendall_tau_zscore
+from causalagentbench.scoring.metrics import regression_coefficient
 
 
-def test_identical_orderings():
-    assert kendall_tau([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == 1.0
+def _table(seed: int = 0, n: int = 500) -> tuple[np.ndarray, tuple[str, ...]]:
+    """Columns x, z, y with y = 2x + 3z + 1 exactly, and x correlated with z."""
+    rng = np.random.default_rng(seed)
+    z = rng.standard_normal(n)
+    x = 0.5 * z + rng.standard_normal(n)
+    return np.column_stack([x, z, 2 * x + 3 * z + 1]), ("x", "z", "y")
 
 
-def test_reversed_orderings():
-    assert kendall_tau([1.0, 2.0, 3.0], [3.0, 2.0, 1.0]) == -1.0
+def test_adjusted_coefficient_recovers_the_exact_slope():
+    data, columns = _table()
+    assert regression_coefficient(data, columns, "y", "x", ["z"]) == pytest.approx(2.0)
+    assert regression_coefficient(data, columns, "y", "z", ["x"]) == pytest.approx(3.0)
 
 
-def test_single_swap():
-    # 5 concordant, 1 discordant out of 6 pairs
-    assert kendall_tau([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 4.0, 3.0]) == pytest.approx(4 / 6)
+def test_unadjusted_coefficient_is_the_simple_regression_slope():
+    data, columns = _table()
+    x, y = data[:, 0], data[:, 2]
+    expected = np.cov(x, y)[0, 1] / np.var(x, ddof=1)
+    assert regression_coefficient(data, columns, "y", "x") == pytest.approx(expected)
 
 
-def test_mismatched_lengths_raise():
-    with pytest.raises(ValueError, match="same length"):
-        kendall_tau([1.0, 2.0], [1.0])
-
-
-def test_zscore_same_tau_is_more_extreme_at_larger_n():
-    # The same tau is less surprising from a small ranking task than a large one - raw tau alone can't
-    # distinguish "got 1/3 pairs right by luck on a 3-item task" from "on an 8-item task."
-    small = kendall_tau_zscore(1 / 3, 3)
-    large = kendall_tau_zscore(1 / 3, 8)
-    assert 0 < small < large
-
-
-def test_zscore_sign_matches_tau_sign():
-    assert kendall_tau_zscore(1.0, 5) > 0
-    assert kendall_tau_zscore(-1.0, 5) < 0
-    assert kendall_tau_zscore(0.0, 5) == 0.0
-
-
-def test_zscore_undefined_below_two_items():
-    assert kendall_tau_zscore(1.0, 1) is None
-    assert kendall_tau_zscore(1.0, 0) is None
+def test_coefficient_ignores_column_order_and_location_shifts():
+    data, columns = _table()
+    reordered = data[:, [2, 0, 1]] + np.array([5.0, -3.0, 7.0])
+    assert regression_coefficient(reordered, ("y", "x", "z"), "y", "x", ["z"]) == pytest.approx(
+        regression_coefficient(data, columns, "y", "x", ["z"])
+    )
