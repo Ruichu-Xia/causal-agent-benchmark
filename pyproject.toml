@@ -16,7 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # Only model evaluation needs a provider client. Dataset generation is local and deterministic.
-agents = ["litellm>=1.50", "python-dotenv>=1.0"]
+# tenacity: LiteLLM needs it to retry rate limits and transient provider errors.
+agents = ["litellm>=1.50", "python-dotenv>=1.0", "tenacity>=9.2.1"]
 
 # Only for causalagentbench.agent.clients.DatabricksClient - comparing the agent against a model served
 # behind a Databricks AI Gateway. Not part of the default path; most users only need `agents`.
