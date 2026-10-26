@@ -142,18 +142,24 @@ true edges and orients 91% of data-determined edges correctly).
 ## RL environment
 
 `CausalEnv` follows TRL's `GRPOTrainer(environment_factory=...)` contract: `reset(**row)` returns the
-prompt and each tool is a named method; `submit(answer)` ends the episode.
+task prompt and the three tools are its public methods, with the remaining budget appended to each result
+as in evaluation. The episode ends when the model replies without a tool call; `reward_func` scores that
+final reply's `<answer>` block exactly as evaluation does, so training and evaluation share one prompt and
+one answer format.
 
 ```python
-from causalagentbench.environment import CausalEnv, reward_func, training_labeler
+from causalagentbench.environment import CausalEnv, reward_func
+from causalagentbench.task.dataset import load_dataset
 
-labeler = training_labeler("causenet-precision.jsonl.bz2", ["artifacts/dev", "artifacts/test"])
-trainer = GRPOTrainer(..., train_dataset=Dataset.from_dict({"prompt": [...], "seed": list(range(10_000))}),
-                      environment_factory=lambda: CausalEnv(labeler), reward_funcs=reward_func)
+# causalagentbench build --split train -n 1000 --exclude artifacts/dev artifacts/test --out artifacts/train ...
+tasks = load_dataset("artifacts/train")
+trainer = GRPOTrainer(..., train_dataset=Dataset.from_dict({"prompt": [...], "seed": list(range(len(tasks)))}),
+                      environment_factory=lambda: CausalEnv(tasks), reward_funcs=reward_func)
 ```
 
-The reward is `1 − min(task error, 2)` for a valid answer and `−1` otherwise, including an episode that
-ends without one; predicting zero earns 0, and failing on purpose never pays.
+Training tasks avoid every CauseNet relation between two concepts that appear together in an evaluation
+task. The reward is `1 − min(task error, 2)` for a valid answer and `−1` otherwise, including an episode
+that ends without one; predicting zero earns 0, and failing on purpose never pays.
 
 ## Development
 
