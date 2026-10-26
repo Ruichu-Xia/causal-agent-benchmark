@@ -1,12 +1,12 @@
 """Serve the base model and a trained LoRA adapter with vLLM on Modal, for evaluation through the harness.
 
-    uv run --with modal modal deploy scripts/modal_serve.py   # prints the endpoint URL
-    export HOSTED_VLLM_API_BASE=<url>/v1 HOSTED_VLLM_API_KEY=$VLLM_API_KEY
+    ADAPTERS="trained=main/adapter,step40=main/checkpoint-40" uv run --with modal modal deploy scripts/modal_serve.py
+    export HOSTED_VLLM_API_BASE=<printed url>/v1   # HOSTED_VLLM_API_KEY is in .env
     causalagentbench eval --dataset artifacts/test --model hosted_vllm/base --model hosted_vllm/trained ...
 
-The adapter is read from the ``causalagentbench-runs`` volume at ``/<ADAPTER_RUN>/adapter``. Both models use
-vLLM's defaults from the model's generation config, the same sampling for each. The endpoint requires the
-API key in the ``vllm-api-key`` Modal secret (``VLLM_API_KEY``).
+``ADAPTERS`` names LoRA adapters on the ``causalagentbench-runs`` volume, served beside the base model as
+``base``. Every model uses vLLM's defaults from the model's generation config, the same sampling for each.
+The endpoint requires the API key in the ``vllm-api-key`` Modal secret (``VLLM_API_KEY``).
 """
 
 from __future__ import annotations
@@ -17,14 +17,14 @@ import subprocess
 import modal
 
 BASE_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
-ADAPTER_RUN = os.environ.get("ADAPTER_RUN", "main")
+ADAPTERS = os.environ.get("ADAPTERS", "")
 app = modal.App("causalagentbench-serve")
 runs = modal.Volume.from_name("causalagentbench-runs", create_if_missing=True)
 hf_cache = modal.Volume.from_name("hf-cache", create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .uv_pip_install("vllm==0.31.0")
-    .env({"HF_HOME": "/hf", "ADAPTER_RUN": ADAPTER_RUN})
+    .env({"HF_HOME": "/hf", "ADAPTERS": ADAPTERS})
 )
 
 
@@ -39,7 +39,7 @@ image = (
 @modal.concurrent(max_inputs=64)
 @modal.web_server(port=8000, startup_timeout=20 * 60)
 def serve() -> None:
-    """Start an OpenAI-compatible vLLM server exposing ``base`` and, once trained, the LoRA ``trained``."""
+    """Start an OpenAI-compatible vLLM server exposing ``base`` and each adapter in ``ADAPTERS``."""
     command = [
         "vllm",
         "serve",
@@ -56,7 +56,9 @@ def serve() -> None:
         "--max-model-len",
         "32768",
     ]
-    adapter = f"/runs/{os.environ['ADAPTER_RUN']}/adapter"
-    if os.path.isdir(adapter):  # before training there is only the base model to serve
-        command += ["--enable-lora", "--max-lora-rank", "32", "--lora-modules", f"trained={adapter}"]
+    adapters = [entry.split("=", 1) for entry in os.environ["ADAPTERS"].split(",") if entry]
+    if adapters:
+        modules = [f"{name}=/runs/{path}" for name, path in adapters]
+        command += ["--enable-lora", "--max-lora-rank", "32", "--max-loras", str(len(modules))]
+        command += ["--lora-modules", *modules]
     subprocess.Popen(command)
