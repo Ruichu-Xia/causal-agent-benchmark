@@ -1,6 +1,7 @@
-"""Serve the base model and a trained LoRA adapter with vLLM on Modal, for evaluation through the harness.
+r"""Serve the base model and a trained LoRA adapter with vLLM on Modal, for evaluation through the harness.
 
-    ADAPTERS="trained=main/adapter,step40=main/checkpoint-40" uv run --with modal modal deploy scripts/modal_serve.py
+    ADAPTERS="trained=grpo120/adapter,step40=grpo120/checkpoint-40" \
+        uv run --with modal modal deploy scripts/modal_serve.py
     export HOSTED_VLLM_API_BASE=<printed url>/v1   # HOSTED_VLLM_API_KEY is in .env
     causalagentbench eval --dataset artifacts/test --model hosted_vllm/base --model hosted_vllm/trained ...
 
