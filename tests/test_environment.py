@@ -30,6 +30,11 @@ def _answer(task, shift: float = 0.0) -> str:
     return json.dumps({"verdicts": verdicts})
 
 
+def _any_tool(env: CausalEnv, task) -> str:
+    """Spend one tool call: the marginal regression of the first candidate."""
+    return env.regress(task[0].candidate_drivers[0])
+
+
 def test_reset_on_a_frozen_task_returns_its_prompt(task):
     env = CausalEnv()
     assert env.reset(task=task) == task[0].prompt
@@ -38,11 +43,12 @@ def test_reset_on_a_frozen_task_returns_its_prompt(task):
 
 def test_tools_spend_the_budget_and_then_raise(task):
     instance, _ = task
+    driver = instance.candidate_drivers[0]
     env = CausalEnv(max_tool_calls=3)
     env.reset(task=task)
-    assert env.preview(2).splitlines()[0] == ",".join(instance.columns)
-    assert env.correlate(instance.candidate_drivers[0], instance.outcome).startswith("corr(")
-    assert env.regress(instance.candidate_drivers[0], []).startswith(f"regress({instance.outcome}")
+    assert env.correlate(driver, instance.outcome).startswith(f"corr({driver}, {instance.outcome} | {{}})")
+    assert env.regress(driver, []).startswith(f"regress({driver} | {{}})")
+    assert env.regress(driver).startswith(f"regress({driver} | {{}})")
     with pytest.raises(ValueError, match="budget exhausted"):
         env.discover()
     assert not env.done  # an exhausted budget still allows the submission
@@ -51,7 +57,7 @@ def test_tools_spend_the_budget_and_then_raise(task):
 def test_submit_rewards_the_answer_by_the_benchmark_score(task):
     env = CausalEnv()
     env.reset(task=task)
-    env.preview()
+    _any_tool(env, task)
     assert env.submit(f"<answer>{_answer(task)}</answer>") == "Answer recorded."
     assert env.done and env.reward == 1.0
     assert env.info == {"parse_ok": True, "task_error": 0.0, "tool_calls": 1}
@@ -77,7 +83,7 @@ def test_an_invalid_submission_earns_the_floor_reward(task):
 def test_an_episode_without_a_submission_keeps_the_floor_reward(task):
     env = CausalEnv(max_tool_calls=1)
     env.reset(task=task)
-    env.preview()
+    _any_tool(env, task)
     assert not env.done
     assert reward_func([env]) == [INVALID_REWARD]
 
@@ -87,7 +93,7 @@ def test_the_episode_is_over_after_submission(task):
     env.reset(task=task)
     env.submit(_answer(task))
     with pytest.raises(ValueError, match="episode is over"):
-        env.preview()
+        _any_tool(env, task)
     with pytest.raises(ValueError, match="episode is over"):
         env.submit(_answer(task))
 
@@ -95,16 +101,16 @@ def test_the_episode_is_over_after_submission(task):
 def test_reset_starts_a_fresh_episode(task):
     env = CausalEnv(max_tool_calls=1)
     env.reset(task=task)
-    env.preview()
+    _any_tool(env, task)
     env.submit(_answer(task))
     env.reset(task=task)
     assert not env.done and env.reward == INVALID_REWARD and env.info == {}
-    env.preview()  # the budget is restored
+    _any_tool(env, task)  # the budget is restored
 
 
 def test_tools_need_a_started_episode():
     with pytest.raises(ValueError, match="episode is over"):
-        CausalEnv().preview()
+        CausalEnv().discover()
 
 
 def test_reward_func_returns_each_environment_reward(task):

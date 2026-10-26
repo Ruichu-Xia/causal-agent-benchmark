@@ -37,9 +37,10 @@ class FakeLiteLLMClient:
 
     fail = False
 
-    def __init__(self, model: str) -> None:
-        """Record the requested model id."""
+    def __init__(self, model: str, request_timeout: float = 120.0) -> None:
+        """Record the requested model id and request timeout."""
         self.model = model
+        self.request_timeout = request_timeout
 
     def validate_tool_capability(self) -> None:
         """Accept every model, as a provider with full capability metadata would."""

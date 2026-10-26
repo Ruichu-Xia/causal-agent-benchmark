@@ -95,7 +95,15 @@ class LiteLLMClient:
             completion_tokens=usage.completion_tokens if usage else None,
             cost_usd=cost_usd,
             model=getattr(response, "model", None),
+            cached_tokens=_usage_detail(usage, "prompt_tokens_details", "cached_tokens"),
+            reasoning_tokens=_usage_detail(usage, "completion_tokens_details", "reasoning_tokens"),
         )
+
+
+def _usage_detail(usage: Any, details: str, field: str) -> int | None:
+    """Return one OpenAI-shaped usage detail (e.g. cached prompt tokens), or ``None`` if not reported."""
+    value = getattr(getattr(usage, details, None), field, None)
+    return value if isinstance(value, int) else None
 
 
 @functools.cache

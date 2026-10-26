@@ -10,6 +10,7 @@ from causalagentbench.agent.clients import (
     _extract_max_tokens_ceiling,
     _parse_tool_call,
     _require_litellm_params,
+    _usage_detail,
     _validate_litellm_params,
 )
 
@@ -117,9 +118,15 @@ def test_litellm_parameter_preflight_rejects_missing_or_unknown_capability_metad
 
 
 def _response(model: str = "provider/served-model"):
-    """An OpenAI-shaped completion with plain text content and usage."""
+    """An OpenAI-shaped completion with plain text content and usage, including cache and reasoning details."""
     message = SimpleNamespace(content="hello", tool_calls=None)
-    usage = SimpleNamespace(prompt_tokens=3, completion_tokens=4, cost=0.002)
+    usage = SimpleNamespace(
+        prompt_tokens=3,
+        completion_tokens=4,
+        cost=0.002,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=2),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=1),
+    )
     return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage, model=model)
 
 
@@ -183,3 +190,14 @@ def test_databricks_client_omits_temperature_by_default_and_reports_the_served_m
     assert "temperature" not in requests[0]
     assert requests[1]["temperature"] == 0.2
     assert turn.model == "served"
+
+
+def test_litellm_client_reports_cached_and_reasoning_tokens(fake_litellm):
+    turn = LiteLLMClient(model="provider/model").complete([], [], force_final=False)
+    assert (turn.prompt_tokens, turn.cached_tokens, turn.completion_tokens, turn.reasoning_tokens) == (3, 2, 4, 1)
+
+
+def test_missing_usage_details_are_reported_as_unknown():
+    usage = SimpleNamespace(prompt_tokens=3, completion_tokens=4)
+    assert _usage_detail(usage, "prompt_tokens_details", "cached_tokens") is None
+    assert _usage_detail(None, "completion_tokens_details", "reasoning_tokens") is None
