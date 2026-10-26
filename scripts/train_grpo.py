@@ -39,7 +39,10 @@ def keep_lora_base_weights_exact() -> None:
 
     def exact(self: Any) -> Any:
         """Export as TRL does, then restore every LoRA base weight bit for bit."""
-        saved = {name: p.detach().clone() for name, p in self.model.named_parameters() if ".base_layer." in name}
+        # Kept in host memory: a GPU copy of every base weight (~7 GB for 4B) contributed to an OOM.
+        saved = {
+            name: p.detach().to("cpu", copy=True) for name, p in self.model.named_parameters() if ".base_layer." in name
+        }
         try:
             yield from original(self)
         finally:
@@ -112,6 +115,8 @@ def main() -> None:
     parser.add_argument("--vllm-memory", type=float, default=0.35, help="GPU memory share for vLLM")
     parser.add_argument("--save-steps", type=int, default=20)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--micro-batch", type=int, default=4, help="rollouts per backward pass (memory, not math)")
+    parser.add_argument("--resume", action="store_true", help="continue from the latest checkpoint in --out")
     args = parser.parse_args()
 
     from datasets import Dataset
@@ -150,14 +155,16 @@ def main() -> None:
                     handle.write(json.dumps({"step": state.global_step, "time": time.time(), **logs}) + "\n")
 
     rollouts_per_step = args.tasks_per_step * args.generations
+    if rollouts_per_step % args.micro_batch:
+        raise ValueError("--micro-batch must divide the rollouts per step")
     config = GRPOConfig(
         output_dir=str(out),
         max_steps=args.max_steps,
         seed=args.seed,
         learning_rate=args.learning_rate,
         lr_scheduler_type="constant",
-        per_device_train_batch_size=args.generations,
-        gradient_accumulation_steps=args.tasks_per_step,
+        per_device_train_batch_size=args.micro_batch,
+        gradient_accumulation_steps=rollouts_per_step // args.micro_batch,
         num_generations=args.generations,
         generation_batch_size=rollouts_per_step,
         max_completion_length=args.max_completion_length,
@@ -188,7 +195,7 @@ def main() -> None:
         peft_config=LoraConfig(r=args.lora_rank, lora_alpha=2 * args.lora_rank, target_modules="all-linear"),
         callbacks=[MetricsLog()],
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume)
     trainer.save_model(str(out / "adapter"))
     (out / "log_history.json").write_text(json.dumps(trainer.state.log_history, indent=1), encoding="utf-8")
 
