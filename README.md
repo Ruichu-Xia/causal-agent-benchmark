@@ -4,7 +4,7 @@ A benchmark and RL environment for one skill: estimating causal effects by combi
 evidence** with **knowledge of what variables mean**.
 
 An agent gets 10,000 rows of observational data whose columns are named after real concepts (from
-[CauseNet](https://causenet.org/)), an outcome, and five candidate drivers. Using four statistical tools,
+[CauseNet](https://causenet.org/)), an outcome, and five candidate drivers. Using three statistical tools,
 it reports the signed total causal effect of each candidate. A hidden linear-Gaussian causal model gives
 the exact answer.
 
@@ -46,21 +46,27 @@ uv run causalagentbench report outputs/dev_model.jsonl --compare outputs/dev_pc.
 `eval` appends to its results file only with `--resume`, which checks that the run configuration matches
 and skips finished tasks; provider failures are recorded and retried on resume, never scored. Full
 conversations go to `<out>.transcripts.jsonl`. `rescore` re-scores saved answers with the current scorer.
-Every results file starts with a header recording the dataset hash, git commit, package versions, budgets
-and sampling settings (provider defaults).
+Every results file starts with a header recording the protocol, dataset hash, git commit, package versions,
+budgets, request timeout and sampling settings (provider defaults). Each episode records tokens per turn,
+including cached and reasoning tokens when the provider reports them. Slow or local models need a longer
+`--timeout` (seconds per request; default 120).
 
 ## The task
 
 The prompt lists the columns, the outcome and the candidates, and states the assumptions: acyclic, linear,
 Gaussian noise, all common causes observed, faithful, unit variances. It never reveals roles, edges or
-adjustment sets. Tools (budget: 100 calls, 25 turns):
+adjustment sets. Tools (protocol `lean-v2`: 30 calls and 7 replies, the last of which must be the answer;
+a reply may carry several calls):
 
 | Tool | Returns |
 | --- | --- |
-| `preview(n)` | first rows, as CSV |
 | `correlate(x, y, given)` | partial correlation with a 95% interval |
 | `regress(treatment, adjust)` | OLS coefficient on the outcome with standard error |
 | `discover(alpha)` | PC algorithm: oriented and undirected edges |
+
+The budget is set by cost, not by need. In a pilot under the earlier budget (100 calls, 25 turns), the
+number of calls did not predict error, while re-sent history and per-turn reasoning drove the bill. The
+PC-then-regress recipe needs two investigation turns and reaches the same score through these tools.
 
 The answer is one JSON block:
 

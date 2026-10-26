@@ -1,6 +1,8 @@
 import json
+import re
 
 import numpy as np
+import pytest
 
 from causalagentbench import build_instance, sample
 from causalagentbench.agent.loop import (
@@ -8,6 +10,8 @@ from causalagentbench.agent.loop import (
     _FORMAT_REPAIR_REMINDER,
     _SYSTEM_PROMPT,
     _TOOL_SCHEMAS,
+    MAX_TOOL_CALLS,
+    MAX_TURNS,
     ModelTurn,
     ToolCall,
     TurnTrace,
@@ -17,6 +21,8 @@ from causalagentbench.agent.loop import (
 )
 from causalagentbench.agent.tools import CausalTools
 from causalagentbench.scoring.gates import generate_scm
+from causalagentbench.scoring.scripted_agent import scripted_answer
+from causalagentbench.task.answer import parse_answer_for_instance
 
 
 def _instance():
@@ -25,6 +31,11 @@ def _instance():
     data = sample(scm, 200, seed=0)
     instance, _ = build_instance(scm, data, seed=0)
     return instance
+
+
+def _a_call(instance, call_id: str = "1", **extra) -> ToolCall:
+    """A valid tool call: the marginal regression of the first candidate, plus any ``extra`` arguments."""
+    return ToolCall(id=call_id, name="regress", arguments={"treatment": instance.candidate_drivers[0], **extra})
 
 
 def _valid_answer(instance) -> str:
@@ -69,7 +80,7 @@ def test_tool_call_is_dispatched_and_result_fed_back():
     assert result == answer
     tool_message = client.calls[1][0][-1]
     assert tool_message["role"] == "tool" and tool_message["tool_call_id"] == "1"
-    assert f"corr({a}, {b})" in tool_message["content"]
+    assert f"corr({a}, {b} | {{}})" in tool_message["content"]
 
 
 def test_replayed_tool_call_arguments_are_a_json_string_on_the_wire():
@@ -99,7 +110,9 @@ def test_a_tool_call_that_raises_returns_an_error_string_without_crashing_the_lo
     # A malformed/hallucinated argument shape (here: an extra kwarg no tool accepts) raises inside the
     # tool itself; the loop must turn that into a tool-result error, not propagate the exception.
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={"n": 5, "unexpected_kwarg": True})
+    call = ToolCall(
+        id="1", name="regress", arguments={"treatment": instance.candidate_drivers[0], "unexpected_kwarg": True}
+    )
     answer = _valid_answer(instance)
     client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=answer)])
     result = run_agent(instance, client)
@@ -111,7 +124,7 @@ def test_a_client_side_parse_error_on_a_tool_call_is_reported_without_dispatch()
     # ToolCall.error is set by a client that could not parse the model's raw arguments (e.g. malformed
     # JSON); the loop must report it as a tool-result error and never attempt to dispatch it.
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={}, error="malformed arguments JSON: boom")
+    call = ToolCall(id="1", name="regress", arguments={}, error="malformed arguments JSON: boom")
     answer = _valid_answer(instance)
     client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=answer)])
     result = run_agent(instance, client)
@@ -130,7 +143,7 @@ def test_final_turn_reminder_is_only_added_on_the_forced_final_turn():
     # A model mid-investigation can keep narrating "next I'd check X" instead of answering once tool
     # access is cut off (observed on real models); the explicit reminder tells it this is its last chance.
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={})
+    call = _a_call(instance, "1")
     client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,)), ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client, max_turns=2)
 
@@ -178,7 +191,7 @@ def test_invalid_format_is_repaired_only_once():
 
 def test_misbehaving_model_that_ignores_force_final_yields_empty_string():
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={})
+    call = _a_call(instance, "1")
     client = _ScriptedClient([ModelTurn(content=None, tool_calls=(call,))])  # keeps requesting tools
     assert run_agent(instance, client, max_turns=1) == ""
 
@@ -192,7 +205,7 @@ def test_valid_tool_free_reply_ends_immediately():
 
 def test_on_turn_fires_once_per_turn_with_tool_names_and_token_counts():
     instance = _instance()
-    call_a = ToolCall(id="1", name="preview", arguments={})
+    call_a = _a_call(instance, "1")
     call_b = ToolCall(id="2", name="correlate", arguments={"x": "a", "y": "b"})
     client = _ScriptedClient(
         [
@@ -206,7 +219,7 @@ def test_on_turn_fires_once_per_turn_with_tool_names_and_token_counts():
     run_agent(instance, client, on_turn=traces.append)
 
     assert [t.turn for t in traces] == [0, 1]
-    assert traces[0].tool_calls == ("preview", "correlate")
+    assert traces[0].tool_calls == ("regress", "correlate")
     assert traces[0].prompt_tokens == 100 and traces[0].completion_tokens == 20
     assert traces[0].cost_usd == 0.01
     assert traces[1].tool_calls == ()  # the final, tool-free turn
@@ -217,7 +230,7 @@ def test_on_turn_fires_once_per_turn_with_tool_names_and_token_counts():
 
 def test_traces_and_transcripts_carry_the_model_the_provider_served():
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={})
+    call = _a_call(instance, "1")
     client = _ScriptedClient(
         [
             ModelTurn(content=None, tool_calls=(call,), model="provider/model-2026-01"),
@@ -253,7 +266,7 @@ def test_on_transcript_captures_full_request_and_response():
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": instance.prompt},
     )
-    assert transcript.tools[0]["function"]["name"] == "preview"
+    assert transcript.tools[0]["function"]["name"] == "correlate"
     assert transcript.content == answer
     assert transcript.prompt_tokens == 10
     assert transcript.completion_tokens == 5
@@ -276,7 +289,10 @@ def test_discover_is_exposed_to_the_model_and_dispatchable():
 def test_budget_notice_is_appended_to_the_last_tool_result_of_each_turn():
     """The model is told its remaining budget continuously, so it can pace its own investigation."""
     instance = _instance()
-    calls = (ToolCall(id="1", name="preview", arguments={}), ToolCall(id="2", name="preview", arguments={}))
+    calls = (
+        _a_call(instance, "1"),
+        _a_call(instance, "2"),
+    )
     client = _ScriptedClient([ModelTurn(content=None, tool_calls=calls), ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client, max_turns=2, max_tool_calls=10)
 
@@ -290,7 +306,7 @@ def test_budget_notice_is_appended_to_the_last_tool_result_of_each_turn():
 def test_exhausting_the_tool_call_budget_forces_the_final_answer():
     """The tool-call budget, not the turn count, is what ends an ordinary investigation."""
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={})
+    call = _a_call(instance, "1")
     client = _ScriptedClient(
         [ModelTurn(content=None, tool_calls=(call, call)), ModelTurn(content=_valid_answer(instance))]
     )
@@ -305,7 +321,7 @@ def test_exhausting_the_tool_call_budget_forces_the_final_answer():
 def test_calls_beyond_the_budget_are_refused_rather_than_executed():
     """A turn may not overshoot the budget: batching many calls must not buy extra investigation."""
     instance = _instance()
-    calls = tuple(ToolCall(id=str(i), name="preview", arguments={}) for i in range(4))
+    calls = tuple(_a_call(instance, str(i)) for i in range(4))
     client = _ScriptedClient([ModelTurn(content=None, tool_calls=calls), ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client, max_turns=2, max_tool_calls=2)
 
@@ -319,7 +335,7 @@ def test_calls_beyond_the_budget_are_refused_rather_than_executed():
 
 def test_turn_trace_reports_the_budget_state_the_model_saw():
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={})
+    call = _a_call(instance, "1")
     client = _ScriptedClient(
         [ModelTurn(content=None, tool_calls=(call, call)), ModelTurn(content=_valid_answer(instance))]
     )
@@ -334,7 +350,7 @@ def test_turn_trace_reports_the_budget_state_the_model_saw():
 def test_exhausting_the_token_budget_forces_the_final_answer():
     """Cost is bounded in a cost unit, so a runaway is cut off even with tool-call budget to spare."""
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={})
+    call = _a_call(instance, "1")
     expensive = ModelTurn(content=None, tool_calls=(call,), prompt_tokens=400, completion_tokens=200)
     client = _ScriptedClient([expensive, ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client, max_tool_calls=100, max_token_budget=500)
@@ -347,7 +363,7 @@ def test_exhausting_the_token_budget_forces_the_final_answer():
 def test_a_client_that_reports_no_usage_is_governed_by_the_tool_call_budget_alone():
     """An unenforceable budget must not silently truncate: no usage reported means no token cutoff."""
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={})
+    call = _a_call(instance, "1")
     silent = ModelTurn(content=None, tool_calls=(call,))  # prompt/completion tokens default to None
     client = _ScriptedClient([silent, silent, ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client, max_tool_calls=100, max_token_budget=1)
@@ -358,9 +374,69 @@ def test_a_client_that_reports_no_usage_is_governed_by_the_tool_call_budget_alon
 def test_exhausting_the_turn_budget_forces_the_final_answer_with_calls_to_spare():
     """Turns bind independently of calls: one call per turn runs out of turns long before the call budget."""
     instance = _instance()
-    call = ToolCall(id="1", name="preview", arguments={})
+    call = _a_call(instance, "1")
     turns = [ModelTurn(content=None, tool_calls=(call,)) for _ in range(2)]
     client = _ScriptedClient([*turns, ModelTurn(content=_valid_answer(instance))])
     run_agent(instance, client, max_tool_calls=100, max_turns=3)
 
     assert [c[2] for c in client.calls] == [False, False, True]
+
+
+class _PcRecipeClient:
+    """Follows the data-only recipe through the tools: discover, regress on PC parents in parallel, answer."""
+
+    def __init__(self, instance):
+        """Bind the public task: its outcome and candidates."""
+        self.instance = instance
+        self.calls = 0
+
+    def complete(self, messages, tools, *, force_final: bool) -> ModelTurn:
+        """Return the recipe's next step, reading only the tool results in ``messages``."""
+        self.calls += 1
+        results = [m["content"] for m in messages if m["role"] == "tool"]
+        if not results:
+            return ModelTurn(content=None, tool_calls=(ToolCall(id="pc", name="discover", arguments={}),))
+        if len(results) == 1:
+            parents: dict[str, set[str]] = {}
+            for line in results[0].splitlines():
+                match = re.fullmatch(r"\s+(\S+) -> (\S+)", line)
+                if match:
+                    parents.setdefault(match.group(2), set()).add(match.group(1))
+            calls = tuple(
+                ToolCall(
+                    id=driver,
+                    name="regress",
+                    arguments={
+                        "treatment": driver,
+                        "adjust": sorted(parents.get(driver, set()) - {self.instance.outcome}),
+                    },
+                )
+                for driver in self.instance.candidate_drivers
+            )
+            return ModelTurn(content=None, tool_calls=calls)
+        verdicts = []
+        for result in results[1:]:
+            match = re.match(r"regress\((\S+) \| \{(.*)\}\) = ([+-]\d\.\d+)", result)
+            assert match is not None, result
+            adjust = [c for c in match.group(2).split(", ") if c]
+            verdicts.append({"driver": match.group(1), "adjustment_set": adjust, "effect": float(match.group(3))})
+        return ModelTurn(content=f"<answer>{json.dumps({'verdicts': verdicts})}</answer>")
+
+
+def test_the_data_only_recipe_fits_the_default_budget_and_matches_the_scripted_baseline():
+    """The lean budget still allows the full statistical workflow: two tool turns reproduce the PC baseline."""
+    instance = _instance()
+    client = _PcRecipeClient(instance)
+    traces: list[TurnTrace] = []
+    answer = parse_answer_for_instance(
+        run_agent(instance, client, on_turn=traces.append),
+        instance.candidate_drivers,
+        columns=instance.columns,
+        outcome=instance.outcome,
+    )
+    assert len(traces) == 3 and sum(len(t.tool_calls) for t in traces) == 1 + len(instance.candidate_drivers)
+    assert len(traces) < MAX_TURNS and sum(len(t.tool_calls) for t in traces) <= MAX_TOOL_CALLS
+    expected = {v.driver: v for v in scripted_answer(instance).verdicts}
+    for verdict in answer.verdicts:
+        assert verdict.adjustment_set == expected[verdict.driver].adjustment_set
+        assert verdict.effect == pytest.approx(expected[verdict.driver].effect, abs=5e-4)  # 3-decimal output

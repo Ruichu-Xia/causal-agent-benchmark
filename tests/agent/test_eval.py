@@ -67,6 +67,9 @@ def test_a_model_episode_records_usage_and_its_transcript(task, fake_llm):
     assert record["prompt_tokens"] == 200 and record["completion_tokens"] == 20
     assert record["estimated_cost_usd"] == pytest.approx(0.002)
     assert record["served_models"] == ["fake-served"]
+    assert [t["tool_calls"] for t in record["turn_usage"]] == [1, 0]
+    assert [t["prompt_tokens"] for t in record["turn_usage"]] == [100, 100]
+    assert record["cached_tokens"] == 0 and record["reasoning_tokens"] == 0  # the fake reports neither
     assert transcript["type"] == "transcript" and transcript["final_answer"] == record["answer"]
     assert transcript["error"] is None
     roles = [m["role"] for m in transcript["messages"]]

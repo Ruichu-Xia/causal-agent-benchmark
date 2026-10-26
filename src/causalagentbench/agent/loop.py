@@ -17,11 +17,21 @@ from causalagentbench.agent.tools import CausalTools
 from causalagentbench.task.answer import AnswerParseError, parse_answer_for_instance
 from causalagentbench.task.instance import Instance
 
-MAX_TOOL_CALLS = 100
+PROTOCOL_VERSION = "lean-v2"
+"""Names the tools, output formats and budgets below; recorded in every results header.
+
+v2 dropped ``preview``, shortened tool outputs and cut the budgets from 100 calls / 25 turns. In the v1
+pilot, the number of calls did not predict error for either model, while re-sent history and per-turn
+reasoning drove cost, so the cut targets turns."""
+
+MAX_TOOL_CALLS = 30
 """Maximum executed tool attempts per task, including invalid requests."""
 
-MAX_TURNS = 25
-"""Maximum model replies before a forced answer, excluding the optional format repair."""
+MAX_TURNS = 7
+"""Maximum model replies, the last of which must be the answer: six investigation turns plus the answer.
+
+Excludes the optional format repair. The PC-then-regress recipe needs two investigation turns (discover,
+then all regressions in parallel), so six leaves room to check and revise."""
 
 MAX_TOKEN_BUDGET = 600_000
 """Prompt-plus-completion token backstop; enforced when the provider reports usage."""
@@ -112,6 +122,8 @@ class ModelTurn:
     completion_tokens: int | None = None
     cost_usd: float | None = None
     model: str | None = None  # the model identifier the provider reported serving
+    cached_tokens: int | None = None  # prompt tokens served from the provider's cache
+    reasoning_tokens: int | None = None  # completion tokens spent on hidden reasoning
 
 
 @dataclass(frozen=True)
@@ -142,6 +154,8 @@ class TurnTrace:
     replies, before any of this turn's calls have run, and the question a trace answers is what the model
     knew when it acted. Post-hoc, ``budget_used + len(tool_calls)`` recovers the post-turn total."""
     budget_limit: int | None = None
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -179,22 +193,11 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     {
         "type": "function",
         "function": {
-            "name": "preview",
-            "description": "See the first n rows of the data table (max 20), to sanity-check scale and format.",
-            "parameters": {
-                "type": "object",
-                "properties": {"n": {"type": "integer", "description": "number of rows, 1-20", "default": 5}},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "correlate",
             "description": (
                 "Partial correlation between two columns given a conditioning set "
-                "(the conditioning set may be empty for the marginal correlation). Returns sample size "
-                "and an approximate 95% confidence interval."
+                "(the conditioning set may be empty for the marginal correlation), with an approximate 95% "
+                "confidence interval."
             ),
             "parameters": {
                 "type": "object",
@@ -213,8 +216,7 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
             "name": "regress",
             "description": (
                 "OLS coefficient of a treatment column on the fixed outcome, adjusting for a given set of "
-                "columns - the total effect estimate under that adjustment set. Returns sample size, standard "
-                "error, and an approximate 95% confidence interval."
+                "columns - the total effect estimate under that adjustment set - with its standard error."
             ),
             "parameters": {
                 "type": "object",
@@ -254,7 +256,6 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
 def _dispatch(tools: CausalTools) -> dict[str, Callable[..., str]]:
     """Return the name -> tool-method mapping for executing a model's tool calls."""
     return {
-        "preview": tools.preview,
         "correlate": tools.correlate,
         "regress": tools.regress,
         "discover": tools.discover,
@@ -334,6 +335,8 @@ def run_agent(
                     model=reply.model,
                     budget_used=tool_calls_used,
                     budget_limit=max_tool_calls,
+                    cached_tokens=reply.cached_tokens,
+                    reasoning_tokens=reply.reasoning_tokens,
                 )
             )
         if on_transcript is not None:

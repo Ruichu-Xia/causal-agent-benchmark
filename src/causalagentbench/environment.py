@@ -1,4 +1,4 @@
-"""The RL environment: one episode is an investigation with the four tools, then one scored submission.
+"""The RL environment: one episode is an investigation with the three tools, then one scored submission.
 
 The class follows the TRL ``GRPOTrainer(environment_factory=...)`` contract: ``reset(**row)`` returns the
 task prompt, and every public method is a named, documented tool. Use it as::
@@ -71,14 +71,6 @@ class CausalEnv:
         self._calls += 1
         return self._tools
 
-    def preview(self, n: int = 5) -> str:
-        """Show the first rows of the table as CSV.
-
-        Args:
-            n: Number of rows to show (at most 20).
-        """
-        return self._spend().preview(n)
-
     def correlate(self, x: str, y: str, given: list[str] | None = None) -> str:
         """Partial correlation between two columns given a conditioning set, with a 95% interval.
 
@@ -119,7 +111,7 @@ class CausalEnv:
         self.done = True
         self.reward = score.reward
         self.info = {"parse_ok": score.parse_ok, "task_error": score.task_error, "tool_calls": self._calls}
-        return "Answer recorded." if score.parse_ok else "Invalid answer; recorded as zero for every candidate."
+        return "Answer recorded." if score.parse_ok else "Invalid answer; the episode is over."
 
 
 def reward_func(environments: Sequence[CausalEnv], **kwargs: Any) -> list[float]:

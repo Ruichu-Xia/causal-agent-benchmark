@@ -46,29 +46,21 @@ def _value(result: str) -> float:
     return float(match.group(1))
 
 
-def test_preview_returns_header_and_bounded_rows():
-    tools, _ = _tools()
-    lines = tools.preview(n=3).strip().splitlines()
-    assert lines[0] == ",".join(tools.instance.columns)
-    assert len(lines) == 4  # header + 3 rows
-    assert len(tools.preview(n=1000).strip().splitlines()) == 21  # clamped to the max (20 rows + header)
-
-
 def test_correlate_marginal_matches_numpy():
     tools, label = _tools()
     idx = {c: i for i, c in enumerate(tools.instance.columns)}
     a, c = tools.instance.data[:, idx[label["A"]]], tools.instance.data[:, idx[label["C"]]]
     expected = float(np.corrcoef(a, c)[0, 1])
-    assert abs(_value(tools.correlate(label["A"], label["C"])) - expected) < 1e-4
+    assert abs(_value(tools.correlate(label["A"], label["C"])) - expected) < 5e-4  # 3 decimals
 
 
-def test_correlation_reports_sample_size_and_uncertainty():
+def test_correlation_reports_its_conditioning_set_and_interval():
     tools, label = _tools(n=2000)
 
-    result = tools.correlate(label["A"], label["C"])
+    result = tools.correlate(label["A"], label["Dz"], given=[label["C"]])
 
-    assert "n=2000" in result
-    assert "approx_95%CI" in result
+    assert result.startswith(f"corr({label['A']}, {label['Dz']} | {{{label['C']}}}) = ")
+    assert re.search(r", 95% CI \[[+-]\d\.\d{3}, [+-]\d\.\d{3}\]$", result), result
 
 
 def test_correlate_partial_screens_off_confounder_and_decoy():
@@ -112,7 +104,7 @@ def test_correlate_handles_an_inherently_singular_matrix_as_a_tool_error():
 def test_regress_matches_the_reference_regression_on_the_hidden_order_data():
     # instance.data is data with columns permuted and renamed for display; the OLS coefficient does not
     # depend on column order, so regress() on the true parents must match regression_coefficient() on the
-    # canonical-order draw, up to the tool's 4-decimal formatting.
+    # canonical-order draw, up to the tool's 3-decimal formatting.
     scm = _scm(0)
     data = sample(scm, 2000, seed=0)
     instance, key = build_instance(scm, data, seed=0)
@@ -123,17 +115,16 @@ def test_regress_matches_the_reference_regression_on_the_hidden_order_data():
         parents = list(scm.scaffold.parents(node))
         expected = regression_coefficient(data, scm.scaffold.node_names, "Y", node, parents)
         coef = _value(tools.regress(label[node], adjust=[label[z] for z in parents]))
-        assert abs(coef - expected) < 5e-5
+        assert abs(coef - expected) < 5e-4
 
 
-def test_regress_reports_sample_size_and_uncertainty():
+def test_regress_reports_its_adjustment_set_and_standard_error():
     tools, label = _tools(n=2000)
 
     result = tools.regress(label["A"], adjust=[label["C"]])
 
-    assert "n=2000" in result
-    assert "se=" in result
-    assert "approx_95%CI" in result
+    pattern = rf"regress\({label['A']} \| \{{{label['C']}\}}\) = [+-]\d\.\d{{3}} \(se \d\.\d{{3}}\)"
+    assert re.fullmatch(pattern, result), result
 
 
 def test_regress_rejects_unknown_column_treatment_as_outcome_and_self_adjust():
@@ -148,15 +139,11 @@ def test_regress_rejects_unknown_column_treatment_as_outcome_and_self_adjust():
 def test_schema_violating_argument_types_are_reported_not_coerced():
     """The declared type is the model's to honor; a violation is named plainly, never quietly accepted.
 
-    Observed live: a model sent ``preview(n="10")`` and got
-    ``'<' not supported between instances of 'int' and 'str'`` from inside ``min()`` - an error naming
-    nothing it could act on, which it read as the tool being broken before abandoning tool arguments
-    entirely. The fix is the message, not tolerance: ``"10"`` still fails, but says why, so a model can
-    correct itself on the next turn.
+    Observed live: a model sent a quoted number where an integer was declared and got an error from deep
+    inside ``min()`` that named nothing it could act on. The fix is the message, not tolerance: the bad
+    value still fails, but says why, so a model can correct itself on the next turn.
     """
     tools, label = _tools()
-    for bad in ("10", 10.0, "many", {"rows": 5}, True):  # True: bool subclasses int, still a mistake
-        assert "Error: n must be an integer" in tools.preview(n=bad)
     for bad_cols in (label["C"], 5, [1, 2]):  # a bare string is not a list of columns
         assert "Error: given must be a list" in tools.correlate(label["A"], label["B"], given=bad_cols)
         assert "Error: adjust must be a list" in tools.regress(label["A"], adjust=bad_cols)
@@ -167,7 +154,6 @@ def test_omitted_column_sets_still_default_to_empty():
     tools, label = _tools()
     assert "Error" not in tools.correlate(label["A"], label["B"])
     assert "Error" not in tools.regress(label["A"])
-    assert "Error" not in tools.preview()
 
 
 # ---- causal discovery ---------------------------------------------------------------------------------

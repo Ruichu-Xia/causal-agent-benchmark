@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from causalagentbench.agent.eval import episode_record, evaluate_task
-from causalagentbench.agent.loop import MAX_TOOL_CALLS, MAX_TURNS
+from causalagentbench.agent.loop import MAX_TOOL_CALLS, MAX_TURNS, PROTOCOL_VERSION
 from causalagentbench.benchmark import make_task
 from causalagentbench.generation.causenet import CauseNetLabeler
 from causalagentbench.scoring.baselines import BASELINES
@@ -29,6 +29,7 @@ from causalagentbench.task.instance import Instance, InstanceKey, with_placehold
 
 _RESUME_KEYS = (
     "scoring_version",
+    "protocol",
     "dataset_sha256",
     "tasks",
     "models",
@@ -137,6 +138,7 @@ def _evaluate(args: argparse.Namespace) -> int:
     header = {
         "type": "run",
         "scoring_version": SCORING_VERSION,
+        "protocol": PROTOCOL_VERSION,
         "dataset": str(stem),
         "dataset_sha256": _dataset_sha256(stem),
         "tasks": len(tasks),
@@ -144,6 +146,7 @@ def _evaluate(args: argparse.Namespace) -> int:
         "placeholder_names": args.placeholder_names,
         "max_tool_calls": args.max_tool_calls,
         "max_turns": args.max_turns,
+        "request_timeout_s": args.timeout,
         "sampling": "provider defaults",
         "started_utc": datetime.now(UTC).isoformat(),
         **_provenance(),
@@ -175,6 +178,7 @@ def _evaluate(args: argparse.Namespace) -> int:
                         baseline=baseline,
                         max_tool_calls=args.max_tool_calls,
                         max_turns=args.max_turns,
+                        request_timeout=args.timeout,
                     )
                     for i in pending
                 ]
@@ -268,6 +272,9 @@ _EPISODE_EXTRAS = (
     "completion_tokens",
     "estimated_cost_usd",
     "served_models",
+    "cached_tokens",
+    "reasoning_tokens",
+    "turn_usage",
 )
 """Run measurements copied unchanged when an episode is rescored."""
 
@@ -295,6 +302,7 @@ def main() -> int:
         sub.add_argument("--placeholder-names", action="store_true", help="rename columns X1..Xk (ablation)")
         sub.add_argument("--max-tool-calls", type=_positive, default=MAX_TOOL_CALLS)
         sub.add_argument("--max-turns", type=_positive, default=MAX_TURNS)
+        sub.add_argument("--timeout", type=float, default=120.0, help="seconds per model request")
         if name == "baseline":
             sub.add_argument("--agent", choices=BASELINES, required=True)
         else:
