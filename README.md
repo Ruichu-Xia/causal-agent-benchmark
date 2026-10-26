@@ -139,6 +139,30 @@ analyst can expect is about 0.49, while the oracle reaches 0.06. That gap is wha
 data-identified candidates comes from finite-sample discovery mistakes (at 10,000 rows it recovers 86% of
 true edges and orients 91% of data-determined edges correctly).
 
+## Agent results
+
+Lean-v2 protocol (30 tool calls, 7 turns), error with task-clustered 95% intervals; an invalid answer
+scores as predicting zero. "Placeholder" is the names ablation (`--placeholder-names`).
+
+| Agent | Split | Real names | Placeholder names | Valid answers (real / placeholder) |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3-4B-Instruct-2507 | test (200) | 0.740 [0.70, 0.78] | 0.747 [0.70, 0.79] | 65% / 88% |
+| Qwen3-4B-Instruct-2507 + GRPO (120 steps) | test (200) | 0.540 [0.50, 0.58] | 0.661 [0.62, 0.70] | 95% / 99% |
+| Qwen3-4B-Instruct-2507, names only (no tools) | test (200) | 1.354 [1.28, 1.43] | | 56% |
+| DeepSeek-V4.1-Flash | dev (50) | 0.428 [0.35, 0.51] | 0.527 [0.45, 0.60] | 100% / 100% |
+| DeepSeek-V4.1-Flash, names only (no tools) | dev (50) | 1.243 [1.12, 1.37] | | 100% |
+| PC discovery → adjust for discovered parents | dev (50) | 0.60 | | |
+
+The names ablation measures domain knowledge: for DeepSeek-V4.1-Flash, hiding names raises error on
+name-critical candidates by 0.19 and on data-identified ones by 0.02, a difference in differences of
++0.17 [+0.03, +0.34]. The base 4B model shows no such effect on test (−0.02 [−0.11, +0.08]). Names without
+data are worse than predicting zero for both models.
+
+GRPO lowers the 4B model's test error by 0.20 [0.15, 0.25] with real names and by 0.09 [0.04, 0.13] with
+placeholders (paired by task); the gain is 0.11 [0.05, 0.18] larger when names are visible. It is not only
+validity: on the 123 tasks both models answered validly with real names, error falls by 0.12 [0.06, 0.17].
+Training used real names only, so the placeholder arm is also out of the training distribution.
+
 ## RL environment
 
 `CausalEnv` follows TRL's `GRPOTrainer(environment_factory=...)` contract: `reset(**row)` returns the
@@ -160,6 +184,13 @@ trainer = GRPOTrainer(..., train_dataset=Dataset.from_dict({"prompt": [...], "se
 Training tasks avoid every CauseNet relation between two concepts that appear together in an evaluation
 task. The reward is `1 − min(task error, 2)` for a valid answer and `−1` otherwise, including an episode
 that ends without one; predicting zero earns 0, and failing on purpose never pays.
+
+`scripts/train_grpo.py` trains a LoRA adapter (r 32) on Qwen3-4B-Instruct-2507 with TRL 1.16 GRPO: 8 tasks
+× 8 rollouts per step, learning rate 1e-5, vLLM colocated generation. `scripts/modal_grpo.py` runs it on one
+Modal H100 (120 steps, about 4.8 hours); `scripts/rl_report.py` plots the curves and checks for reward
+hacking. Over the run, mean reward rose from 0.11 to 0.32 (first versus last 10 steps), valid answers from
+82% to 98%, no group had zero reward variance, under 0.1% of answers predicted zero everywhere, and 3.6% of
+answers reported an effect that no `regress` call had returned, a share flat across training.
 
 ## Development
 

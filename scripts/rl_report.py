@@ -1,6 +1,6 @@
 """Summarize a GRPO run: training curves and reward-hacking checks from its metrics and rollouts.
 
-    python scripts/rl_report.py outputs/rl/main   # reads metrics.jsonl and rollouts.jsonl, writes curves.png
+    python scripts/rl_report.py outputs/rl/grpo120   # reads metrics.jsonl and rollouts.jsonl, writes curves.png
 
 The checks look for ways to raise the reward without estimating effects: answering zero everywhere, and
 reporting effects the agent never obtained from a tool (provenance). Every reported effect should equal, at
