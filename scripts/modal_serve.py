@@ -21,8 +21,10 @@ ADAPTERS = os.environ.get("ADAPTERS", "")
 app = modal.App("causalagentbench-serve")
 runs = modal.Volume.from_name("causalagentbench-runs", create_if_missing=True)
 hf_cache = modal.Volume.from_name("hf-cache", create_if_missing=True)
+# The CUDA toolkit image: vLLM JIT-compiles FlashInfer sampling kernels with nvcc (torch 2.13 uses CUDA 13).
 image = (
-    modal.Image.debian_slim(python_version="3.12")
+    modal.Image.from_registry("nvidia/cuda:13.0.1-devel-ubuntu22.04", add_python="3.12")
+    .entrypoint([])
     .uv_pip_install("vllm==0.31.0")
     .env({"HF_HOME": "/hf", "ADAPTERS": ADAPTERS})
 )
