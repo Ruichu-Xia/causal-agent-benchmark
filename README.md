@@ -149,14 +149,15 @@ scores as predicting zero. "Placeholder" is the names ablation (`--placeholder-n
 | Qwen3-4B-Instruct-2507 | test (200) | 0.740 [0.70, 0.78] | 0.747 [0.70, 0.79] | 65% / 88% |
 | Qwen3-4B-Instruct-2507 + GRPO (120 steps) | test (200) | 0.540 [0.50, 0.58] | 0.661 [0.62, 0.70] | 95% / 99% |
 | Qwen3-4B-Instruct-2507, names only (no tools) | test (200) | 1.354 [1.28, 1.43] | | 56% |
-| DeepSeek-V4.1-Flash | dev (50) | 0.428 [0.35, 0.51] | 0.527 [0.45, 0.60] | 100% / 100% |
+| DeepSeek-V4.1-Flash | test (200) | 0.400 [0.36, 0.44] | 0.444 [0.40, 0.48] | 100% / 99% |
 | DeepSeek-V4.1-Flash, names only (no tools) | dev (50) | 1.243 [1.12, 1.37] | | 100% |
-| PC discovery → adjust for discovered parents | dev (50) | 0.60 | | |
 
-The names ablation measures domain knowledge: for DeepSeek-V4.1-Flash, hiding names raises error on
-name-critical candidates by 0.19 and on data-identified ones by 0.02, a difference in differences of
-+0.17 [+0.03, +0.34]. The base 4B model shows no such effect on test (−0.02 [−0.11, +0.08]). Names without
-data are worse than predicting zero for both models.
+The names ablation measures domain knowledge: for DeepSeek-V4.1-Flash on test, hiding names raises error
+on name-critical candidates by 0.10 [0.02, 0.18] and leaves data-identified ones unchanged (−0.003
+[−0.03, +0.02]), a difference in differences of +0.10 [+0.02, +0.19]. The base 4B model shows no such
+effect (−0.02 [−0.11, +0.08]). Names without data are worse than predicting zero for both models.
+DeepSeek-V4.1-Flash beats the PC pipeline (0.515), but its name-critical error (0.56) is still above the
+best data-only answer (0.49): no agent yet uses names as well as the benchmark allows.
 
 GRPO lowers the 4B model's test error by 0.20 [0.15, 0.25] with real names and by 0.09 [0.04, 0.13] with
 placeholders (paired by task); the gain is 0.11 [0.05, 0.18] larger when names are visible. It is not only
