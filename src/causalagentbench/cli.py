@@ -9,6 +9,7 @@ import os
 import platform
 import subprocess
 import sys
+from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from importlib import metadata
@@ -20,6 +21,7 @@ import numpy as np
 from causalagentbench.agent.eval import episode_record, evaluate_task
 from causalagentbench.agent.loop import MAX_TOOL_CALLS, MAX_TURNS, PROTOCOL_VERSION
 from causalagentbench.benchmark import make_task
+from causalagentbench.environment import training_labeler
 from causalagentbench.generation.causenet import CauseNetLabeler
 from causalagentbench.scoring.baselines import BASELINES
 from causalagentbench.scoring.report import compare, names_ablation, summarize
@@ -90,10 +92,10 @@ _worker_labeler: CauseNetLabeler | None = None
 """Each build process loads CauseNet once."""
 
 
-def _load_worker_labeler(causenet: str) -> None:
-    """Process-pool initializer: load the CauseNet labeler."""
+def _load_worker_labeler(causenet: str, exclude: Sequence[str]) -> None:
+    """Process-pool initializer: load the CauseNet labeler, avoiding the concept pairs of ``exclude``."""
     global _worker_labeler
-    _worker_labeler = CauseNetLabeler.from_path(causenet)
+    _worker_labeler = training_labeler(causenet, exclude) if exclude else CauseNetLabeler.from_path(causenet)
 
 
 def _build_one(split: str, index: int, salt: str | None) -> tuple[Instance, InstanceKey]:
@@ -104,9 +106,12 @@ def _build_one(split: str, index: int, salt: str | None) -> tuple[Instance, Inst
 
 def _build(args: argparse.Namespace) -> int:
     """Build a frozen split of ``args.n`` tasks; task ``i`` depends only on the split, ``i`` and the salt."""
+    if (args.split == "train") != bool(args.exclude):
+        raise ValueError("--exclude (the evaluation datasets) is required for, and only for, --split train")
     salt = os.environ[args.salt_env] if args.salt_env else None
     tasks: dict[int, tuple[Instance, InstanceKey]] = {}
-    with ProcessPoolExecutor(args.workers, initializer=_load_worker_labeler, initargs=(args.causenet,)) as pool:
+    initargs = (args.causenet, args.exclude or ())
+    with ProcessPoolExecutor(args.workers, initializer=_load_worker_labeler, initargs=initargs) as pool:
         futures = {pool.submit(_build_one, args.split, i, salt): i for i in range(args.n)}
         for future in as_completed(futures):
             tasks[futures[future]] = future.result()
@@ -286,7 +291,10 @@ def main() -> int:
 
     build = commands.add_parser("build", help="generate a frozen split locally, without an LLM")
     build.add_argument("--causenet", required=True, help="CauseNet-Precision JSONL or JSONL.bz2 dump")
-    build.add_argument("--split", required=True, choices=("dev", "test", "private"))
+    build.add_argument("--split", required=True, choices=("train", "dev", "test", "private"))
+    build.add_argument(
+        "--exclude", nargs="+", help="train only: evaluation datasets whose concept pairs training tasks avoid"
+    )
     build.add_argument("-n", type=_positive, required=True, help="number of tasks")
     build.add_argument("--out", required=True, help="dataset path stem (.json and .npz)")
     build.add_argument("--salt-env", help="environment variable holding the private split's secret salt")

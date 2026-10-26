@@ -16,7 +16,7 @@ from causalagentbench.scm.sample import sample
 from causalagentbench.scoring.baselines import BASELINES
 from causalagentbench.scoring.gates import generate_scm
 from causalagentbench.scoring.score import SCORING_VERSION
-from causalagentbench.task.dataset import load_dataset, save_dataset
+from causalagentbench.task.dataset import concept_pairs, load_dataset, save_dataset
 from causalagentbench.task.instance import build_instance
 
 
@@ -264,3 +264,22 @@ def test_build_freezes_the_tasks_make_task_defines(tmp_path, monkeypatch, causen
         assert instance.data.shape == (N_ROWS, key.scm.n_nodes)
         assert np.array_equal(instance.data, expected.data)  # exact: tasks are built at float32 precision
         assert key.scm.scaffold.edges == expected_key.scm.scaffold.edges
+
+
+def test_build_train_avoids_the_concept_pairs_of_the_excluded_datasets(tmp_path, monkeypatch, causenet_file):
+    dev, train = tmp_path / "dev", tmp_path / "train"
+    assert _run(monkeypatch, "build", "--causenet", causenet_file, "--split", "dev", "-n", 2, "--out", dev) == 0
+    args = ("build", "--causenet", causenet_file, "--split", "train", "-n", 2, "--out", train)
+    assert _run(monkeypatch, *args, "--exclude", dev) == 0
+    excluded = concept_pairs(load_dataset(dev))
+    for _, key in load_dataset(train):
+        edges = {frozenset((key.node_to_label[a], key.node_to_label[b])) for a, b in key.scm.scaffold.edges}
+        assert not edges & excluded
+
+
+def test_build_requires_exclude_exactly_for_the_train_split(tmp_path, monkeypatch, causenet_file):
+    base = ("build", "--causenet", causenet_file, "-n", 1, "--out", tmp_path / "x")
+    with pytest.raises(ValueError, match="--exclude"):
+        _run(monkeypatch, *base, "--split", "train")
+    with pytest.raises(ValueError, match="--exclude"):
+        _run(monkeypatch, *base, "--split", "dev", "--exclude", tmp_path / "dev")

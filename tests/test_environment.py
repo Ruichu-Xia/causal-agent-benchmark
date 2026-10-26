@@ -1,10 +1,11 @@
+import inspect
 import json
 
 import numpy as np
 import pytest
 
 from causalagentbench.benchmark import make_task
-from causalagentbench.environment import CausalEnv, reward_func, training_labeler
+from causalagentbench.environment import CausalEnv, final_reply, reward_func, training_labeler
 from causalagentbench.generation.causenet import CauseNetLabeler
 from causalagentbench.scm.sample import sample
 from causalagentbench.scoring.gates import generate_scm
@@ -21,18 +22,33 @@ def task():
 
 
 def _answer(task, shift: float = 0.0) -> str:
-    """JSON verdicts with every true effect moved by ``shift``."""
+    """An answer block with every true effect moved by ``shift``."""
     _, key = task
     verdicts = [
         {"driver": key.node_to_label[d], "adjustment_set": [], "effect": key.scm.total_effect_on_outcome(d) + shift}
         for d in key.scm.scaffold.drivers
     ]
-    return json.dumps({"verdicts": verdicts})
+    return f"<answer>{json.dumps({'verdicts': verdicts})}</answer>"
 
 
 def _any_tool(env: CausalEnv, task) -> str:
     """Spend one tool call: the marginal regression of the first candidate."""
     return env.regress(task[0].candidate_drivers[0])
+
+
+def _rollout(final: str) -> list[dict]:
+    """A conversational completion: one tool call, its result, then ``final``."""
+    return [
+        {"role": "assistant", "content": "", "tool_calls": [{"name": "discover", "arguments": {}}]},
+        {"role": "tool", "name": "discover", "content": "PC ..."},
+        {"role": "assistant", "content": final},
+    ]
+
+
+def test_the_public_methods_are_exactly_the_evaluation_tools():
+    """TRL exposes every public method except ``reset`` as a tool; they must match the evaluation harness."""
+    public = {name for name, _ in inspect.getmembers(CausalEnv, inspect.isfunction) if not name.startswith("_")}
+    assert public == {"reset", "correlate", "regress", "discover"}
 
 
 def test_reset_on_a_frozen_task_returns_its_prompt(task):
@@ -41,68 +57,75 @@ def test_reset_on_a_frozen_task_returns_its_prompt(task):
     assert not env.done and env.reward == INVALID_REWARD
 
 
-def test_tools_spend_the_budget_and_then_raise(task):
+def test_reset_with_a_seed_serves_that_pre_built_task(task):
+    env = CausalEnv(tasks=[None, task])
+    assert env.reset(seed=1, prompt="ignored dataset column") == task[0].prompt
+
+
+def test_tools_report_the_remaining_budget_and_then_raise(task):
     instance, _ = task
     driver = instance.candidate_drivers[0]
     env = CausalEnv(max_tool_calls=3)
     env.reset(task=task)
-    assert env.correlate(driver, instance.outcome).startswith(f"corr({driver}, {instance.outcome} | {{}})")
+    first = env.correlate(driver, instance.outcome)
+    assert first.startswith(f"corr({driver}, {instance.outcome} | {{}})")
+    assert first.endswith("[budget: 2 of 3 tool calls remaining]")
     assert env.regress(driver, []).startswith(f"regress({driver} | {{}})")
-    assert env.regress(driver).startswith(f"regress({driver} | {{}})")
+    assert env.regress(driver).endswith("[budget: 0 of 3 tool calls remaining]")
     with pytest.raises(ValueError, match="budget exhausted"):
         env.discover()
-    assert not env.done  # an exhausted budget still allows the submission
+    assert not env.done  # an exhausted budget still allows the final answer
 
 
-def test_submit_rewards_the_answer_by_the_benchmark_score(task):
+def test_reward_scores_the_final_reply_exactly_as_evaluation_does(task):
     env = CausalEnv()
     env.reset(task=task)
     _any_tool(env, task)
-    assert env.submit(f"<answer>{_answer(task)}</answer>") == "Answer recorded."
-    assert env.done and env.reward == 1.0
-    assert env.info == {"parse_ok": True, "task_error": 0.0, "tool_calls": 1}
+    expected = score_output(_answer(task, shift=0.05), task[1]).reward
+    assert reward_func([_rollout(_answer(task, shift=0.05))], [env]) == [pytest.approx(expected)]
+    assert env.done and 0.0 < env.reward < 1.0
+    assert env.info["parse_ok"] and env.info["tool_calls"] == 1
 
 
-def test_submit_accepts_bare_json_and_matches_the_scorer(task):
+def test_an_exact_answer_earns_the_top_reward(task):
     env = CausalEnv()
     env.reset(task=task)
-    env.submit(_answer(task, shift=0.05))
-    expected = score_output(f"<answer>{_answer(task, shift=0.05)}</answer>", task[1]).reward
-    assert env.reward == pytest.approx(expected)
-    assert 0.0 < env.reward < 1.0
+    assert reward_func([_answer(task)], [env]) == [1.0]
+    assert env.info == {"parse_ok": True, "task_error": 0.0, "tool_calls": 0}
 
 
-def test_an_invalid_submission_earns_the_floor_reward(task):
+def test_a_reply_without_an_answer_block_earns_the_floor_reward(task):
+    envs = [CausalEnv(), CausalEnv()]
+    for env in envs:
+        env.reset(task=task)
+    ended_on_a_tool_call = _rollout("")[:1]
+    assert reward_func([_rollout("I am not sure."), ended_on_a_tool_call], envs) == [INVALID_REWARD] * 2
+    assert not envs[0].info["parse_ok"]
+
+
+def test_final_reply_reads_the_last_assistant_text():
+    parts = [{"role": "assistant", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}]
+    assert final_reply("plain text") == "plain text"
+    assert final_reply(_rollout("done")) == "done"
+    assert final_reply(parts) == "ab"
+    assert final_reply([]) == ""
+
+
+def test_the_episode_is_over_after_scoring(task):
     env = CausalEnv()
     env.reset(task=task)
-    assert env.submit("I am not sure.").startswith("Invalid answer")
-    assert env.done and env.reward == INVALID_REWARD
-    assert not env.info["parse_ok"]
-
-
-def test_an_episode_without_a_submission_keeps_the_floor_reward(task):
-    env = CausalEnv(max_tool_calls=1)
-    env.reset(task=task)
-    _any_tool(env, task)
-    assert not env.done
-    assert reward_func([env]) == [INVALID_REWARD]
-
-
-def test_the_episode_is_over_after_submission(task):
-    env = CausalEnv()
-    env.reset(task=task)
-    env.submit(_answer(task))
+    reward_func([_answer(task)], [env])
     with pytest.raises(ValueError, match="episode is over"):
         _any_tool(env, task)
     with pytest.raises(ValueError, match="episode is over"):
-        env.submit(_answer(task))
+        reward_func([_answer(task)], [env])
 
 
 def test_reset_starts_a_fresh_episode(task):
     env = CausalEnv(max_tool_calls=1)
     env.reset(task=task)
     _any_tool(env, task)
-    env.submit(_answer(task))
+    reward_func([_answer(task)], [env])
     env.reset(task=task)
     assert not env.done and env.reward == INVALID_REWARD and env.info == {}
     _any_tool(env, task)  # the budget is restored
@@ -113,25 +136,16 @@ def test_tools_need_a_started_episode():
         CausalEnv().discover()
 
 
-def test_reward_func_returns_each_environment_reward(task):
-    envs = [CausalEnv(), CausalEnv(), CausalEnv()]
-    for env in envs:
-        env.reset(task=task)
-    envs[0].submit(_answer(task))
-    envs[1].submit("nonsense")
-    assert reward_func(envs, prompts=["unused"]) == [1.0, INVALID_REWARD, INVALID_REWARD]
-
-
-def test_reset_needs_a_frozen_task_or_a_seed_and_a_labeler():
+def test_reset_needs_a_frozen_task_or_a_seed_with_a_task_source():
     with pytest.raises(ValueError, match="frozen task"):
         CausalEnv().reset()
     with pytest.raises(ValueError, match="frozen task"):
         CausalEnv().reset(seed=0)
 
 
-def test_reset_with_a_seed_builds_that_training_task(causenet_graph):
+def test_reset_with_a_seed_and_a_labeler_builds_that_training_task(causenet_graph):
     labeler = CauseNetLabeler(causenet_graph)
-    env = CausalEnv(labeler)
+    env = CausalEnv(labeler=labeler)
     prompt = env.reset(seed=1, prompt="ignored dataset column")
     assert prompt == make_task("train", 1, labeler=labeler)[0].prompt
 
