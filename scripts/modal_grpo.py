@@ -1,7 +1,7 @@
 """Run GRPO post-training (``scripts/train_grpo.py``) on one Modal GPU, and build training tasks on Modal CPUs.
 
     uv run --with modal modal run scripts/modal_grpo.py::build_main --n 1000
-    uv run --with modal modal run scripts/modal_grpo.py --dataset train --run main --max-steps 120
+    uv run --with modal modal run scripts/modal_grpo.py::main --dataset train --run main --max-steps 120
 
 Training tasks are uploaded once to the ``causalagentbench-runs`` volume, which also receives each run's
 metrics (committed every minute while training) and its LoRA adapter. Model weights are cached in the
