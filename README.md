@@ -195,6 +195,18 @@ hacking. Over the run, mean reward rose from 0.11 to 0.32 (first versus last 10 
 82% to 98%, no group had zero reward variance, under 0.1% of answers predicted zero everywhere, and 3.6% of
 answers reported an effect that no `regress` call had returned, a share flat across training.
 
+### Transfer
+
+A pre-registered evaluation ([plan](docs/transfer_preregistration.md), [results](docs/transfer_results.md))
+compares the trained adapter with the base model and with a control trained identically on shuffled
+rewards. No endpoint transfers (intervals 95% for CLadder, 97.5% for the others). On CLadder adjustment questions the trained model is no better than base
+(−0.011 [−0.025, +0.003] accuracy); on 200 tasks built from four published Gaussian networks with their
+real variable names, error changes by −0.015 [−0.075, +0.045]; on Corr2Cause a +0.034 gain in balanced
+accuracy (all models at chance) comes from shorter replies and does not hold against the control. The one
+out-of-domain gain is exploratory: on the published networks with placeholder names, error falls from 0.624
+to 0.533. The shuffled-reward control degrades in-domain (valid answers fall to about 30%), so the in-domain
+gain comes from the informative reward.
+
 ## Development
 
 ```bash
