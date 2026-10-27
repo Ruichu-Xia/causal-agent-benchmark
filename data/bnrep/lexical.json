@@ -1,0 +1,8 @@
+{"name": "lexical", "nodes": [{"node": "aoa", "parents": {}, "sd": 1},
+{"node": "area", "parents": {"prev_heard": 1.2796190000000001, "prev_used": -0.54565410000000003}, "sd": 0.57711330000000005},
+{"node": "genre_disp", "parents": {"aoa": 0.1493371, "log_freq": 0.13697119999999999, "log_range": 0.22909089999999999, "prev_heard": 0.4137189}, "sd": 0.81291369999999996},
+{"node": "log_freq", "parents": {"prev_heard": -0.23896129999999999, "prev_used": 0.65226850000000003}, "sd": 0.89636669999999996},
+{"node": "log_range", "parents": {"log_freq": 0.45350099999999999, "prev_used": 0.29279889999999997}, "sd": 0.77158400000000005},
+{"node": "prev_heard", "parents": {"aoa": -0.42260799999999998}, "sd": 0.90722199999999997},
+{"node": "prev_used", "parents": {"prev_heard": 0.90721479999999999}, "sd": 0.42108990000000002},
+{"node": "social_disp", "parents": {"aoa": -0.1212857, "area": 0.60454300000000005}, "sd": 0.7595807}]}

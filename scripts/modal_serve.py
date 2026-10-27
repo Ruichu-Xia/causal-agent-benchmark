@@ -39,7 +39,7 @@ image = (
     timeout=6 * 3600,
     scaledown_window=10 * 60,
 )
-@modal.concurrent(max_inputs=64)
+@modal.concurrent(max_inputs=128)
 @modal.web_server(port=8000, startup_timeout=20 * 60)
 def serve() -> None:
     """Start an OpenAI-compatible vLLM server exposing ``base`` and each adapter in ``ADAPTERS``."""

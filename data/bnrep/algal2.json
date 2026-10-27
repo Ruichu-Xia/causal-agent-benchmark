@@ -1,0 +1,9 @@
+{"name": "algal2", "nodes": [{"node": "ChiA", "parents": {"ChiA_PS": 0.33000000000000002, "TP": 0.46999999999999997, "WindSpeed": -5.0999999999999996}, "sd": 3.7000000000000002},
+{"node": "ChiA_PS", "parents": {"TP_PS": 0.62}, "sd": 4.7000000000000002},
+{"node": "Colour", "parents": {"Colour_PS": 0.81000000000000005, "RainSum": 0.028000000000000001}, "sd": 8.9000000000000004},
+{"node": "Colour_PS", "parents": {}, "sd": 17},
+{"node": "Cyanobacteria", "parents": {"ChiA": 0.17000000000000001, "Colour": -0.024}, "sd": 0.73999999999999999},
+{"node": "RainSum", "parents": {}, "sd": 100},
+{"node": "TP", "parents": {"TP_PS": 0.60999999999999999}, "sd": 3.7999999999999998},
+{"node": "TP_PS", "parents": {}, "sd": 5.2000000000000002},
+{"node": "WindSpeed", "parents": {}, "sd": 0.25}]}

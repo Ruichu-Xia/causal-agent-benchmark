@@ -8,12 +8,16 @@ Training tasks come from ``build --split train --exclude <evaluation sets>``. Th
 answer format are the evaluation protocol's (``lean-v2``), and the reward is the benchmark's own score of
 the final reply. Metrics stream to ``<out>/metrics.jsonl`` and every scored rollout to ``<out>/rollouts.jsonl``;
 the LoRA adapter is saved to ``<out>/adapter``.
+
+``--shuffle-rewards`` is the control run: each step's rewards are permuted across its rollouts, so the
+reward distribution is unchanged but carries no information about which rollout earned it.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 import statistics
 import time
 from pathlib import Path
@@ -23,6 +27,9 @@ MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 
 ROLLOUT_LOG: Path | None = None
 """Where ``training_reward`` appends every scored rollout; set by ``main``."""
+
+SHUFFLE: random.Random | None = None
+"""Permutes each step's rewards across its rollouts when set (``--shuffle-rewards``); set by ``main``."""
 
 
 def keep_lora_base_weights_exact() -> None:
@@ -83,21 +90,25 @@ def check_lora_export_is_exact() -> None:
 def training_reward(
     completions: list[Any], environments: list[Any], log_metric: Any = None, **kwargs: Any
 ) -> list[float]:
-    """The benchmark reward, plus the validity rate and error on valid answers as training metrics."""
+    """The benchmark reward, plus the validity rate and error on valid answers as training metrics.
+
+    TRL calls this once per step with every rollout of the step, so a shuffle mixes rewards across tasks.
+    """
     from causalagentbench.environment import reward_func
 
     rewards = reward_func(completions, environments)
+    assigned = rewards if SHUFFLE is None else SHUFFLE.sample(rewards, len(rewards))
     if ROLLOUT_LOG is not None:  # full transcripts, for reward-hacking checks (TRL's parquet log fails on them)
         with ROLLOUT_LOG.open("a", encoding="utf-8") as handle:
-            for completion, env, reward in zip(completions, environments, rewards, strict=True):
-                record = {"time": time.time(), "reward": reward, **env.info, "completion": completion}
-                handle.write(json.dumps(record, default=str) + "\n")
+            for completion, env, reward, given in zip(completions, environments, rewards, assigned, strict=True):
+                record = {"time": time.time(), "reward": reward, "assigned_reward": given, **env.info}
+                handle.write(json.dumps({**record, "completion": completion}, default=str) + "\n")
     if log_metric is not None:
         valid = [env.info["task_error"] for env in environments if env.info.get("parse_ok")]
         log_metric("valid_rate", len(valid) / len(environments))
         log_metric("valid_task_error", statistics.mean(valid) if valid else float("nan"))
         log_metric("env_tool_calls", statistics.mean(env.info.get("tool_calls", 0) for env in environments))
-    return rewards
+    return assigned
 
 
 def main() -> None:
@@ -117,6 +128,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--micro-batch", type=int, default=4, help="rollouts per backward pass (memory, not math)")
     parser.add_argument("--resume", action="store_true", help="continue from the latest checkpoint in --out")
+    parser.add_argument("--shuffle-rewards", action="store_true", help="control run: permute rewards each step")
     args = parser.parse_args()
 
     from datasets import Dataset
@@ -135,6 +147,8 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     global ROLLOUT_LOG
     ROLLOUT_LOG = out / "rollouts.jsonl"
+    global SHUFFLE
+    SHUFFLE = random.Random(args.seed) if args.shuffle_rewards else None
     tasks = load_dataset(args.train)
     # The task prompt is appended to the empty user message by ``CausalEnv.reset``; a row's other columns
     # (``seed``) reach ``reset`` as keyword arguments, so all rollouts of a group share one task.

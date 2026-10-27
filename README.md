@@ -160,9 +160,11 @@ DeepSeek-V4.1-Flash beats the PC pipeline (0.515), but its name-critical error (
 best data-only answer (0.49): no agent yet uses names as well as the benchmark allows.
 
 GRPO lowers the 4B model's test error by 0.20 [0.15, 0.24] with real names and by 0.09 [0.04, 0.13] with
-placeholders (paired by task); the gain is 0.11 [0.05, 0.17] larger when names are visible. It is not only
-validity: on the 123 tasks both models answered validly with real names, error falls by 0.12 [0.07, 0.16].
-Training used real names only, so the placeholder arm is also out of the training distribution.
+placeholders (paired by task). The larger gain with real names mostly reflects the base model's lower
+validity with real names (65% against 88%), not learned use of names: the trained model's names ablation
+shows no name-specific effect (difference in differences −0.03 [−0.13, +0.06]). It is not only validity: on
+the 123 tasks both models answered validly with real names, error falls by 0.12 [0.07, 0.16]. Training used
+real names only, so the placeholder arm is also out of the training distribution.
 
 ## RL environment
 
