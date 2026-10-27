@@ -43,8 +43,14 @@ image = (
 
 @app.function(image=image, gpu="H100", volumes={"/runs": runs, "/hf": hf_cache}, timeout=10 * 3600)
 def train(stem: str, run: str, args: list[str]) -> int:
-    """Train in a subprocess, committing the run directory every minute so progress is visible remotely."""
+    """Train in a subprocess, committing the run directory every minute so progress is visible remotely.
+
+    Modal restarts a preempted container with the same arguments, so training resumes from the run's latest
+    checkpoint whenever one exists.
+    """
     command = [sys.executable, "/root/train_grpo.py", "--train", f"/runs/data/{stem}", "--out", f"/runs/{run}", *args]
+    if list(Path(f"/runs/{run}").glob("checkpoint-*")) and "--resume" not in args:
+        command.append("--resume")
     process = subprocess.Popen(command, env=os.environ.copy())
     while process.poll() is None:
         time.sleep(60)
