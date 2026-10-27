@@ -150,7 +150,10 @@ async def run(name: str, models: list[str], samples: int, workers: int) -> None:
 
     load_dotenv(ROOT / ".env", override=False)
     client = AsyncOpenAI(
-        base_url=os.environ["HOSTED_VLLM_API_BASE"], api_key=os.environ["HOSTED_VLLM_API_KEY"], timeout=600
+        base_url=os.environ["HOSTED_VLLM_API_BASE"],
+        api_key=os.environ["HOSTED_VLLM_API_KEY"],
+        timeout=600,
+        max_retries=8,
     )
     path = OUT / f"{name}.jsonl"
     done = {(r["id"], r["model"]) for r in _load(path)}
@@ -199,8 +202,10 @@ def _metric(per_item: dict[str, dict[str, float]], ids: list[str], labels: dict[
     return statistics.mean(statistics.mean(values) for values in by_label)
 
 
-def paired_interval(name: str, a: dict, b: dict, balanced: bool, resamples: int = 10_000) -> tuple[float, float, float]:
-    """Difference a - b in (balanced) accuracy, with a 95% paired bootstrap interval over clusters."""
+def paired_interval(
+    name: str, a: dict, b: dict, balanced: bool, level: float = 0.95, resamples: int = 10_000
+) -> tuple[float, float, float]:
+    """Difference a - b in (balanced) accuracy, with a paired bootstrap interval over clusters at ``level``."""
     item_list = [item for item in items(name) if item["id"] in a and item["id"] in b]
     labels = {item["id"]: item["label"] for item in item_list}
     clusters: dict[str, list[str]] = defaultdict(list)
@@ -215,14 +220,16 @@ def paired_interval(name: str, a: dict, b: dict, balanced: bool, resamples: int 
         sample = [i for key in rng.choices(keys, k=len(keys)) for i in clusters[key]]
         draws.append(_metric(a, sample, labels, balanced) - _metric(b, sample, labels, balanced))
     draws.sort()
-    return point, draws[int(0.025 * resamples)], draws[int(0.975 * resamples) - 1]
+    tail = (1 - level) / 2
+    return point, draws[int(tail * resamples)], draws[int((1 - tail) * resamples) - 1]
 
 
-def report(name: str, model: str, against: list[str], balanced: bool) -> dict[str, Any]:
+def report(name: str, model: str, against: list[str], balanced: bool, level: float) -> dict[str, Any]:
     """Each model's accuracy, yes-rate and no-answer rate overall and by group, and paired differences."""
     item_list = items(name)
     labels = {item["id"]: item["label"] for item in item_list}
-    out: dict[str, Any] = {"set": name, "items": len(item_list), "balanced_accuracy": balanced, "models": {}}
+    out: dict[str, Any] = {"set": name, "items": len(item_list), "balanced_accuracy": balanced, "level": level}
+    out["models"] = {}
     per_model = {m: scores(name, m) for m in [model, *against]}
     for m, per_item in per_model.items():
         groups: dict[str, list[str]] = defaultdict(list)
@@ -241,7 +248,7 @@ def report(name: str, model: str, against: list[str], balanced: bool) -> dict[st
             for key, ids in sorted(groups.items())
         }
     out["differences"] = {
-        f"{model} - {b}": [round(x, 4) for x in paired_interval(name, per_model[model], per_model[b], balanced)]
+        f"{model} - {b}": [round(x, 4) for x in paired_interval(name, per_model[model], per_model[b], balanced, level)]
         for b in against
     }
     return out
@@ -261,11 +268,12 @@ def main() -> None:
     report_parser.add_argument("--model", required=True)
     report_parser.add_argument("--against", action="append", default=[])
     report_parser.add_argument("--balanced", action="store_true", help="balanced accuracy (Corr2Cause)")
+    report_parser.add_argument("--level", type=float, default=0.95, help="interval level (0.975 for secondaries)")
     args = parser.parse_args()
     if args.command == "run":
         asyncio.run(run(args.set, args.model, args.samples, args.workers))
     else:
-        print(json.dumps(report(args.set, args.model, args.against, args.balanced), indent=1))
+        print(json.dumps(report(args.set, args.model, args.against, args.balanced, args.level), indent=1))
 
 
 if __name__ == "__main__":
