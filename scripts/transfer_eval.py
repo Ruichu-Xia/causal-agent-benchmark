@@ -1,0 +1,272 @@
+r"""Far-transfer evaluation: yes/no causal questions from CLadder and Corr2Cause, in their own text format.
+
+    python scripts/transfer_eval.py run primary --model base --model trained --model control --samples 4
+    python scripts/transfer_eval.py report primary --model trained --against base --against control
+
+Models are the ``modal_serve.py`` endpoint's served names (``HOSTED_VLLM_API_BASE`` and
+``HOSTED_VLLM_API_KEY`` in .env). Every model gets the same single user message (no system prompt, no tools)
+and the server's default sampling from the model's generation config; sample ``j`` of every item uses
+seed ``j``. Replies go to ``outputs/transfer/<set>.jsonl``; ``run`` skips (item, model) pairs already there.
+The pre-registered analysis is in ``docs/transfer_preregistration.md``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import csv
+import json
+import os
+import random
+import re
+import statistics
+import urllib.request
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "outputs" / "transfer"
+CLADDER = "https://huggingface.co/datasets/causal-nlp/CLadder/resolve/18d684e444ed07cc57ae0f3a91ee983a79b8119a/data"
+CORR2CAUSE = "https://huggingface.co/datasets/causal-nlp/corr2cause/resolve/42ba12c769e11ff6427c9f52d7db58e3f9bf3e53"
+SOURCES = {
+    "cladder": f"{CLADDER}/full_v1.5_default.csv",
+    "c2c_test": f"{CORR2CAUSE}/test.csv",
+    "c2c_dev": f"{CORR2CAUSE}/dev.csv",
+    "c2c_refactor": f"{CORR2CAUSE}/perturbation_by_refactorization_test.csv",
+}
+INSTRUCTION = 'Think it through, then end your reply with a final line that is exactly "Answer: Yes" or "Answer: No".'
+C2C_QUESTION = "Given the premise, is the hypothesis necessarily true?"
+MAX_TOKENS = 4096
+PILOT_QUERIES = ("nde", "nie", "ett", "det-counterfactual")  # rung 3, outside every scored CLadder set
+
+# The pre-registered answer rule: the last "answer ... yes/no", else a final line that is only yes or no.
+_ANSWER = re.compile(r"answer\W*(?:is\W*)?(yes|no)\b", re.IGNORECASE)
+_BARE = re.compile(r"^\W*(yes|no)\W*$", re.IGNORECASE)
+
+
+def _rows(source: str) -> list[dict[str, str]]:
+    """Rows of one source CSV, downloaded once at its pinned revision."""
+    path = OUT / "data" / f"{source}.csv"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(SOURCES[source], path)
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _cladder(query_types: tuple[str, ...]) -> list[dict[str, Any]]:
+    """CLadder v1.5 items of the given query types; story is the resampling cluster."""
+    return [
+        {
+            "id": f"cladder-{row['id']}",
+            "prompt": f"{row['prompt']}\n\n{INSTRUCTION}",
+            "label": row["label"] == "yes",
+            "cluster": row["story_id"],
+            "group": row["query_type"],
+            "property": row["question_property"],
+        }
+        for row in _rows("cladder")
+        if row["query_type"] in query_types
+    ]
+
+
+def _corr2cause(source: str) -> list[dict[str, Any]]:
+    """Corr2Cause items; each item is its own cluster."""
+    items = []
+    for i, row in enumerate(_rows(source)):
+        premise, hypothesis = row["input"].split("Hypothesis:")
+        items.append(
+            {
+                "id": f"{source}-{i}",
+                "prompt": f"{premise.strip()}\nHypothesis:{hypothesis}\n\n{C2C_QUESTION} {INSTRUCTION}",
+                "label": row["label"] == "1",
+                "cluster": f"{source}-{i}",
+                "group": row.get("template", "refactorization"),
+                "property": row.get("num_variables", ""),
+            }
+        )
+    return items
+
+
+def _sample(items: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+    """A fixed random subset, for pilots."""
+    return random.Random(0).sample(items, n)
+
+
+def items(name: str) -> list[dict[str, Any]]:
+    """The items of one named evaluation set."""
+    sets = {
+        "primary": lambda: _cladder(("backadj", "collider_bias")),
+        "cladder_ate": lambda: _cladder(("ate",)),
+        "cladder_correlation": lambda: _cladder(("correlation",)),
+        "c2c_test": lambda: _corr2cause("c2c_test"),
+        "c2c_refactor": lambda: _corr2cause("c2c_refactor"),
+        "pilot_cladder": lambda: _sample(_cladder(PILOT_QUERIES), 100),
+        "pilot_c2c": lambda: _sample(_corr2cause("c2c_dev"), 100),
+    }
+    return sets[name]()
+
+
+def extract(reply: str) -> bool | None:
+    """The reply's yes/no answer under the pre-registered rule, or None if it has none."""
+    matches = _ANSWER.findall(reply)
+    if matches:
+        return matches[-1].lower() == "yes"
+    lines = [line for line in reply.strip().splitlines() if line.strip()]
+    bare = _BARE.match(lines[-1]) if lines else None
+    return bare.group(1).lower() == "yes" if bare else None
+
+
+async def _ask(client: Any, model: str, item: dict[str, Any], samples: int, gate: asyncio.Semaphore) -> list[dict]:
+    """All samples of one item from one model, one request per seed."""
+    records = []
+    async with gate:
+        for seed in range(samples):
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": item["prompt"]}],
+                max_tokens=MAX_TOKENS,
+                seed=seed,
+            )
+            choice = response.choices[0]
+            records.append(
+                {
+                    "id": item["id"],
+                    "model": model,
+                    "seed": seed,
+                    "reply": choice.message.content or "",
+                    "finish_reason": choice.finish_reason,
+                    "completion_tokens": response.usage.completion_tokens,
+                }
+            )
+    return records
+
+
+async def run(name: str, models: list[str], samples: int, workers: int) -> None:
+    """Query every model on every item of set ``name``, appending to its results file."""
+    from dotenv import load_dotenv
+    from openai import AsyncOpenAI
+
+    load_dotenv(ROOT / ".env", override=False)
+    client = AsyncOpenAI(
+        base_url=os.environ["HOSTED_VLLM_API_BASE"], api_key=os.environ["HOSTED_VLLM_API_KEY"], timeout=600
+    )
+    path = OUT / f"{name}.jsonl"
+    done = {(r["id"], r["model"]) for r in _load(path)}
+    todo = [(item, model) for model in models for item in items(name) if (item["id"], model) not in done]
+    gate = asyncio.Semaphore(workers)
+    tasks = [asyncio.create_task(_ask(client, model, item, samples, gate)) for item, model in todo]
+    with path.open("a", encoding="utf-8") as handle:
+        for finished, task in enumerate(asyncio.as_completed(tasks), 1):
+            for record in await task:
+                handle.write(json.dumps(record) + "\n")
+            handle.flush()
+            if finished % 100 == 0 or finished == len(tasks):
+                print(f"{name}: {finished}/{len(tasks)}", flush=True)
+
+
+def _load(path: Path) -> list[dict[str, Any]]:
+    """Records of one results file (empty if absent)."""
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def scores(name: str, model: str) -> dict[str, dict[str, float]]:
+    """Per item: accuracy over samples (no answer counts as wrong), yes-rate, and no-answer rate."""
+    labels = {item["id"]: item["label"] for item in items(name)}
+    answers: dict[str, list[bool | None]] = defaultdict(list)
+    for record in _load(OUT / f"{name}.jsonl"):
+        if record["model"] == model:
+            answers[record["id"]].append(extract(record["reply"]))
+    return {
+        i: {
+            "accuracy": statistics.mean(a is labels[i] for a in answers[i]),
+            "yes": statistics.mean(a is True for a in answers[i]),
+            "missing": statistics.mean(a is None for a in answers[i]),
+        }
+        for i in labels
+        if i in answers
+    }
+
+
+def _metric(per_item: dict[str, dict[str, float]], ids: list[str], labels: dict[str, bool], balanced: bool) -> float:
+    """Accuracy over ``ids``, or balanced accuracy (mean of the accuracies on true and on false items)."""
+    if not balanced:
+        return statistics.mean(per_item[i]["accuracy"] for i in ids)
+    by_label = [[per_item[i]["accuracy"] for i in ids if labels[i] is value] for value in (True, False)]
+    return statistics.mean(statistics.mean(values) for values in by_label)
+
+
+def paired_interval(name: str, a: dict, b: dict, balanced: bool, resamples: int = 10_000) -> tuple[float, float, float]:
+    """Difference a - b in (balanced) accuracy, with a 95% paired bootstrap interval over clusters."""
+    item_list = [item for item in items(name) if item["id"] in a and item["id"] in b]
+    labels = {item["id"]: item["label"] for item in item_list}
+    clusters: dict[str, list[str]] = defaultdict(list)
+    for item in item_list:
+        clusters[item["cluster"]].append(item["id"])
+    keys = sorted(clusters)
+    ids = [i for key in keys for i in clusters[key]]
+    point = _metric(a, ids, labels, balanced) - _metric(b, ids, labels, balanced)
+    rng = random.Random(0)
+    draws = []
+    for _ in range(resamples):
+        sample = [i for key in rng.choices(keys, k=len(keys)) for i in clusters[key]]
+        draws.append(_metric(a, sample, labels, balanced) - _metric(b, sample, labels, balanced))
+    draws.sort()
+    return point, draws[int(0.025 * resamples)], draws[int(0.975 * resamples) - 1]
+
+
+def report(name: str, model: str, against: list[str], balanced: bool) -> dict[str, Any]:
+    """Each model's accuracy, yes-rate and no-answer rate overall and by group, and paired differences."""
+    item_list = items(name)
+    labels = {item["id"]: item["label"] for item in item_list}
+    out: dict[str, Any] = {"set": name, "items": len(item_list), "balanced_accuracy": balanced, "models": {}}
+    per_model = {m: scores(name, m) for m in [model, *against]}
+    for m, per_item in per_model.items():
+        groups: dict[str, list[str]] = defaultdict(list)
+        for item in item_list:
+            if item["id"] in per_item:
+                groups["all"].append(item["id"])
+                groups[f"group={item['group']}"].append(item["id"])
+                groups[f"property={item['property']}"].append(item["id"])
+        out["models"][m] = {
+            key: {
+                "n": len(ids),
+                "accuracy": round(_metric(per_item, ids, labels, balanced and key == "all"), 4),
+                "yes_rate": round(statistics.mean(per_item[i]["yes"] for i in ids), 4),
+                "missing_rate": round(statistics.mean(per_item[i]["missing"] for i in ids), 4),
+            }
+            for key, ids in sorted(groups.items())
+        }
+    out["differences"] = {
+        f"{model} - {b}": [round(x, 4) for x in paired_interval(name, per_model[model], per_model[b], balanced)]
+        for b in against
+    }
+    return out
+
+
+def main() -> None:
+    """Parse arguments and run or report."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    run_parser = sub.add_parser("run")
+    run_parser.add_argument("set")
+    run_parser.add_argument("--model", action="append", required=True)
+    run_parser.add_argument("--samples", type=int, default=1)
+    run_parser.add_argument("--workers", type=int, default=48)
+    report_parser = sub.add_parser("report")
+    report_parser.add_argument("set")
+    report_parser.add_argument("--model", required=True)
+    report_parser.add_argument("--against", action="append", default=[])
+    report_parser.add_argument("--balanced", action="store_true", help="balanced accuracy (Corr2Cause)")
+    args = parser.parse_args()
+    if args.command == "run":
+        asyncio.run(run(args.set, args.model, args.samples, args.workers))
+    else:
+        print(json.dumps(report(args.set, args.model, args.against, args.balanced), indent=1))
+
+
+if __name__ == "__main__":
+    main()
