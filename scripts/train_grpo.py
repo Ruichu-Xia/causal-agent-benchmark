@@ -98,10 +98,11 @@ def training_reward(
 
     rewards = reward_func(completions, environments)
     assigned = rewards if SHUFFLE is None else SHUFFLE.sample(rewards, len(rewards))
+    step = kwargs["trainer_state"].global_step + 1  # the step these rollouts train
     if ROLLOUT_LOG is not None:  # full transcripts, for reward-hacking checks (TRL's parquet log fails on them)
         with ROLLOUT_LOG.open("a", encoding="utf-8") as handle:
             for completion, env, reward, given in zip(completions, environments, rewards, assigned, strict=True):
-                record = {"time": time.time(), "reward": reward, "assigned_reward": given, **env.info}
+                record = {"time": time.time(), "step": step, "reward": reward, "assigned_reward": given, **env.info}
                 handle.write(json.dumps({**record, "completion": completion}, default=str) + "\n")
     if log_metric is not None:
         valid = [env.info["task_error"] for env in environments if env.info.get("parse_ok")]
@@ -109,6 +110,15 @@ def training_reward(
         log_metric("valid_task_error", statistics.mean(valid) if valid else float("nan"))
         log_metric("env_tool_calls", statistics.mean(env.info.get("tool_calls", 0) for env in environments))
     return assigned
+
+
+def drop_records_after(path: Path, step: int) -> None:
+    """Remove log records of steps after ``step``: a resumed run trains those steps again."""
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines if json.loads(line).get("step", 0) <= step]
+    path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
 
 
 def main() -> None:
@@ -149,6 +159,10 @@ def main() -> None:
     ROLLOUT_LOG = out / "rollouts.jsonl"
     global SHUFFLE
     SHUFFLE = random.Random(args.seed) if args.shuffle_rewards else None
+    if args.resume:
+        resumed_from = max(int(path.name.split("-")[1]) for path in out.glob("checkpoint-*"))
+        drop_records_after(out / "metrics.jsonl", resumed_from)
+        drop_records_after(ROLLOUT_LOG, resumed_from)
     tasks = load_dataset(args.train)
     # The task prompt is appended to the empty user message by ``CausalEnv.reset``; a row's other columns
     # (``seed``) reach ``reset`` as keyword arguments, so all rollouts of a group share one task.
