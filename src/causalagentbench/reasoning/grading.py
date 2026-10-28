@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 
-_ANSWER = re.compile("answer\\s*[:\uff1a]\\s*(.+)", re.IGNORECASE)  # ASCII or full-width colon
+# "Answer:" (ASCII or full-width colon, optionally in markdown emphasis) and its value on the same line.
+# Whitespace must not cross a line break: "Final answer:\n\nAnswer: Yes" would otherwise read as "Answer: Yes".
+_ANSWER = re.compile("answer[*_ \t]*[:\uff1a][*_ \t]*(\\S.*)", re.IGNORECASE)
 _MINUS = "\u2212"
 _NUMBER = re.compile(f"[-{_MINUS}]?\\d*\\.?\\d+")
 NUMBER_TOLERANCE = 0.011

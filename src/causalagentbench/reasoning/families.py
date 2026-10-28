@@ -5,7 +5,11 @@
 - ``effect``: causal or observed effect from stated probabilities. (truncated factorization, Bayes' rule)
 - ``discovery``: what must or might be true of the structure given all its independences? (equivalence class)
 
-Every family varies its wording, graph description and answer format, and balances yes and no answers.
+Two random streams drive a task. ``rng`` draws the problem (graph, query, answer); ``Surface`` draws how it
+reads (templates from ``wording.SLOTS``, statement order, variable names). Answers depend on the problem
+alone, so the same problem seed gives the same problem under any wording or vocabulary. Yes/no labels
+are balanced, and where a family has a plausible shortcut (``shortcuts.py``) the shortcut's agreement
+with the label is drawn independently of the label (``Spec.agree``).
 """
 
 from __future__ import annotations
@@ -18,6 +22,9 @@ from typing import Any
 import networkx as nx
 import numpy as np
 
+from causalagentbench.reasoning.grading import grade
+from causalagentbench.reasoning.shortcuts import confounder_rule, undirected_separated
+from causalagentbench.reasoning.wording import GRAPH_STYLES, SLOTS
 from causalagentbench.reasoning.worlds import (
     World,
     causal_effect,
@@ -36,10 +43,70 @@ Namer = Callable[[np.random.Generator, int], tuple[str, ...]]
 FORMATS = {
     "yesno": "Yes or No",
     "number": "a number rounded to two decimal places",
-    "letters": "the letters of every correct option separated by commas, or None",
     "choice": "1, 2, Both or Neither",
 }
-MAX_TRIES = 200
+MAX_TRIES = 100_000
+"""Rejection-sampling budget. The rarest target is two invalid sets the confounder rule accepts (M-bias-like),
+present in 0.4% of training-size graphs: about 250 tries on average, and failure odds about e^-400."""
+MARGIN = 0.03
+"""Minimum size of an effect, or of a gap between effects, whose sign or order is asked about."""
+P_NONZERO = 0.9
+"""Share of numeric effect questions whose answer is not 0.00, so answering zero is not a shortcut."""
+
+SIZES = {
+    "independence": ((3, 6), (7, 8)),
+    "adjustment": ((4, 6), (7, 8)),
+    "effect": ((3, 4), (5, 5)),
+    "discovery": ((3, 4), (5, 5)),
+}
+"""Per family: (training, ood_size) inclusive ranges of the number of variables."""
+
+RELATIONS = ("direct", "cause", "common_cause", "common_effect")
+
+
+@dataclass(frozen=True)
+class Spec:
+    """How a split draws problems.
+
+    Attributes:
+        large: Draw graph sizes from the ood_size range instead of the training range.
+        agree: Probability that the family's shortcut gives the right answer.
+    """
+
+    large: bool = False
+    agree: float = 0.5
+
+
+@dataclass
+class Surface:
+    """Random draws that change only how a task reads: templates, statement order and variable names.
+
+    Attributes:
+        rng: The surface stream, separate from the problem stream.
+        namer: Draws variable names from this stream.
+        held_out: Use held-out templates instead of training ones.
+    """
+
+    rng: np.random.Generator
+    namer: Namer
+    held_out: bool = False
+
+    def pick(self, options: tuple[tuple[Any, ...], tuple[Any, ...]]) -> Any:
+        """A random option from the training or held-out pool."""
+        pool = options[1] if self.held_out else options[0]
+        return pool[int(self.rng.integers(len(pool)))]
+
+    def phrase(self, slot: str) -> str:
+        """A random template of ``slot``."""
+        return str(self.pick(SLOTS[slot]))
+
+    def names(self, n: int) -> tuple[str, ...]:
+        """``n`` distinct variable names."""
+        return self.namer(self.rng, n)
+
+    def order(self, n: int) -> list[int]:
+        """A random order of ``n`` items."""
+        return [int(i) for i in self.rng.permutation(n)]
 
 
 @dataclass(frozen=True)
@@ -50,8 +117,8 @@ class Task:
         family: The task family.
         kind: The answer format, a key of ``FORMATS``.
         prompt: The full user message.
-        answer: The canonical answer: yes/no, a two-decimal number, sorted letters or none, or a choice.
-        meta: Generation details for analysis (graph, variant, query).
+        answer: The canonical answer: yes/no, a two-decimal number, or a choice.
+        meta: The problem (graph, query, variable names) for analysis and audits.
     """
 
     family: str
@@ -59,6 +126,10 @@ class Task:
     prompt: str
     answer: str
     meta: dict[str, Any] = field(default_factory=dict)
+
+
+Case = tuple[bool | None, bool | None, Any]
+"""(label, shortcut agrees, payload) of one drawn case; None means "not matched"."""
 
 
 def _join(words: Sequence[str]) -> str:
@@ -74,29 +145,58 @@ def _prompt(context: str, question: str, kind: str) -> str:
     return f"{context}\n\n{question}\n\n{instruction}"
 
 
-def describe_graph(names: tuple[str, ...], edges: Sequence[tuple[int, int]], rng: np.random.Generator) -> str:
-    """The causal structure in one of four styles, statements in random order, closed-world assumption stated."""
-    style = int(rng.integers(4))
-    order = list(rng.permutation(len(names)))
-    if style == 0:
-        lines = [f"{names[p].capitalize()} directly causes {names[c]}." for p, c in edges]
-    elif style == 1:
-        lines = [f"{names[c].capitalize()} is directly affected by {names[p]}." for p, c in edges]
-    elif style == 2:
-        lines = []
-        for c in order:
-            parents = [names[p] for p, child in edges if child == c]
-            if parents:
-                lines.append(f"{names[c].capitalize()} depends directly on {_join(parents)}.")
+def _size(rng: np.random.Generator, family: str, spec: Spec) -> int:
+    """A graph size from the family's range for this split."""
+    lo, hi = SIZES[family][spec.large]
+    return int(rng.integers(lo, hi + 1))
+
+
+def _graph(edges: Sequence[tuple[int, int]], n: int) -> nx.DiGraph:
+    """A DAG on nodes 0..n-1."""
+    graph = nx.DiGraph(edges)
+    graph.add_nodes_from(range(n))
+    return graph
+
+
+def _draw(rng: np.random.Generator, draw: Callable[[], Case | None], agree: float, p_label: float = 0.5) -> Any:
+    """Draw cases until one falls in a random cell; return its payload.
+
+    ``draw`` returns a ``Case`` or None (rejected). The cell's label is true with probability
+    ``p_label`` and its shortcut agreement is true with probability ``agree``.
+    """
+    label, agrees = bool(rng.random() < p_label), bool(rng.random() < agree)
+    for _ in range(MAX_TRIES):
+        case = draw()
+        if case is not None and case[0] in (None, label) and case[1] in (None, agrees):
+            return case[2]
+    raise RuntimeError("could not draw a case in the target cell")
+
+
+def describe_graph(names: tuple[str, ...], edges: Sequence[tuple[int, int]], surface: Surface) -> str:
+    """The causal structure in one style, statements in random order, closed-world assumption stated."""
+    kind, template = surface.pick(GRAPH_STYLES)
+    order = surface.order(len(names))
+    if kind in ("edge", "arrows"):
+        lines = [
+            template.format(P=names[p].capitalize(), p=names[p], C=names[c].capitalize(), c=names[c])
+            for p, c in edges
+        ]
+        lines = [lines[i] for i in surface.order(len(lines))]
+    elif kind == "parents":
+        lines = [
+            template.format(C=names[c].capitalize(), ps=_join([names[p] for p, child in edges if child == c]))
+            for c in order
+            if any(child == c for _, child in edges)
+        ]
     else:
-        lines = [f"{names[p]} -> {names[c]}" for p, c in edges]
-    if style != 2:
-        lines = [lines[i] for i in rng.permutation(len(lines))]
-    listed = _join([names[i] for i in order])
-    header = f"A closed system has {len(names)} variables: {listed}. Its causal structure is:"
-    closing = "There are no other causal relationships and no hidden common causes."
-    separator = "\n" if style == 3 else " "
-    return f"{header}{separator}{separator.join(lines)}{separator}{closing}"
+        lines = [
+            template.format(P=names[p].capitalize(), cs=_join([names[c] for parent, c in edges if parent == p]))
+            for p in order
+            if any(parent == p for parent, _ in edges)
+        ]
+    header = surface.phrase("header").format(n=len(names), names=_join([names[i] for i in order]))
+    separator = "\n" if kind == "arrows" else " "
+    return f"{header}{separator}{separator.join(lines)}{separator}{surface.phrase('closing')}"
 
 
 def _subset_text(names: tuple[str, ...], z: Sequence[int]) -> str:
@@ -104,54 +204,30 @@ def _subset_text(names: tuple[str, ...], z: Sequence[int]) -> str:
     return _join([names[i] for i in sorted(z)]) if z else "nothing"
 
 
-def _balanced(rng: np.random.Generator, draw: Callable[[], tuple[bool, Any] | None]) -> Any:
-    """Call ``draw`` until it returns a case whose label equals a fair coin flip; return that case."""
-    target = bool(rng.random() < 0.5)
-    for _ in range(MAX_TRIES):
-        result = draw()
-        if result is not None and result[0] == target:
-            return result
-    raise RuntimeError("could not draw a case with the target label")
-
-
-def independence(rng: np.random.Generator, namer: Namer) -> Task:
+def independence(rng: np.random.Generator, surface: Surface, spec: Spec) -> Task:
     """Are two variables associated within strata of a conditioning set?"""
 
-    def draw() -> tuple[bool, Any]:
-        """A random graph, pair and conditioning set; the label is d-connection."""
-        n = int(rng.integers(3, 7))
+    def draw() -> Case:
+        """A random graph, pair and conditioning set; the label is d-separation."""
+        n = _size(rng, "independence", spec)
         edges = random_dag(rng, n, float(rng.uniform(0.3, 0.6)))
         x, y = (int(v) for v in rng.choice(n, size=2, replace=False))
         others = [v for v in range(n) if v not in (x, y)]
-        size = int(rng.integers(0, min(3, len(others)) + 1))
-        z = {int(v) for v in rng.choice(others, size=size, replace=False)}
-        graph = nx.DiGraph(edges)
-        graph.add_nodes_from(range(n))
-        connected = not d_separated(graph, x, y, z)
-        return connected, (n, edges, x, y, z, connected)
+        z = {int(v) for v in rng.choice(others, size=int(rng.integers(0, min(3, len(others)) + 1)), replace=False)}
+        graph = _graph(edges, n)
+        separated = d_separated(graph, x, y, z)
+        return separated, undirected_separated(graph, x, y, z) == separated, (n, edges, x, y, z, separated)
 
-    _, (n, edges, x, y, z, connected) = _balanced(rng, draw)
-    names = namer(rng, n)
-    context = describe_graph(names, edges, rng) + " Every causal relationship is real, with no exact cancellations."
-    where = (
-        "in the population as a whole"
-        if not z
-        else rng.choice(
-            [
-                f"among units that share the same values of {_subset_text(names, z)}",
-                f"after conditioning on {_subset_text(names, z)}",
-                f"within groups defined by {_subset_text(names, z)}",
-            ]
-        )
-    )
+    n, edges, x, y, z, separated = _draw(rng, draw, spec.agree)
     ask_independent = bool(rng.random() < 0.5)
-    if ask_independent:
-        question = f"Are {names[x]} and {names[y]} statistically independent {where}?"
-        answer = not connected
-    else:
-        question = f"Would {names[x]} and {names[y]} be statistically associated {where}?"
-        answer = connected
+    answer = separated if ask_independent else not separated
+    names = surface.names(n)
+    context = describe_graph(names, edges, surface) + " " + surface.phrase("faithful")
+    where = surface.phrase("where_given").format(z=_subset_text(names, z)) if z else surface.phrase("where_none")
+    template = surface.phrase("ask_independent" if ask_independent else "ask_associated")
+    question = template.format(x=names[x], y=names[y], where=where)
     meta = {
+        "names": names,
         "edges": edges,
         "x": x,
         "y": y,
@@ -167,126 +243,139 @@ def _effect_pair(rng: np.random.Generator, n: int) -> tuple[int, int]:
     return x, y
 
 
-def adjustment(rng: np.random.Generator, namer: Namer) -> Task:
-    """Does adjusting for a set identify the causal effect of one variable on another?"""
-    variant = str(rng.choice(["single", "options", "compare"]))
-    n = int(rng.integers(4, 7))
-    edges = random_dag(rng, n, float(rng.uniform(0.3, 0.6)))
-    graph = nx.DiGraph(edges)
-    graph.add_nodes_from(range(n))
-    x, y = _effect_pair(rng, n)
-    others = [v for v in range(n) if v not in (x, y)]
-    subsets = [set(c) for k in range(len(others) + 1) for c in itertools.combinations(others, k)]
-    valid = [valid_adjustment(graph, x, y, z) for z in subsets]
+def adjustment(rng: np.random.Generator, surface: Surface, spec: Spec) -> Task:
+    """Does adjusting for a set identify the causal effect of one variable on another?
 
-    def pick(label: bool) -> set[int] | None:
-        """A random subset with the given validity, if any."""
-        matching = [z for z, v in zip(subsets, valid, strict=True) if v == label]
-        return matching[int(rng.integers(len(matching)))] if matching else None
-
-    if variant == "single":
-        target = bool(rng.random() < 0.5)
-        z = pick(target)
-        if z is None:
-            target, z = not target, pick(not target)
-        assert z is not None
-        question = (
-            "Researchers want the causal effect of {x} on {y} from observational data. They compare units with "
-            "different values of {x} {within}. Does this comparison give an unbiased estimate of the causal effect?"
-        )
-        kind, answer, chosen = "yesno", "yes" if target else "no", [sorted(z)]
-    elif variant == "options":
-        k = min(len(subsets), int(rng.integers(3, 5)))
-        chosen_sets = [subsets[i] for i in rng.choice(len(subsets), size=k, replace=False)]
-        letters = "ABCD"[:k]
-        right = [letter for letter, z in zip(letters, chosen_sets, strict=True) if valid_adjustment(graph, x, y, z)]
-        question = (
-            "Researchers want the causal effect of {x} on {y} from observational data by adjusting for a set of "
-            "variables. Which of these adjustment sets give an unbiased estimate?"
-        )
-        kind, answer, chosen = "letters", ",".join(right) if right else "none", [sorted(z) for z in chosen_sets]
+    Each queried set's validity is a fair coin and the confounder rule's agreement with it is true with
+    probability ``spec.agree``, independently for each set.
+    """
+    variant = str(rng.choice(["single", "compare"]))
+    targets = [(bool(rng.random() < 0.5), bool(rng.random() < spec.agree)) for _ in range(1 + (variant == "compare"))]
+    for _ in range(MAX_TRIES):
+        n = _size(rng, "adjustment", spec)
+        edges = random_dag(rng, n, float(rng.uniform(0.3, 0.6)))
+        graph = _graph(edges, n)
+        x, y = _effect_pair(rng, n)
+        others = [v for v in range(n) if v not in (x, y)]
+        cells: dict[tuple[bool, bool], list[set[int]]] = {}
+        for k in range(len(others) + 1):
+            for c in itertools.combinations(others, k):
+                ok = valid_adjustment(graph, x, y, set(c))
+                cells.setdefault((ok, confounder_rule(graph, x, y, set(c)) == ok), []).append(set(c))
+        if all(len(cells.get(t, [])) >= targets.count(t) for t in targets):
+            break
     else:
-        z1, z2 = (subsets[i] for i in rng.choice(len(subsets), size=2, replace=False))
-        v1, v2 = valid_adjustment(graph, x, y, z1), valid_adjustment(graph, x, y, z2)
-        question = (
-            "Two analysts estimate the causal effect of {x} on {y} from observational data. Analyst 1 adjusts for "
-            "{z1}; analyst 2 adjusts for {z2}. Whose estimate is unbiased: 1, 2, Both or Neither?"
-        )
-        choice = {(True, True): "both", (True, False): "1", (False, True): "2", (False, False): "neither"}[(v1, v2)]
-        kind, answer, chosen = "choice", choice, [sorted(z1), sorted(z2)]
-    names = namer(rng, n)
+        raise RuntimeError("no graph had sets in the target cells")
+    chosen: list[set[int]] = []
+    for t in targets:
+        pool = [z for z in cells[t] if z not in chosen]
+        chosen.append(pool[int(rng.integers(len(pool)))])
+    valid = [t[0] for t in targets]
+    names = surface.names(n)
     fill = {"x": names[x], "y": names[y]}
+
+    def procedure(z: set[int], short: bool) -> str:
+        """How one analysis adjusts for ``z``, in a random template."""
+        slot = ("short_" if short else "proc_") + ("set" if z else "empty")
+        return surface.phrase(slot).format(z=_subset_text(names, sorted(z)), **fill)
+
     if variant == "single":
-        z_text = _subset_text(names, chosen[0])
-        fill["within"] = (
-            f"within groups that share the same values of {z_text}" if chosen[0] else "directly, adjusting for nothing"
-        )
-    elif variant == "compare":
-        fill["z1"], fill["z2"] = _subset_text(names, chosen[0]), _subset_text(names, chosen[1])
-    question = question.format(**fill)
-    if variant == "options":
-        question += "\n" + "\n".join(f"{'ABCD'[i]}. {_subset_text(names, z)}" for i, z in enumerate(chosen))
-    meta = {"edges": edges, "x": x, "y": y, "sets": chosen, "variant": variant}
-    return Task("adjustment", kind, _prompt(describe_graph(names, edges, rng), question, kind), answer, meta)
+        question = surface.phrase("ask_single").format(proc=procedure(chosen[0], False), **fill)
+        kind, answer = "yesno", "yes" if valid[0] else "no"
+    else:
+        proc1, proc2 = procedure(chosen[0], True), procedure(chosen[1], True)
+        question = surface.phrase("ask_compare").format(proc1=proc1, proc2=proc2, **fill)
+        kind = "choice"
+        answer = {(True, True): "both", (True, False): "1", (False, True): "2", (False, False): "neither"}[
+            (valid[0], valid[1])
+        ]
+    meta = {"names": names, "edges": edges, "x": x, "y": y, "sets": [sorted(z) for z in chosen], "variant": variant}
+    # without cancellations an invalid set is biased, so "no" means biased, not merely "not guaranteed"
+    context = describe_graph(names, edges, surface) + " " + surface.phrase("faithful")
+    return Task("adjustment", kind, _prompt(context, question, kind), answer, meta)
 
 
-def describe_probabilities(world: World, rng: np.random.Generator) -> str:
+def describe_probabilities(world: World, surface: Surface) -> str:
     """Every conditional probability table, one sentence per node, nodes in random order."""
     names = world.names
+    row, root = surface.phrase("cpt_row"), surface.phrase("cpt_root")
     sentences = []
-    for node in rng.permutation(len(names)):
-        parents = world.parents(int(node))
+    for node in surface.order(len(names)):
+        parents = world.parents(node)
+        template = row if parents else root
         parts = []
         for k, p in enumerate(world.cpts[node]):
             given = ", ".join(f"{names[q]}={(k >> j) & 1}" for j, q in enumerate(parents))
-            parts.append(f"P({names[node]}=1 | {given}) = {p:.2f}" if parents else f"P({names[node]}=1) = {p:.2f}")
-        sentences.append("; ".join(parts) + ".")
+            parts.append(template.format(v=names[node], given=given, p=f"{p:.2f}"))
+        sentence = "; ".join(parts) + "."
+        # capitalize a sentence that opens with template text, never one that opens with a variable name
+        sentences.append(sentence if template.startswith("{") else sentence[0].upper() + sentence[1:])
     return " ".join(sentences)
 
 
-def effect(rng: np.random.Generator, namer: Namer) -> Task:
-    """Causal or observed effect of one binary variable on another, from the stated mechanism."""
-    variant = str(rng.choice(["causal", "observed", "sign", "compare"]))
-    for _ in range(MAX_TRIES):
-        # Comparing both effects takes the longest replies; 4-variable worlds overflowed 4,096 tokens.
-        n = 3 if variant == "compare" else int(rng.integers(3, 5))
+def _number(value: float) -> str:
+    """Two-decimal canonical form; never "-0.00"."""
+    return f"{round(value, 2) + 0.0:.2f}"
+
+
+def effect(rng: np.random.Generator, surface: Surface, spec: Spec) -> Task:
+    """Causal or observed effect of one binary variable on another, from the stated mechanism.
+
+    Shortcuts: reporting the observed difference as the causal effect (``causal``), and reading the sign
+    of the causal effect off the observed difference (``sign``). For numeric questions the label is
+    "the answer is not 0.00", true with probability ``P_NONZERO``.
+    """
+    variant = str(rng.choice(["causal", "observed", "sign", "gap"]))
+
+    def draw() -> Case | None:
+        """A random world and pair, with this variant's label and shortcut agreement."""
+        # Comparing both effects takes the longest replies, so it uses the smallest graphs.
+        n = (4 if spec.large else 3) if variant == "gap" else _size(rng, "effect", spec)
         world = random_world(rng, tuple(str(i) for i in range(n)), float(rng.uniform(0.4, 0.8)))
         x, y = _effect_pair(rng, n)
         ate, observed = causal_effect(world, x, y), observed_difference(world, x, y)
-        if variant == "sign" and abs(ate) < 0.03:
-            continue
-        if variant == "compare" and abs(observed - ate) < 0.03:
-            continue
-        break
-    else:
-        raise RuntimeError("no world met the margin")
-    names = namer(rng, n)
-    world = World(names, world.edges, world.cpts)
-    context = (
-        describe_graph(names, world.edges, rng)
-        + " Every variable is binary (1 = present, 0 = absent). The causal mechanisms are: "
-        + describe_probabilities(world, rng)
-    )
-    nx_, ny = names[x], names[y]
+        payload = (world, x, y, ate, observed)
+        if variant == "causal":  # the shortcut is right when the grader accepts the observed difference
+            shortcut_right = grade("number", _number(ate), f"Answer: {_number(observed)}") == 1.0
+            return _number(ate) != "0.00", shortcut_right, payload
+        if variant == "observed":
+            return _number(observed) != "0.00", None, payload
+        if variant == "sign":
+            if min(abs(ate), abs(observed)) < MARGIN:
+                return None
+            return ate > 0, (observed > 0) == (ate > 0), payload
+        return (observed > ate, None, payload) if abs(observed - ate) >= MARGIN else None
+
+    numeric = variant in ("causal", "observed")
+    world, x, y, ate, observed = _draw(rng, draw, spec.agree, P_NONZERO if numeric else 0.5)
     if variant == "causal":
-        question = (
-            f"If {nx_} were set to 1 for everyone, rather than to 0 for everyone, by how much would the probability "
-            f"that {ny}=1 change? Give P({ny}=1 | do({nx_}=1)) - P({ny}=1 | do({nx_}=0))."
-        )
-        kind, answer = "number", f"{ate:.2f}"
+        kind, answer = "number", _number(ate)
     elif variant == "observed":
-        question = f"What is P({ny}=1 | {nx_}=1) - P({ny}=1 | {nx_}=0) in this population?"
-        kind, answer = "number", f"{observed:.2f}"
+        kind, answer = "number", _number(observed)
     elif variant == "sign":
-        question = f"Would setting {nx_} to 1 for everyone, rather than to 0, make {ny}=1 more likely?"
         kind, answer = "yesno", "yes" if ate > 0 else "no"
     else:
-        question = (
-            f"Is the observed difference P({ny}=1 | {nx_}=1) - P({ny}=1 | {nx_}=0) larger than the causal effect "
-            f"P({ny}=1 | do({nx_}=1)) - P({ny}=1 | do({nx_}=0))?"
-        )
         kind, answer = "yesno", "yes" if observed > ate else "no"
-    meta = {"edges": world.edges, "x": x, "y": y, "ate": ate, "observed": observed, "variant": variant}
+    names = surface.names(len(world.names))
+    world = World(names, world.edges, world.cpts)
+    context = (
+        describe_graph(names, world.edges, surface)
+        + " "
+        + surface.phrase("mechanisms")
+        + " "
+        + describe_probabilities(world, surface)
+    )
+    question = surface.phrase(f"ask_{variant}").format(x=names[x], y=names[y])
+    meta = {
+        "names": names,
+        "edges": world.edges,
+        "cpts": world.cpts,
+        "x": x,
+        "y": y,
+        "ate": ate,
+        "observed": observed,
+        "variant": variant,
+    }
     return Task("effect", kind, _prompt(context, question, kind), answer, meta)
 
 
@@ -304,66 +393,63 @@ def _relations(edges: Sequence[tuple[str, str]], nodes: Sequence[str]) -> dict[t
     return facts
 
 
-HYPOTHESES = {
-    "direct": "{a} directly causes {b}",
-    "cause": "{a} causes {b}, directly or through other variables",
-    "common_cause": "some other variable in the system causes both {a} and {b}",
-    "common_effect": "{a} and {b} both directly cause some third variable",
-}
-
-
-def describe_independences(names: tuple[str, ...], graph: nx.DiGraph) -> str:
+def describe_independences(names: tuple[str, ...], graph: nx.DiGraph, surface: Surface) -> str:
     """Every (conditional) independence among the variables; all other pairs are dependent given any set."""
     n = len(names)
+    given, none = surface.phrase("indep_given"), surface.phrase("indep_none")
     lines = []
     for a, b in itertools.combinations(range(n), 2):
         others = [v for v in range(n) if v not in (a, b)]
         for k in range(len(others) + 1):
             for z in itertools.combinations(others, k):
                 if d_separated(graph, a, b, set(z)):
-                    given = f" given {_join([names[v] for v in z])}" if z else ""
-                    lines.append(f"{names[a]} and {names[b]} are independent{given}.")
+                    fill = {"a": names[a], "b": names[b], "z": _join([names[v] for v in z]) if z else ""}
+                    lines.append((given if z else none).format(**fill))
     if not lines:
-        return "No independences hold: every pair of variables is dependent given any set of the others."
-    rest = "Every other pair is dependent given any other set of variables."
-    return "The independences that hold are exactly these: " + " ".join(lines) + " " + rest
+        return surface.phrase("no_independences")
+    return f"{surface.phrase('independences')} {' '.join(lines)} {surface.phrase('dependent_rest')}"
 
 
-def discovery(rng: np.random.Generator, namer: Namer) -> Task:
-    """What must, or could, be true of the causal structure given all of its independences?"""
+def discovery(rng: np.random.Generator, surface: Surface, spec: Spec) -> Task:
+    """What must, or could, be true of the causal structure given all of its independences?
 
-    def draw() -> tuple[bool, Any]:
-        """A random graph and statement; the label is whether it holds in every (or some) equivalent DAG."""
-        n = int(rng.integers(3, 5))  # with 5 variables most base replies overflowed 4,096 tokens
+    The statement type and the mode are drawn first and the label is balanced within them, so no fixed
+    answer per question type beats chance.
+    """
+    relation, mode = str(rng.choice(RELATIONS)), str(rng.choice(["must", "could"]))
+
+    def draw() -> Case:
+        """A random graph and pair; the label is whether the statement holds in every (or some) equivalent DAG."""
+        n = _size(rng, "discovery", spec)
         edges = random_dag(rng, n, float(rng.uniform(0.3, 0.6)))
         nodes = tuple(str(i) for i in range(n))
         scaffold = Scaffold(
             nodes, dict.fromkeys(nodes, Role.CONFOUNDER), tuple((str(p), str(c)) for p, c in edges), (), nodes[0]
         )
         members = [_relations(member, nodes) for member in equivalence_class(scaffold)]
-        relation = str(rng.choice(list(HYPOTHESES)))
         a, b = (str(v) for v in rng.choice(nodes, size=2, replace=False))
-        mode = str(rng.choice(["must", "could"]))
         holds = [facts[(relation, a, b)] for facts in members]
         label = all(holds) if mode == "must" else any(holds)
-        return label, (n, edges, relation, int(a), int(b), mode, label, len(members))
+        return label, None, (n, edges, int(a), int(b), label, len(members))
 
-    _, (n, edges, relation, a, b, mode, label, size) = _balanced(rng, draw)
-    names = namer(rng, n)
-    graph = nx.DiGraph(edges)
-    graph.add_nodes_from(range(n))
-    context = (
-        f"A study measured {n} variables: {_join([names[i] for i in rng.permutation(n)])}. They form a closed causal "
-        "system with no hidden common causes, and every dependence among them reflects the causal structure "
-        "(no exact cancellations). " + describe_independences(names, graph)
-    )
-    statement = HYPOTHESES[relation].format(a=names[a], b=names[b])
-    question = f"Must it be true that {statement}?" if mode == "must" else f"Is it possible that {statement}?"
-    meta = {"edges": edges, "relation": relation, "a": a, "b": b, "variant": mode, "class_size": size}
+    n, edges, a, b, label, size = _draw(rng, draw, spec.agree)
+    names = surface.names(n)
+    study = surface.phrase("study").format(n=n, names=_join([names[i] for i in surface.order(n)]))
+    context = study + " " + describe_independences(names, _graph(edges, n), surface)
+    question = surface.phrase(f"ask_{mode}").format(s=surface.phrase(relation).format(a=names[a], b=names[b]))
+    meta = {
+        "names": names,
+        "edges": edges,
+        "relation": relation,
+        "a": a,
+        "b": b,
+        "variant": mode,
+        "class_size": size,
+    }
     return Task("discovery", "yesno", _prompt(context, question, "yesno"), "yes" if label else "no", meta)
 
 
-FAMILIES: dict[str, Callable[[np.random.Generator, Namer], Task]] = {
+FAMILIES: dict[str, Callable[[np.random.Generator, Surface, Spec], Task]] = {
     "independence": independence,
     "adjustment": adjustment,
     "effect": effect,

@@ -31,6 +31,13 @@ from the Web*, CIKM 2020. <https://causenet.org/>, DOI
 [10.5281/zenodo.3876154](https://doi.org/10.5281/zenodo.3876154). CauseNet is licensed under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
+The text-reasoning environment's name pool, `src/causalagentbench/reasoning/concepts.txt`, is a further
+derived file. It lists every CauseNet-Precision concept of degree at least 20 that is one to three
+letter-only words, lower-cased, excluding names that contain "and", "or" or any other word of
+the task text (such as "effect", "to" or "change"), which would make prompts parse two ways: 2,516
+of the 2,642 extracted concepts. In those tasks the concepts are only names: the causal relations among
+them are random and unrelated to CauseNet.
+
 **Changes made:** we select concepts whose directed CauseNet relations realize a synthetic causal graph,
 and we pair them with simulated observations. We never use relations that CauseNet states in both
 directions, and we never choose concepts whose CauseNet relations contradict the synthetic graph. The
