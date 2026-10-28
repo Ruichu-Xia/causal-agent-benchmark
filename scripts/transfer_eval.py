@@ -39,6 +39,20 @@ INSTRUCTION = 'Think it through, then end your reply with a final line that is e
 C2C_QUESTION = "Given the premise, is the hypothesis necessarily true?"
 MAX_TOKENS = 4096
 PILOT_QUERIES = ("nde", "nie", "ett", "det-counterfactual")  # rung 3, outside every scored CLadder set
+ALL_QUERIES = (
+    "marginal",
+    "correlation",
+    "exp_away",
+    "ate",
+    "backadj",
+    "collider_bias",
+    "det-counterfactual",
+    "ett",
+    "nde",
+    "nie",
+)
+DEV_STORIES = 10
+"""CLadder stories drawn (seed 0) for development of the text-reasoning environment; the rest stay untouched."""
 
 # The pre-registered answer rule: the last "answer ... yes/no", else a final line that is only yes or no.
 _ANSWER = re.compile(r"answer\W*(?:is\W*)?(yes|no)\b", re.IGNORECASE)
@@ -55,8 +69,8 @@ def _rows(source: str) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def _cladder(query_types: tuple[str, ...]) -> list[dict[str, Any]]:
-    """CLadder v1.5 items of the given query types; story is the resampling cluster."""
+def _cladder(query_types: tuple[str, ...], stories: set[str] | None = None) -> list[dict[str, Any]]:
+    """CLadder v1.5 items of the given query types (and stories, if given); story is the resampling cluster."""
     return [
         {
             "id": f"cladder-{row['id']}",
@@ -67,7 +81,31 @@ def _cladder(query_types: tuple[str, ...]) -> list[dict[str, Any]]:
             "property": row["question_property"],
         }
         for row in _rows("cladder")
-        if row["query_type"] in query_types
+        if row["query_type"] in query_types and (stories is None or row["story_id"] in stories)
+    ]
+
+
+def cladder_dev_stories() -> set[str]:
+    """The CLadder stories reserved for developing the text-reasoning environment."""
+    stories = sorted({row["story_id"] for row in _rows("cladder")})
+    return set(random.Random(0).sample(stories, DEV_STORIES))
+
+
+def _reasoning(path: Path) -> list[dict[str, Any]]:
+    """Generated text-reasoning tasks (``build_reasoning.py``), graded by their own answer format."""
+    from causalagentbench.reasoning.dataset import load
+
+    return [
+        {
+            "id": task["id"],
+            "prompt": task["prompt"],
+            "label": task["answer"],
+            "kind": task["kind"],
+            "cluster": task["id"],
+            "group": task["family"],
+            "property": f"{task['kind']}/{task['naming']}",
+        }
+        for task in load(path)
     ]
 
 
@@ -104,6 +142,8 @@ def items(name: str) -> list[dict[str, Any]]:
         "c2c_refactor": lambda: _corr2cause("c2c_refactor"),
         "pilot_cladder": lambda: _sample(_cladder(PILOT_QUERIES), 100),
         "pilot_c2c": lambda: _sample(_corr2cause("c2c_dev"), 100),
+        "cladder_dev": lambda: _cladder(ALL_QUERIES, cladder_dev_stories()),
+        "reasoning_dev": lambda: _reasoning(ROOT / "outputs" / "reasoning" / "dev.jsonl"),
     }
     return sets[name]()
 
@@ -176,21 +216,32 @@ def _load(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def judge(item: dict[str, Any], reply: str) -> tuple[bool, bool, bool]:
+    """(correct, answered yes, gave no answer) for one reply to one item."""
+    if "kind" in item:  # generated text-reasoning task
+        from causalagentbench.reasoning.grading import final_answer, grade
+
+        text = final_answer(reply)
+        return grade(item["kind"], item["label"], reply) == 1.0, bool(text and text.startswith("yes")), text is None
+    answer = extract(reply)
+    return answer is item["label"], answer is True, answer is None
+
+
 def scores(name: str, model: str) -> dict[str, dict[str, float]]:
     """Per item: accuracy over samples (no answer counts as wrong), yes-rate, and no-answer rate."""
-    labels = {item["id"]: item["label"] for item in items(name)}
-    answers: dict[str, list[bool | None]] = defaultdict(list)
+    by_id = {item["id"]: item for item in items(name)}
+    judged: dict[str, list[tuple[bool, bool, bool]]] = defaultdict(list)
     for record in _load(OUT / f"{name}.jsonl"):
         if record["model"] == model:
-            answers[record["id"]].append(extract(record["reply"]))
+            judged[record["id"]].append(judge(by_id[record["id"]], record["reply"]))
     return {
         i: {
-            "accuracy": statistics.mean(a is labels[i] for a in answers[i]),
-            "yes": statistics.mean(a is True for a in answers[i]),
-            "missing": statistics.mean(a is None for a in answers[i]),
+            "accuracy": statistics.mean(j[0] for j in judged[i]),
+            "yes": statistics.mean(j[1] for j in judged[i]),
+            "missing": statistics.mean(j[2] for j in judged[i]),
         }
-        for i in labels
-        if i in answers
+        for i in by_id
+        if i in judged
     }
 
 

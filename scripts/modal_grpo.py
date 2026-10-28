@@ -3,6 +3,8 @@ r"""Run GRPO post-training (``scripts/train_grpo.py``) on one Modal GPU, and bui
     uv run --with modal modal run scripts/modal_grpo.py::build_main --n 1000
     uv run --with modal modal run scripts/modal_grpo.py::main --dataset train --run grpo120 --max-steps 120 \
         --extra "--save-steps 20"
+    uv run --with modal modal run scripts/modal_grpo.py::reasoning_main --dataset outputs/reasoning/train.jsonl \
+        --run reason60 --max-steps 60
 
 Training tasks are uploaded once to the ``causalagentbench-runs`` volume, which also receives each run's
 metrics (committed every minute while training) and its LoRA adapter. Model weights are cached in the
@@ -38,17 +40,18 @@ image = (
     .env({"HF_HOME": "/hf", "TRL_EXPERIMENTAL_SILENCE": "1", "PYTHONPATH": "/root/src"})
     .add_local_dir(ROOT / "src", "/root/src")
     .add_local_file(ROOT / "scripts" / "train_grpo.py", "/root/train_grpo.py")
+    .add_local_file(ROOT / "scripts" / "train_reasoning.py", "/root/train_reasoning.py")
 )
 
 
 @app.function(image=image, gpu="H100", volumes={"/runs": runs, "/hf": hf_cache}, timeout=10 * 3600)
-def train(stem: str, run: str, args: list[str]) -> int:
+def train(stem: str, run: str, args: list[str], script: str = "train_grpo.py") -> int:
     """Train in a subprocess, committing the run directory every minute so progress is visible remotely.
 
     Modal restarts a preempted container with the same arguments, so training resumes from the run's latest
     checkpoint whenever one exists.
     """
-    command = [sys.executable, "/root/train_grpo.py", "--train", f"/runs/data/{stem}", "--out", f"/runs/{run}", *args]
+    command = [sys.executable, f"/root/{script}", "--train", f"/runs/data/{stem}", "--out", f"/runs/{run}", *args]
     if list(Path(f"/runs/{run}").glob("checkpoint-*")) and "--resume" not in args:
         command.append("--resume")
     process = subprocess.Popen(command, env=os.environ.copy())
@@ -130,5 +133,15 @@ def main(dataset: str, run: str, max_steps: int, gpu: str = "H100", extra: str =
         _upload(*_pair(dataset))
     stem = Path(dataset).name
     code = train.with_options(gpu=gpu).remote(stem, run, ["--max-steps", str(max_steps), *extra.split()])
+    if code != 0:
+        raise SystemExit(f"training exited with status {code}")
+
+
+@app.local_entrypoint()
+def reasoning_main(dataset: str, run: str, max_steps: int, gpu: str = "H100", extra: str = "") -> None:
+    """Train ``train_reasoning.py`` on ``gpu`` with the local task file ``dataset`` (JSON lines), uploaded first."""
+    _upload(dataset)
+    args = ["--max-steps", str(max_steps), *extra.split()]
+    code = train.with_options(gpu=gpu).remote(Path(dataset).name, run, args, "train_reasoning.py")
     if code != 0:
         raise SystemExit(f"training exited with status {code}")
