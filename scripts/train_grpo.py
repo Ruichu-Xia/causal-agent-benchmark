@@ -121,6 +121,22 @@ def drop_records_after(path: Path, step: int) -> None:
     path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
 
 
+def metrics_log(out: Path) -> Any:
+    """A trainer callback appending every logged metrics dict to ``<out>/metrics.jsonl``."""
+    from transformers import TrainerCallback
+
+    class MetricsLog(TrainerCallback):  # type: ignore[misc]
+        """Append every logged metrics dict to ``metrics.jsonl`` as training runs."""
+
+        def on_log(self, _args: Any, state: Any, _control: Any, logs: dict[str, Any] | None = None, **kw: Any) -> None:
+            """Write one JSON line per log event, stamped with the step and wall time."""
+            if logs:
+                with (out / "metrics.jsonl").open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"step": state.global_step, "time": time.time(), **logs}) + "\n")
+
+    return MetricsLog()
+
+
 def main() -> None:
     """Parse arguments, build the trainer and train."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -143,7 +159,6 @@ def main() -> None:
 
     from datasets import Dataset
     from peft import LoraConfig
-    from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer
 
     from causalagentbench.agent.loop import _SYSTEM_PROMPT, MAX_TOOL_CALLS, MAX_TURNS
@@ -172,15 +187,6 @@ def main() -> None:
             "seed": list(range(len(tasks))),
         }
     )
-
-    class MetricsLog(TrainerCallback):
-        """Append every logged metrics dict to ``metrics.jsonl`` as training runs."""
-
-        def on_log(self, _args: Any, state: Any, _control: Any, logs: dict[str, Any] | None = None, **kw: Any) -> None:
-            """Write one JSON line per log event, stamped with the step and wall time."""
-            if logs:
-                with (out / "metrics.jsonl").open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps({"step": state.global_step, "time": time.time(), **logs}) + "\n")
 
     rollouts_per_step = args.tasks_per_step * args.generations
     if rollouts_per_step % args.micro_batch:
@@ -221,7 +227,7 @@ def main() -> None:
         train_dataset=dataset,
         environment_factory=lambda: CausalEnv(tasks, max_tool_calls=MAX_TOOL_CALLS),
         peft_config=LoraConfig(r=args.lora_rank, lora_alpha=2 * args.lora_rank, target_modules="all-linear"),
-        callbacks=[MetricsLog()],
+        callbacks=[metrics_log(out)],
     )
     trainer.train(resume_from_checkpoint=args.resume)
     trainer.save_model(str(out / "adapter"))
