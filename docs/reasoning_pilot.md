@@ -35,3 +35,27 @@ Evaluate base and trained on reasoning dev (4 samples) and CLadder dev (2 sample
 
 Counterfactual query types (`det-counterfactual`, `ett`, `nde`, `nie`) are not trained and serve as a
 within-CLadder comparison.
+
+## Result (added after the run)
+
+Run `reason60`: 60 steps, adapter at `reason60/adapter` on the Modal volume. Evaluation: reasoning dev
+with 4 samples, CLadder dev with 2 samples, story-bootstrap 95% intervals.
+
+| Set | Base | Trained | Trained − base |
+| --- | ---: | ---: | --- |
+| CLadder dev, all query types | 0.771 | 0.778 | +0.7 [−0.2, +1.4] |
+| CLadder dev, the six trained query types | | | +1.2 [+0.4, +2.0] |
+| CLadder dev, counterfactual types | | | −0.3 [−1.8, +1.3] |
+| Reasoning dev (corrected grader, see below) | 0.681 | 0.747 | +6.6 [+4.0, +9.2] |
+
+**Decision: rethink.** Neither CLadder criterion was met.
+
+**Grader correction.** The grader's answer pattern let whitespace after "Answer:" cross line breaks. A
+reply ending "Final answer:\n\nAnswer: Yes" was therefore read as "Answer: Yes" and scored 0. This
+affected the training reward and the reasoning-dev evaluation, but not CLadder, which uses its own
+extractor. With the fix (in the v2 commit), base reasoning-dev accuracy is 0.681, not 0.574; the
+trained adapter's is 0.747, not 0.737. Mean training reward was 0.704, not 0.679. Most of the reported
++16.3-point in-domain gain was the policy learning to avoid that harmless formatting. The real gain
+is +6.6.
+
+The diagnosis of the CLadder null, and the redesign it led to, are in `docs/environment_v2.md`.
