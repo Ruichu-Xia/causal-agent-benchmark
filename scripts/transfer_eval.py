@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import hashlib
 import json
 import os
 import random
@@ -53,6 +54,13 @@ ALL_QUERIES = (
 )
 DEV_STORIES = 10
 """CLadder stories drawn (seed 0) for development of the text-reasoning environment; the rest stay untouched."""
+MEDIATOR_COLLIDER_GRAPHS = ("chain", "mediation", "arrowhead", "diamond", "collision")
+"""CLadder graphs whose adjustment set Z holds a mediator or a collider: the misconception the environment targets."""
+DSEP = OUT / "candidates" / "axiomatic_dsep"
+"""d-separation evaluation files of Vashishtha et al. (2024), ``eval_dsep/dsep_eval_branching_factor14`` of
+github.com/AniketVashishtha/Causal_Axioms at commit ``fbddd14``. The repository has no license, so the files are
+used locally and never redistributed."""
+_DSEP_HEADER = "Answer the following question with ONLY 'Yes' or 'No'.\n\n"
 
 # The pre-registered answer rule: the last "answer ... yes/no", else a final line that is only yes or no.
 _ANSWER = re.compile(r"answer\W*(?:is\W*)?(yes|no)\b", re.IGNORECASE)
@@ -69,8 +77,10 @@ def _rows(source: str) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def _cladder(query_types: tuple[str, ...], stories: set[str] | None = None) -> list[dict[str, Any]]:
-    """CLadder v1.5 items of the given query types (and stories, if given); story is the resampling cluster."""
+def _cladder(
+    query_types: tuple[str, ...], stories: set[str] | None = None, graphs: tuple[str, ...] | None = None
+) -> list[dict[str, Any]]:
+    """CLadder v1.5 items of the given query types (and stories and graphs, if given); story is the cluster."""
     return [
         {
             "id": f"cladder-{row['id']}",
@@ -81,7 +91,9 @@ def _cladder(query_types: tuple[str, ...], stories: set[str] | None = None) -> l
             "property": row["question_property"],
         }
         for row in _rows("cladder")
-        if row["query_type"] in query_types and (stories is None or row["story_id"] in stories)
+        if row["query_type"] in query_types
+        and (stories is None or row["story_id"] in stories)
+        and (graphs is None or row["graph_id"] in graphs)
     ]
 
 
@@ -89,6 +101,44 @@ def cladder_dev_stories() -> set[str]:
     """The CLadder stories reserved for developing the text-reasoning environment."""
     stories = sorted({row["story_id"] for row in _rows("cladder")})
     return set(random.Random(0).sample(stories, DEV_STORIES))
+
+
+def cladder_held_out_stories() -> set[str]:
+    """Every CLadder story outside the development stories."""
+    return {row["story_id"] for row in _rows("cladder")} - cladder_dev_stories()
+
+
+def _dsep(nodes: tuple[int, ...]) -> list[dict[str, Any]]:
+    """Axiomatic-training d-separation items for the given graph sizes; the graph is the resampling cluster.
+
+    The files' "answer with only Yes or No" header is replaced by the final-line instruction, as for the other
+    yes/no sets. A question repeated within the files is kept once.
+    """
+    items: list[dict[str, Any]] = []
+    labels: dict[str, str] = {}
+    for n in nodes:
+        lines = (DSEP / f"dsep_instances_{n}_nodes_updated.jsonl").read_text(encoding="utf-8").splitlines()
+        for i, line in enumerate(lines):
+            row = json.loads(line)
+            if not row["prompt"].startswith(_DSEP_HEADER) or row["completion"] not in ("Yes", "No"):
+                raise ValueError(f"unexpected d-separation item {n}-{i}")
+            question = row["prompt"].removeprefix(_DSEP_HEADER)
+            if question in labels:
+                if labels[question] != row["completion"]:
+                    raise ValueError(f"d-separation item {n}-{i} repeats a question with the other label")
+                continue
+            labels[question] = row["completion"]
+            items.append(
+                {
+                    "id": f"dsep{n}-{i}",
+                    "prompt": f"{question}\n\n{INSTRUCTION}",
+                    "label": row["completion"] == "Yes",
+                    "cluster": f"{n}: {question.split(' Are ')[0]}",
+                    "group": f"{n} nodes",
+                    "property": "",
+                }
+            )
+    return items
 
 
 def _reasoning(path: Path) -> list[dict[str, Any]]:
@@ -143,13 +193,21 @@ def items(name: str) -> list[dict[str, Any]]:
         "pilot_cladder": lambda: _sample(_cladder(PILOT_QUERIES), 100),
         "pilot_c2c": lambda: _sample(_corr2cause("c2c_dev"), 100),
         "cladder_dev": lambda: _cladder(ALL_QUERIES, cladder_dev_stories()),
+        "cladder_medcol": lambda: _cladder(("backadj",), cladder_held_out_stories(), MEDIATOR_COLLIDER_GRAPHS),
+        "dsep": lambda: _dsep((5, 8)),
         "reasoning_dev": lambda: _reasoning(ROOT / "outputs" / "reasoning" / "dev.jsonl"),
     }
-    # Environment v2 dev splits; the test splits are left out until the pre-registered evaluation.
     v2 = ROOT / "outputs" / "reasoning" / "v2"
     for split in ("iid", "ood_wording", "ood_size", "ood_vocab"):
-        sets[f"{split}_dev"] = lambda split=split: _reasoning(v2 / f"{split}_dev.jsonl")
+        for role in ("dev", "test"):
+            sets[f"{split}_{role}"] = lambda path=v2 / f"{split}_{role}.jsonl": _reasoning(path)
     return sets[name]()
+
+
+def fingerprint(name: str) -> str:
+    """SHA-256 of a set's items (id, prompt and label of each, in id order), to pin item lists."""
+    lines = sorted(json.dumps([item["id"], item["prompt"], item["label"]]) for item in items(name))
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
 def extract(reply: str) -> bool | None:
@@ -257,10 +315,8 @@ def _metric(per_item: dict[str, dict[str, float]], ids: list[str], labels: dict[
     return statistics.mean(statistics.mean(values) for values in by_label)
 
 
-def paired_interval(
-    name: str, a: dict, b: dict, balanced: bool, level: float = 0.95, resamples: int = 10_000
-) -> tuple[float, float, float]:
-    """Difference a - b in (balanced) accuracy, with a paired bootstrap interval over clusters at ``level``."""
+def paired_draws(name: str, a: dict, b: dict, balanced: bool, resamples: int) -> tuple[float, list[float]]:
+    """Difference a - b in (balanced) accuracy, and its sorted paired bootstrap draws over clusters (seed 0)."""
     item_list = [item for item in items(name) if item["id"] in a and item["id"] in b]
     labels = {item["id"]: item["label"] for item in item_list}
     clusters: dict[str, list[str]] = defaultdict(list)
@@ -274,9 +330,26 @@ def paired_interval(
     for _ in range(resamples):
         sample = [i for key in rng.choices(keys, k=len(keys)) for i in clusters[key]]
         draws.append(_metric(a, sample, labels, balanced) - _metric(b, sample, labels, balanced))
-    draws.sort()
+    return point, sorted(draws)
+
+
+def interval(draws: list[float], level: float) -> tuple[float, float]:
+    """Percentile interval at ``level`` from sorted bootstrap draws."""
     tail = (1 - level) / 2
-    return point, draws[int(tail * resamples)], draws[int((1 - tail) * resamples) - 1]
+    return draws[int(tail * len(draws))], draws[int((1 - tail) * len(draws)) - 1]
+
+
+def p_value(draws: list[float]) -> float:
+    """One-sided bootstrap p-value against a difference of zero or less: (1 + #draws <= 0) / (1 + #draws)."""
+    return (1 + sum(d <= 0 for d in draws)) / (1 + len(draws))
+
+
+def paired_interval(
+    name: str, a: dict, b: dict, balanced: bool, level: float = 0.95, resamples: int = 10_000
+) -> tuple[float, float, float]:
+    """Difference a - b in (balanced) accuracy, with a paired bootstrap interval over clusters at ``level``."""
+    point, draws = paired_draws(name, a, b, balanced, resamples)
+    return point, *interval(draws, level)
 
 
 def report(name: str, model: str, against: list[str], balanced: bool, level: float) -> dict[str, Any]:
@@ -310,7 +383,7 @@ def report(name: str, model: str, against: list[str], balanced: bool, level: flo
 
 
 def main() -> None:
-    """Parse arguments and run or report."""
+    """Parse arguments and run, report, or print item-list hashes."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     run_parser = sub.add_parser("run")
@@ -324,9 +397,14 @@ def main() -> None:
     report_parser.add_argument("--against", action="append", default=[])
     report_parser.add_argument("--balanced", action="store_true", help="balanced accuracy (Corr2Cause)")
     report_parser.add_argument("--level", type=float, default=0.95, help="interval level (0.975 for secondaries)")
+    hash_parser = sub.add_parser("hash")
+    hash_parser.add_argument("set", nargs="+")
     args = parser.parse_args()
     if args.command == "run":
         asyncio.run(run(args.set, args.model, args.samples, args.workers))
+    elif args.command == "hash":
+        for name in args.set:
+            print(name, len(items(name)), fingerprint(name))
     else:
         print(json.dumps(report(args.set, args.model, args.against, args.balanced, args.level), indent=1))
 
