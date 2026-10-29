@@ -22,9 +22,11 @@ import random
 import re
 import statistics
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "outputs" / "transfer"
@@ -56,6 +58,8 @@ DEV_STORIES = 10
 """CLadder stories drawn (seed 0) for development of the text-reasoning environment; the rest stay untouched."""
 MEDIATOR_COLLIDER_GRAPHS = ("chain", "mediation", "arrowhead", "diamond", "collision")
 """CLadder graphs whose adjustment set Z holds a mediator or a collider: the misconception the environment targets."""
+CONFOUNDER_GRAPHS = ("confounding", "diamondcut")
+"""CLadder graphs whose adjustment set Z blocks a back-door path, so adjusting is the keyed answer."""
 DSEP = OUT / "candidates" / "axiomatic_dsep"
 """d-separation evaluation files of Vashishtha et al. (2024), ``eval_dsep/dsep_eval_branching_factor14`` of
 github.com/AniketVashishtha/Causal_Axioms at commit ``fbddd14``. The repository has no license, so the files are
@@ -106,6 +110,22 @@ def cladder_dev_stories() -> set[str]:
 def cladder_held_out_stories() -> set[str]:
     """Every CLadder story outside the development stories."""
     return {row["story_id"] for row in _rows("cladder")} - cladder_dev_stories()
+
+
+def _cladder_adjust() -> list[dict[str, Any]]:
+    """CLadder adjustment questions on held-out stories where the keyed method adjusts, or where it does not.
+
+    Each item's stratum is (whether adjusting is keyed, label), so a model that never or always adjusts, or that
+    always says yes or no, scores 0.5 in balanced accuracy.
+    """
+    tasks = _cladder(("backadj",), cladder_held_out_stories(), MEDIATOR_COLLIDER_GRAPHS + CONFOUNDER_GRAPHS)
+    for task in tasks:
+        first, second = re.search(r"Method 1: (.*?)\. Method 2: (.*?)\. ", task["prompt"]).groups()
+        if ("case by case" in first) == ("case by case" in second):
+            raise ValueError(f"{task['id']}: exactly one method must adjust")
+        adjust_keyed = ("case by case" in first) == task["label"]
+        task["stratum"] = (adjust_keyed, task["label"])
+    return tasks
 
 
 def _dsep(nodes: tuple[int, ...]) -> list[dict[str, Any]]:
@@ -194,6 +214,7 @@ def items(name: str) -> list[dict[str, Any]]:
         "pilot_c2c": lambda: _sample(_corr2cause("c2c_dev"), 100),
         "cladder_dev": lambda: _cladder(ALL_QUERIES, cladder_dev_stories()),
         "cladder_medcol": lambda: _cladder(("backadj",), cladder_held_out_stories(), MEDIATOR_COLLIDER_GRAPHS),
+        "cladder_adjust": _cladder_adjust,
         "dsep": lambda: _dsep((5, 8)),
         "reasoning_dev": lambda: _reasoning(ROOT / "outputs" / "reasoning" / "dev.jsonl"),
     }
@@ -205,8 +226,8 @@ def items(name: str) -> list[dict[str, Any]]:
 
 
 def fingerprint(name: str) -> str:
-    """SHA-256 of a set's items (id, prompt and label of each, in id order), to pin item lists."""
-    lines = sorted(json.dumps([item["id"], item["prompt"], item["label"]]) for item in items(name))
+    """SHA-256 of a set's items (id, prompt, label and answer format of each, in id order), to pin item lists."""
+    lines = sorted(json.dumps([item["id"], item["prompt"], item["label"], item.get("kind")]) for item in items(name))
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
@@ -307,30 +328,63 @@ def scores(name: str, model: str) -> dict[str, dict[str, float]]:
     }
 
 
-def _metric(per_item: dict[str, dict[str, float]], ids: list[str], labels: dict[str, bool], balanced: bool) -> float:
-    """Accuracy over ``ids``, or balanced accuracy (mean of the accuracies on true and on false items)."""
+def stratum(item: dict[str, Any]) -> Any:
+    """The cell an item falls in for balanced accuracy: its own ``stratum`` if it has one, else its label."""
+    return item.get("stratum", item["label"])
+
+
+def _metric(per_item: dict[str, dict[str, float]], ids: list[str], strata: dict[str, Any], balanced: bool) -> float:
+    """Accuracy over ``ids``, or balanced accuracy: the unweighted mean of the accuracies within each stratum."""
     if not balanced:
         return statistics.mean(per_item[i]["accuracy"] for i in ids)
-    by_label = [[per_item[i]["accuracy"] for i in ids if labels[i] is value] for value in (True, False)]
-    return statistics.mean(statistics.mean(values) for values in by_label)
+    cells: dict[Any, list[float]] = defaultdict(list)
+    for i in ids:
+        cells[strata[i]].append(per_item[i]["accuracy"])
+    return statistics.mean(statistics.mean(values) for values in cells.values())
 
 
 def paired_draws(name: str, a: dict, b: dict, balanced: bool, resamples: int) -> tuple[float, list[float]]:
     """Difference a - b in (balanced) accuracy, and its sorted paired bootstrap draws over clusters (seed 0)."""
     item_list = [item for item in items(name) if item["id"] in a and item["id"] in b]
-    labels = {item["id"]: item["label"] for item in item_list}
+    strata = {item["id"]: stratum(item) for item in item_list}
     clusters: dict[str, list[str]] = defaultdict(list)
     for item in item_list:
         clusters[item["cluster"]].append(item["id"])
     keys = sorted(clusters)
     ids = [i for key in keys for i in clusters[key]]
-    point = _metric(a, ids, labels, balanced) - _metric(b, ids, labels, balanced)
+    point = _metric(a, ids, strata, balanced) - _metric(b, ids, strata, balanced)
     rng = random.Random(0)
     draws = []
     for _ in range(resamples):
         sample = [i for key in rng.choices(keys, k=len(keys)) for i in clusters[key]]
-        draws.append(_metric(a, sample, labels, balanced) - _metric(b, sample, labels, balanced))
+        draws.append(_metric(a, sample, strata, balanced) - _metric(b, sample, strata, balanced))
     return point, sorted(draws)
+
+
+def permutation_p(name: str, a: dict, b: dict, balanced: bool, resamples: int) -> float:
+    """One-sided p-value for metric(a) > metric(b) from a cluster sign-flip randomization test.
+
+    Under the null the two arms are exchangeable within each cluster, so each resample swaps the arms' scores in
+    every cluster independently with probability 1/2 (``numpy`` seed 0). The metric is linear in the item
+    scores, with weight 1/n, or 1/(number of strata times stratum size) for balanced accuracy, so a swap flips
+    the sign of the cluster's weighted score difference. p = (1 + #resampled differences >= observed) / (1 + resamples).
+    """
+    item_list = [item for item in items(name) if item["id"] in a and item["id"] in b]
+    sizes = Counter(stratum(item) for item in item_list)
+    clusters: dict[str, float] = defaultdict(float)
+    for item in item_list:
+        weight = 1 / (len(sizes) * sizes[stratum(item)]) if balanced else 1 / len(item_list)
+        clusters[item["cluster"]] += weight * (a[item["id"]]["accuracy"] - b[item["id"]]["accuracy"])
+    differences = np.array([clusters[key] for key in sorted(clusters)])
+    observed = differences.sum()
+    strata = {item["id"]: stratum(item) for item in item_list}
+    ids = [item["id"] for item in item_list]
+    if abs(observed - (_metric(a, ids, strata, balanced) - _metric(b, ids, strata, balanced))) > 1e-9:
+        raise AssertionError("the item weights do not reproduce the metric")
+    signs = np.random.default_rng(0).choice([-1.0, 1.0], size=(resamples, len(differences)))
+    # A small tolerance keeps resamples equal to the observed value from being lost to rounding.
+    exceed = int(np.sum(signs @ differences >= observed - 1e-12))
+    return (1 + exceed) / (1 + resamples)
 
 
 def interval(draws: list[float], level: float) -> tuple[float, float]:
@@ -355,7 +409,7 @@ def paired_interval(
 def report(name: str, model: str, against: list[str], balanced: bool, level: float) -> dict[str, Any]:
     """Each model's accuracy, yes-rate and no-answer rate overall and by group, and paired differences."""
     item_list = items(name)
-    labels = {item["id"]: item["label"] for item in item_list}
+    strata = {item["id"]: stratum(item) for item in item_list}
     out: dict[str, Any] = {"set": name, "items": len(item_list), "balanced_accuracy": balanced, "level": level}
     out["models"] = {}
     per_model = {m: scores(name, m) for m in [model, *against]}
@@ -369,7 +423,7 @@ def report(name: str, model: str, against: list[str], balanced: bool, level: flo
         out["models"][m] = {
             key: {
                 "n": len(ids),
-                "accuracy": round(_metric(per_item, ids, labels, balanced and key == "all"), 4),
+                "accuracy": round(_metric(per_item, ids, strata, balanced and key == "all"), 4),
                 "yes_rate": round(statistics.mean(per_item[i]["yes"] for i in ids), 4),
                 "missing_rate": round(statistics.mean(per_item[i]["missing"] for i in ids), 4),
             }
