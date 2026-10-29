@@ -94,6 +94,10 @@ def test_chain_direction_is_unknown_but_a_collider_is_fixed():
         ("yesno", "yes", "Final answer:\nAnswer: Yes", 1.0),
         ("yesno", "yes", "**Answer**: Yes", 1.0),
         ("yesno", "yes", "Answer:\nYes", 0.0),  # the value must be on the answer line
+        ("yesno", "yes", "Answer: <answer> Yes.", 1.0),  # the instruction's placeholder, echoed
+        ("yesno", "no", "**Final Answer**: <answer> No </answer>", 1.0),
+        ("number", "0.53", "Answer: <answer>0.53</answer>", 1.0),
+        ("number", "0.14", "$$\\boxed{0.14}$$", 0.0),  # no answer line
         ("number", "-0.12", "Answer: $-0.12$", 1.0),
         ("number", "0.12", "Answer: 0.13", 1.0),
         ("number", "0.12", "Answer: 0.14", 0.0),
