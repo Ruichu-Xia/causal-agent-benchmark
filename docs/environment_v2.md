@@ -163,11 +163,70 @@ That run also found the grader bug above. Long streamed replies through the Moda
 at about 150 seconds, and a cancelled input stops the serving container. Bulk evaluation therefore uses
 `scripts/transfer_eval.py`, which does not stream, with the same prompts and grader.
 
+## Base-model ladder (dev splits)
+
+Run on 2026-10-28 with `scripts/modal_eval.py` (offline vLLM 0.31.0 on one L40S, each model's
+generation-config sampling, seed 0, one sample per item, hybrid Qwen3 models with thinking off) and
+summarized by `scripts/ladder_report.py`. Each split has 400 items, so a split's accuracy has a standard
+error of about 2.4 points; a family-by-size cell has 20 to 100 items.
+
+| Model | Max tokens | iid | ood_wording | ood_vocab | ood_size | Truncated (iid / ood_size) |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3-0.6B | 4096 | 0.45 | 0.43 | 0.46 | 0.41 | 0% / 0% |
+| Qwen3-1.7B | 4096 | 0.52 | 0.49 | 0.52 | 0.51 | 0% / 0% |
+| Qwen3-8B | 4096 | 0.62 | 0.62 | 0.60 | 0.54 | 1% / 3% |
+| Qwen3-4B-Instruct-2507 | 4096 | 0.62 | 0.61 | 0.64 | 0.45 | 12% / 25% |
+| Qwen3-4B-Instruct-2507 | 8192 | 0.67 | 0.63 | 0.69 | 0.64 | 0% / 2% |
+
+Qwen3-4B-Instruct-2507 (the model we train) by family and number of variables, 8,192 tokens, `iid` and
+`ood_size` pooled:
+
+| Family | Accuracy by number of variables |
+| --- | --- |
+| effect | 3: 0.95, 4: 0.88, 5: 0.75 |
+| independence | 3: 0.84, 4: 0.68, 5: 0.62, 6: 0.26, 7: 0.56, 8: 0.67 |
+| adjustment | 4: 0.63, 5: 0.59, 6: 0.37, 7: 0.60, 8: 0.45 |
+| discovery | 3: 0.62, 4: 0.65, 5: 0.66 |
+
+Findings:
+
+1. **The 4,096-token cap made `ood_size` look hard.** At 4,096 tokens a quarter of the 4B model's
+   `ood_size` replies are cut off (36% in effect, 52% in discovery); with 8,192 tokens, 2% are, and
+   accuracy rises from 0.45 to 0.64. GRPO shortens replies, so under the 4,096 cap a trained model would
+   gain on `ood_size` partly by being brief. Held-out evaluation therefore uses 8,192 tokens for every
+   model (95th percentile of reply length: 5,374 tokens on `iid`, 6,724 on `ood_size`); training keeps the
+   4,096 cap.
+2. **No split is saturated, and no split is at chance for the 4B model:** 0.63 to 0.69 on every split.
+   The effect family is near ceiling at training sizes (0.86 to 0.97 per variant), so it carries the
+   least training signal.
+3. **Accuracy falls with size for effect, and for independence up to 6 variables; not for discovery or
+   adjustment.** Independence at 7 and 8 variables (0.56, 0.67) is above 6 (0.26, 23 items); this may be
+   noise or a property of how larger independence questions are sampled, and is unresolved. `ood_size`
+   is therefore a generalization test for larger graphs, not a uniformly harder split.
+4. **Wording and vocabulary barely move the base model:** `ood_wording` is 4 points below `iid` and
+   `ood_vocab` 2 points above, both within noise. These splits test whether training overfits to the
+   training templates and names.
+5. **Smaller models are at chance on structure.** Qwen3-0.6B and 1.7B score 0.4 to 0.6 on every
+   independence, adjustment and discovery cell, with balanced yes-rates; only effect questions are above
+   chance. Qwen3-1.7B is not a viable cheaper training model: GRPO needs correct samples in a group.
+6. **Format compliance is not a confound for the 4B model.** None of its untruncated replies lacks an
+   answer line; the smaller models miss it in 2% (8B) to 6% (0.6B) of replies. The smoke test showed small models echoing the `<answer>` placeholder ("Answer: <answer> Yes"); the
+   grader now strips those tags (regression tests added). It affected 5 of 3,200 pilot replies.
+
+Training signal: with group size 8 and pass rate p, a group carries a gradient with probability
+1 − p^8 − (1 − p)^8. From the 4B model's `iid` accuracy at 4,096 tokens, that is 0.99 for adjustment and
+discovery, 0.96 for independence and 0.73 for effect. Item-level pass-rate filtering would need about
+32,000 training-set samples, so we keep the balanced family mix instead.
+
+Training throughput (4 GRPO steps of the pilot configuration on the v2 training set): about 200 s per step
+on an H100 with vLLM given 35% or 70% of GPU memory (no difference), and about 380 s on an A100-80GB.
+At Modal's prices the H100 is about 20% cheaper per step, so runs stay on the H100 at about $14 per
+60 steps.
+
 ## Next steps
 
-1. Run a ladder of base models on every dev split to calibrate difficulty: accuracy should fall
-   monotonically with size, and no split should be saturated.
-2. Select training data by the policy's pass rate, so every GRPO group carries signal.
-3. Pre-register the training study: held-out splits; near transfer to CLEAR DAG items, Corr2Cause test
-   and the axiomatic d-separation set; far transfer to CLadder backdoor adjustment on held-out stories;
-   a matched-compute non-causal GRPO control; leave-one-family-out ablations.
+1. Pre-register the training study: held-out splits (8,192-token evaluation); near transfer to CLEAR DAG
+   items, Corr2Cause test and the axiomatic d-separation set; far transfer to CLadder backdoor adjustment
+   on held-out stories; a matched-compute non-causal GRPO control. One leave-one-family-out ablation only
+   if the main run shows held-out gains.
+2. Port the agentic CausalAgentBench environment to Verifiers.

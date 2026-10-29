@@ -145,6 +145,10 @@ def items(name: str) -> list[dict[str, Any]]:
         "cladder_dev": lambda: _cladder(ALL_QUERIES, cladder_dev_stories()),
         "reasoning_dev": lambda: _reasoning(ROOT / "outputs" / "reasoning" / "dev.jsonl"),
     }
+    # Environment v2 dev splits; the test splits are left out until the pre-registered evaluation.
+    v2 = ROOT / "outputs" / "reasoning" / "v2"
+    for split in ("iid", "ood_wording", "ood_size", "ood_vocab"):
+        sets[f"{split}_dev"] = lambda split=split: _reasoning(v2 / f"{split}_dev.jsonl")
     return sets[name]()
 
 

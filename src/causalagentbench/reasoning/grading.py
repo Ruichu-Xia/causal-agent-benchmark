@@ -14,11 +14,14 @@ NUMBER_TOLERANCE = 0.011
 
 
 def final_answer(reply: str) -> str | None:
-    """Text after the last "Answer:" in the reply, stripped of markdown emphasis and math markup."""
+    """Text after the last "Answer:" in the reply, stripped of markdown emphasis and math markup.
+
+    The instruction's ``<answer>`` placeholder tags are stripped too: models often echo them around the answer.
+    """
     matches = _ANSWER.findall(reply)
     if not matches:
         return None
-    return re.sub(r"[*_`$\\]|boxed|text", "", matches[-1]).strip(" .{}()").lower()
+    return re.sub(r"</?answer>|[*_`$\\]|boxed|text", "", matches[-1], flags=re.IGNORECASE).strip(" .{}()").lower()
 
 
 def parse(kind: str, text: str) -> str | None:
