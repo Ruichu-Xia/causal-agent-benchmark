@@ -13,6 +13,8 @@ metrics (committed every minute while training) and its LoRA adapter. Model weig
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -49,8 +51,15 @@ def train(stem: str, run: str, args: list[str], script: str = "train_grpo.py") -
     """Train in a subprocess, committing the run directory every minute so progress is visible remotely.
 
     Modal restarts a preempted container with the same arguments, so training resumes from the run's latest
-    checkpoint whenever one exists.
+    checkpoint whenever one exists. The run directory records its training data and arguments in ``run.json``,
+    and a run is never resumed with different ones.
     """
+    record = Path(f"/runs/{run}/run.json")
+    setup = {"data": stem, "script": script, "args": args}
+    if record.exists() and json.loads(record.read_text()) != setup:
+        raise ValueError(f"run {run} was started with {record.read_text()}, not {setup}")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps(setup))
     command = [sys.executable, f"/root/{script}", "--train", f"/runs/data/{stem}", "--out", f"/runs/{run}", *args]
     if list(Path(f"/runs/{run}").glob("checkpoint-*")) and "--resume" not in args:
         command.append("--resume")
@@ -139,9 +148,17 @@ def main(dataset: str, run: str, max_steps: int, gpu: str = "H100", extra: str =
 
 @app.local_entrypoint()
 def reasoning_main(dataset: str, run: str, max_steps: int, gpu: str = "H100", extra: str = "") -> None:
-    """Train ``train_reasoning.py`` on ``gpu`` with the local task file ``dataset`` (JSON lines), uploaded first."""
-    _upload(dataset)
+    """Train ``train_reasoning.py`` on ``gpu`` with the local task file ``dataset`` (JSON lines), uploaded first.
+
+    The file is uploaded as ``<first 16 hex digits of its SHA-256>-<name>``, so the run's command line records
+    exactly which data it trained on, and files that share a name never overwrite each other.
+    """
+    local = ROOT / dataset
+    name = f"{hashlib.sha256(local.read_bytes()).hexdigest()[:16]}-{local.name}"
+    print(f"training data: /runs/data/{name}", flush=True)
+    with runs.batch_upload(force=True) as batch:
+        batch.put_file(str(local), f"/data/{name}")
     args = ["--max-steps", str(max_steps), *extra.split()]
-    code = train.with_options(gpu=gpu).remote(Path(dataset).name, run, args, "train_reasoning.py")
+    code = train.with_options(gpu=gpu).remote(name, run, args, "train_reasoning.py")
     if code != 0:
         raise SystemExit(f"training exited with status {code}")

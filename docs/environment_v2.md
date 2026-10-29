@@ -227,7 +227,7 @@ At Modal's prices the H100 is about 20% cheaper per step, so runs stay on the H1
 
 1. Run the pre-registered training study (`docs/preregistration_v2.md`). It evaluates held-out splits at
    8,192 tokens, with test splits enlarged to 1,000 items each, and near transfer to the axiomatic
-   d-separation set and Corr2Cause test. Far transfer is CLadder backdoor adjustment on mediator and collider
-   graphs in held-out stories. A knights-and-knaves GRPO control runs only if an endpoint passes against
-   the base model. CLEAR was left out: its gradable yes/no and multiple-choice items on DAGs are too few.
+   d-separation set and Corr2Cause test. Far transfer is CLadder backdoor adjustment in held-out stories,
+   scored so that never adjusting or a yes/no bias earns nothing. A shuffled-reward GRPO control runs only
+   if an endpoint passes against the base model. CLEAR was left out: its gradable yes/no and multiple-choice items on DAGs are too few.
 2. Port the agentic CausalAgentBench environment to Verifiers.

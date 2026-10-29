@@ -4,12 +4,17 @@
 
 Tasks come from ``scripts/build_reasoning.py``. LoRA, the exact-export patch and metric logging are shared
 with ``train_grpo.py``. Every scored rollout goes to ``<out>/rollouts.jsonl``; the adapter to ``<out>/adapter``.
+
+``--shuffle-rewards`` is the control run: each step's rewards are permuted across all of its rollouts, with a
+generator seeded by the run seed and the step (so a resumed run repeats the same permutations). The reward
+distribution is unchanged, but it carries no information about which rollout earned it.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import random
 import statistics
 import time
 from collections import defaultdict
@@ -20,20 +25,33 @@ from train_grpo import MODEL, check_lora_export_is_exact, drop_records_after, ke
 
 ROLLOUT_LOG: Path | None = None
 """Where ``reward`` appends every scored rollout; set by ``main``."""
+SHUFFLE_SEED: int | None = None
+"""The run seed when rewards are shuffled (``--shuffle-rewards``), else None; set by ``main``."""
+ROLLOUTS_PER_STEP = 0
+"""Rollouts in one step; a shuffle must see all of them at once. Set by ``main``."""
 
 
 def reward(completions: list[Any], answer: list[str], kind: list[str], family: list[str], **kwargs: Any) -> list[float]:
-    """1.0 for a correct final answer, else 0.0; logs every rollout and the per-family accuracy."""
+    """1.0 for a correct final answer, else 0.0, permuted in a control run.
+
+    Logs every rollout and the per-family accuracy of the true, unpermuted rewards.
+    """
     from causalagentbench.reasoning.grading import grade
 
     replies = [completion[-1]["content"] for completion in completions]
     rewards = [grade(k, a, r) for k, a, r in zip(kind, answer, replies, strict=True)]
     step = kwargs["trainer_state"].global_step + 1  # the step these rollouts train
+    assigned = rewards
+    if SHUFFLE_SEED is not None:
+        if len(rewards) != ROLLOUTS_PER_STEP:
+            raise RuntimeError(f"a shuffle must see the whole step: got {len(rewards)} of {ROLLOUTS_PER_STEP}")
+        assigned = random.Random(SHUFFLE_SEED * 1_000_003 + step).sample(rewards, len(rewards))
     if ROLLOUT_LOG is not None:
         with ROLLOUT_LOG.open("a", encoding="utf-8") as handle:
             for i, reply in enumerate(replies):
-                record = {"time": time.time(), "step": step, "reward": rewards[i], "family": family[i], "kind": kind[i]}
-                handle.write(json.dumps({**record, "answer": answer[i], "reply": reply}) + "\n")
+                record = {"time": time.time(), "step": step, "reward": rewards[i], "assigned_reward": assigned[i]}
+                record |= {"family": family[i], "kind": kind[i], "answer": answer[i], "reply": reply}
+                handle.write(json.dumps(record) + "\n")
     log_metric = kwargs.get("log_metric")
     if log_metric is not None:
         by_family: dict[str, list[float]] = defaultdict(list)
@@ -41,7 +59,7 @@ def reward(completions: list[Any], answer: list[str], kind: list[str], family: l
             by_family[f].append(r)
         for f, values in by_family.items():
             log_metric(f"accuracy/{f}", statistics.mean(values))
-    return rewards
+    return assigned
 
 
 def main() -> None:
@@ -61,6 +79,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--micro-batch", type=int, default=8, help="replies per backward pass (memory, not math)")
     parser.add_argument("--resume", action="store_true", help="continue from the latest checkpoint in --out")
+    parser.add_argument("--shuffle-rewards", action="store_true", help="control run: permute rewards each step")
     args = parser.parse_args()
 
     from datasets import Dataset
@@ -72,8 +91,10 @@ def main() -> None:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    global ROLLOUT_LOG
+    global ROLLOUT_LOG, SHUFFLE_SEED, ROLLOUTS_PER_STEP
     ROLLOUT_LOG = out / "rollouts.jsonl"
+    SHUFFLE_SEED = args.seed if args.shuffle_rewards else None
+    ROLLOUTS_PER_STEP = args.tasks_per_step * args.generations
     if args.resume:
         resumed_from = max(int(path.name.split("-")[1]) for path in out.glob("checkpoint-*"))
         drop_records_after(out / "metrics.jsonl", resumed_from)
