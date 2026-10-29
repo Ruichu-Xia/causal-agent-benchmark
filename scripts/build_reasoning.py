@@ -1,6 +1,6 @@
 r"""Build the text causal-reasoning datasets: a training set, and dev and test sets of every evaluation split.
 
-    python scripts/build_reasoning.py --out-dir outputs/reasoning/v2 --train 4000 --eval 400
+    python scripts/build_reasoning.py --out-dir outputs/reasoning/v2 --train 4000 --dev 400 --test 1000
 
 Writes ``train.jsonl`` and ``{split}_{role}.jsonl`` for role dev (development decisions) and test (the
 pre-registered evaluation only). Within a role, ``iid``, ``ood_wording`` and ``ood_vocab`` share a seed,
@@ -32,7 +32,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--train", type=int, required=True)
-    parser.add_argument("--eval", type=int, required=True, help="items per evaluation split and role")
+    parser.add_argument("--dev", type=int, required=True, help="items per dev split")
+    parser.add_argument("--test", type=int, required=True, help="items per test split")
     parser.add_argument("--write-concepts", metavar="DUMP", help="first rebuild the concept pool from CauseNet")
     args = parser.parse_args()
     if args.write_concepts:
@@ -40,7 +41,8 @@ def main() -> None:
     out, pool = Path(args.out_dir), load_concepts()
     train = build(args.train, SEEDS["train"], pool, "train")
     sets = {
-        role: {split: build(args.eval, SEEDS[role], pool, split) for split in SPLITS[1:]} for role in ("dev", "test")
+        role: {split: build(getattr(args, role), SEEDS[role], pool, split) for split in SPLITS[1:]}
+        for role in ("dev", "test")
     }
     seen = {t["prompt"] for t in train}
     for role in ("dev", "test"):
