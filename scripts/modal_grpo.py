@@ -46,16 +46,26 @@ image = (
 )
 
 
+def _code_digest(root: Path) -> str:
+    """SHA-256 over the paths and contents of the training code in the image: ``src`` and the training scripts."""
+    files = sorted([*root.glob("src/**/*.py"), root / "train_grpo.py", root / "train_reasoning.py"])
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(str(path.relative_to(root)).encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
 @app.function(image=image, gpu="H100", volumes={"/runs": runs, "/hf": hf_cache}, timeout=10 * 3600)
 def train(stem: str, run: str, args: list[str], script: str = "train_grpo.py") -> int:
     """Train in a subprocess, committing the run directory every minute so progress is visible remotely.
 
     Modal restarts a preempted container with the same arguments, so training resumes from the run's latest
-    checkpoint whenever one exists. The run directory records its training data and arguments in ``run.json``,
-    and a run is never resumed with different ones.
+    checkpoint whenever one exists. The run directory records its training data, arguments and a hash of the
+    training code in ``run.json``, and a run is never resumed with different ones.
     """
     record = Path(f"/runs/{run}/run.json")
-    setup = {"data": stem, "script": script, "args": args}
+    setup = {"data": stem, "script": script, "args": args, "code": _code_digest(Path("/root"))}
     if record.exists() and json.loads(record.read_text()) != setup:
         raise ValueError(f"run {run} was started with {record.read_text()}, not {setup}")
     record.parent.mkdir(parents=True, exist_ok=True)

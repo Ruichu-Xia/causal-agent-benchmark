@@ -68,6 +68,7 @@ def main() -> None:
     parser.add_argument("--train", required=True, help="tasks from build_reasoning.py (JSON lines)")
     parser.add_argument("--out", required=True)
     parser.add_argument("--model", default=MODEL)
+    parser.add_argument("--revision", default="", help="Hugging Face revision of --model (default: the latest)")
     parser.add_argument("--max-steps", type=int, required=True)
     parser.add_argument("--tasks-per-step", type=int, default=16)
     parser.add_argument("--generations", type=int, default=8, help="replies per task (the GRPO group)")
@@ -83,6 +84,7 @@ def main() -> None:
     args = parser.parse_args()
 
     from datasets import Dataset
+    from huggingface_hub import snapshot_download
     from peft import LoraConfig
     from trl import GRPOConfig, GRPOTrainer
 
@@ -139,8 +141,10 @@ def main() -> None:
         report_to="none",
         log_completions=False,
     )
+    # A local snapshot pins the revision for both the trained model and the colocated vLLM engine.
+    model = snapshot_download(args.model, revision=args.revision) if args.revision else args.model
     trainer = GRPOTrainer(
-        model=args.model,
+        model=model,
         reward_funcs=reward,
         args=config,
         train_dataset=dataset,

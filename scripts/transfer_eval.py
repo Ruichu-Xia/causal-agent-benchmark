@@ -180,18 +180,25 @@ def _reasoning(path: Path) -> list[dict[str, Any]]:
 
 
 def _corr2cause(source: str) -> list[dict[str, Any]]:
-    """Corr2Cause items; each item is its own cluster."""
+    """Corr2Cause items; each item is its own cluster.
+
+    Each item's stratum is (hypothesis wording with variable names masked, label). Label base rates differ
+    widely across wordings, so balancing over these cells makes any answering habit that depends only on what
+    the model can see, apart from the variable names, score exactly 0.5.
+    """
     items = []
     for i, row in enumerate(_rows(source)):
         premise, hypothesis = row["input"].split("Hypothesis:")
+        label = row["label"] == "1"
         items.append(
             {
                 "id": f"{source}-{i}",
                 "prompt": f"{premise.strip()}\nHypothesis:{hypothesis}\n\n{C2C_QUESTION} {INSTRUCTION}",
-                "label": row["label"] == "1",
+                "label": label,
                 "cluster": f"{source}-{i}",
                 "group": row.get("template", "refactorization"),
                 "property": row.get("num_variables", ""),
+                "stratum": (re.sub(r"\b[A-Z]\b", "X", hypothesis.strip()), label),
             }
         )
     return items
@@ -299,8 +306,14 @@ def _load(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def judge(item: dict[str, Any], reply: str) -> tuple[bool, bool, bool]:
-    """(correct, answered yes, gave no answer) for one reply to one item."""
+def judge(item: dict[str, Any], record: dict[str, Any]) -> tuple[bool, bool, bool]:
+    """(correct, answered yes, gave no answer) for one reply record to one item.
+
+    A truncated reply counts as no answer, even if it already contains an answer line.
+    """
+    if record["finish_reason"] == "length":
+        return False, False, True
+    reply = record["reply"]
     if "kind" in item:  # generated text-reasoning task
         from causalagentbench.reasoning.grading import final_answer, grade
 
@@ -316,7 +329,7 @@ def scores(name: str, model: str) -> dict[str, dict[str, float]]:
     judged: dict[str, list[tuple[bool, bool, bool]]] = defaultdict(list)
     for record in _load(OUT / f"{name}.jsonl"):
         if record["model"] == model:
-            judged[record["id"]].append(judge(by_id[record["id"]], record["reply"]))
+            judged[record["id"]].append(judge(by_id[record["id"]], record))
     return {
         i: {
             "accuracy": statistics.mean(j[0] for j in judged[i]),

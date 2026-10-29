@@ -29,7 +29,7 @@ def graded(split: str, model: str) -> list[dict[str, Any]]:
         if record["model"] != model:
             continue
         task = tasks[record["id"]]
-        correct, _, missing = judge(items_by_id[record["id"]], record["reply"])
+        correct, _, missing = judge(items_by_id[record["id"]], record)
         rows.append(
             {
                 "id": record["id"],
