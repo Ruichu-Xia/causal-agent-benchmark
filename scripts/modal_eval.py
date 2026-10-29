@@ -7,13 +7,15 @@ r"""Sample replies to evaluation sets with offline vLLM on one Modal GPU.
 
 Sets are ``transfer_eval.items`` names; only their prompts go to Modal, and labels stay local. Every prompt is
 one user message (no system prompt, no tools), sampled with the model's generation-config defaults and at most
-``max_tokens`` new tokens (default ``transfer_eval.MAX_TOKENS``); sample j of every item uses seed
+``max_tokens`` new tokens (default ``transfer_eval.MAX_TOKENS``), at Hugging Face revision ``revision`` (default: the
+latest); sample j of every item uses seed
 ``seed + j``. ``adapter`` is a LoRA adapter on the ``causalagentbench-runs`` volume, applied to ``model``.
 Hybrid Qwen3 models run with thinking off (``enable_thinking=False``; templates without the switch ignore it).
 Replies are appended to ``outputs/transfer/<set>.jsonl`` under ``name``, in ``transfer_eval.py``'s record
 format, so ``transfer_eval.py report`` scores them; (item, seed) pairs already answered by ``name`` are skipped.
-Each record also carries the model, the adapter path, the SHA-256 of its weights, ``max_tokens``, the sampling
-parameters and the vLLM version, so an analysis can check that every reply came from the registered configuration.
+Each record also carries the model and its revision, the adapter path and ``adapter_digest``, ``max_tokens``, the
+sampling parameters, the vLLM version and the SHA-256 of the prompt, so an analysis can check that every reply
+came from the registered configuration and the registered prompt.
 """
 
 from __future__ import annotations
@@ -39,26 +41,41 @@ image = (
 )
 
 
+def adapter_digest(directory: Path) -> str:
+    """SHA-256 over the SHA-256 digests of a LoRA adapter's config and weights files, in that order."""
+    digest = hashlib.sha256()
+    for name in ("adapter_config.json", "adapter_model.safetensors"):
+        digest.update(hashlib.sha256((directory / name).read_bytes()).digest())
+    return digest.hexdigest()
+
+
 @app.function(image=image, gpu="L40S", volumes={"/hf": hf_cache, "/runs": runs}, timeout=6 * 3600)
 def generate(
-    model: str, adapter: str, requests: list[tuple[str, int]], max_tokens: int
+    model: str, revision: str, adapter: str, requests: list[tuple[str, int]], max_tokens: int
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The generation settings, and one reply per (prompt, seed) request with its finish reason and token count."""
     import vllm
     from vllm import LLM
     from vllm.lora.request import LoRARequest
 
-    weights = Path(f"/runs/{adapter}/adapter_model.safetensors")
     settings = {
         "base_model": model,
+        "revision": revision,
         "adapter": adapter,
-        "adapter_sha256": hashlib.sha256(weights.read_bytes()).hexdigest() if adapter else "",
+        "adapter_sha256": adapter_digest(Path(f"/runs/{adapter}")) if adapter else "",
         "max_tokens": max_tokens,
         "vllm": vllm.__version__,
     }
 
     lora = {"enable_lora": True, "max_lora_rank": 32} if adapter else {}
-    llm = LLM(model=model, max_model_len=max_tokens + 4096, seed=0, **lora)
+    llm = LLM(
+        model=model,
+        revision=revision or None,
+        tokenizer_revision=revision or None,
+        max_model_len=max_tokens + 4096,
+        seed=0,
+        **lora,
+    )
     defaults = llm.get_default_sampling_params()
     print(f"{model} {adapter}: {defaults}", flush=True)
     settings["sampling"] = {key: getattr(defaults, key) for key in ("temperature", "top_p", "top_k", "min_p")}
@@ -96,6 +113,7 @@ def main(
     max_tokens: int = 0,
     adapter: str = "",
     gpu: str = "L40S",
+    revision: str = "",
 ) -> None:
     """Answer every item of the comma-separated sets not yet answered by ``name``, in one GPU call.
 
@@ -116,9 +134,13 @@ def main(
     if not todo:
         return
     requests = [(prompt, s) for _, _, prompt, s in todo]
-    settings, replies = generate.with_options(gpu=gpu).remote(model, adapter, requests, max_tokens or MAX_TOKENS)
+    settings, replies = generate.with_options(gpu=gpu).remote(
+        model, revision, adapter, requests, max_tokens or MAX_TOKENS
+    )
     print(f"{name}: {settings}", flush=True)
     OUT.mkdir(parents=True, exist_ok=True)
-    for (out, item_id, _, s), reply in zip(todo, replies, strict=True):
+    for (out, item_id, prompt, s), reply in zip(todo, replies, strict=True):
+        prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        record = {"id": item_id, "model": name, "seed": s, **reply, **settings, "prompt_sha256": prompt_sha256}
         with out.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"id": item_id, "model": name, "seed": s, **reply, **settings}) + "\n")
+            handle.write(json.dumps(record) + "\n")

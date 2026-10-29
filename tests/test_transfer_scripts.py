@@ -143,3 +143,70 @@ def test_shuffled_rewards_keep_the_rewards_and_repeat_per_step(monkeypatch):
     assert call(3) == shuffled[2] and any(s != true for s in shuffled)
     with pytest.raises(RuntimeError):
         call(1, n=4)
+
+
+def test_truncated_reply_counts_as_no_answer():
+    """A reply cut off at the token limit scores as no answer, even if it already states one."""
+    item = {"label": True}
+    assert transfer_eval.judge(item, {"reply": "Answer: Yes", "finish_reason": "stop"}) == (True, True, False)
+    assert transfer_eval.judge(item, {"reply": "Answer: Yes", "finish_reason": "length"}) == (False, False, True)
+
+
+@pytest.mark.skipif(not (transfer_eval.OUT / "data" / "c2c_test.csv").exists(), reason="Corr2Cause not downloaded")
+def test_corr2cause_answering_habits_by_wording_score_one_half():
+    """Any yes-rate that depends only on the hypothesis wording scores exactly 0.5 balanced accuracy."""
+    item_list = transfer_eval.items("c2c_test")
+    strata = {item["id"]: transfer_eval.stratum(item) for item in item_list}
+    wordings = sorted({wording for wording, _ in strata.values()})
+    assert len(wordings) == 5 and len(set(strata.values())) == 10
+    yes_rate = dict(zip(wordings, [0.0, 0.3, 0.9, 1.0, 0.55], strict=True))
+    per_item = {}
+    for item in item_list:
+        p = yes_rate[strata[item["id"]][0]]
+        per_item[item["id"]] = {"accuracy": p if item["label"] else 1 - p}
+    assert transfer_eval._metric(per_item, list(per_item), strata, True) == pytest.approx(0.5)
+
+
+def _registered_reply(monkeypatch, **changes) -> None:
+    """Register a one-item set with one reply from ``v2-base``, with ``changes`` applied to the reply record."""
+    import confirm_v2
+
+    item = {"id": "x-0", "prompt": "Is X a cause of Y?", "label": True}
+    record = {
+        "id": "x-0",
+        "model": "v2-base",
+        "seed": confirm_v2.SEED,
+        "base_model": confirm_v2.MODEL,
+        "revision": confirm_v2.REVISION,
+        "adapter": "",
+        "adapter_sha256": "",
+        "max_tokens": confirm_v2.MAX_TOKENS,
+        "vllm": confirm_v2.VLLM,
+        "sampling": dict(confirm_v2.SAMPLING),
+        "prompt_sha256": confirm_v2.hashlib.sha256(item["prompt"].encode("utf-8")).hexdigest(),
+    } | changes
+    monkeypatch.setitem(confirm_v2.REGISTERED, "toy", "registered")
+    monkeypatch.setitem(confirm_v2.SAMPLES, "toy", 1)
+    monkeypatch.setattr(confirm_v2, "fingerprint", lambda name: "registered")
+    monkeypatch.setattr(confirm_v2, "items", lambda name: [item])
+    monkeypatch.setattr(confirm_v2, "_replies", lambda name, model: [record])
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"prompt_sha256": "0" * 64},
+        {"revision": "main"},
+        {"sampling": {"temperature": 1.0, "top_p": 0.8, "top_k": 20, "min_p": 0.0}},
+        {"max_tokens": 4096},
+    ],
+)
+def test_check_refuses_replies_outside_the_registration(monkeypatch, changes):
+    """A reply to another prompt, or from another revision, sampling or token limit, is refused."""
+    import confirm_v2
+
+    _registered_reply(monkeypatch)
+    confirm_v2.check("toy", "v2-base")
+    _registered_reply(monkeypatch, **changes)
+    with pytest.raises(ValueError):
+        confirm_v2.check("toy", "v2-base")

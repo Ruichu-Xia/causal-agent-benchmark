@@ -167,7 +167,7 @@ at about 150 seconds, and a cancelled input stops the serving container. Bulk ev
 
 Run on 2026-10-28 with `scripts/modal_eval.py` (offline vLLM 0.31.0 on one L40S, each model's
 generation-config sampling, seed 0, one sample per item, hybrid Qwen3 models with thinking off) and
-summarized by `scripts/ladder_report.py`. Each split has 400 items, so a split's accuracy has a standard
+summarized by `scripts/ladder_report.py`, which counts a truncated reply as no answer. Each split has 400 items, so a split's accuracy has a standard
 error of about 2.4 points; a family-by-size cell has 20 to 100 items.
 
 | Model | Max tokens | iid | ood_wording | ood_vocab | ood_size | Truncated (iid / ood_size) |
@@ -175,7 +175,7 @@ error of about 2.4 points; a family-by-size cell has 20 to 100 items.
 | Qwen3-0.6B | 4096 | 0.45 | 0.43 | 0.46 | 0.41 | 0% / 0% |
 | Qwen3-1.7B | 4096 | 0.52 | 0.49 | 0.52 | 0.51 | 0% / 0% |
 | Qwen3-8B | 4096 | 0.62 | 0.62 | 0.60 | 0.54 | 1% / 3% |
-| Qwen3-4B-Instruct-2507 | 4096 | 0.62 | 0.61 | 0.64 | 0.45 | 12% / 25% |
+| Qwen3-4B-Instruct-2507 | 4096 | 0.62 | 0.60 | 0.64 | 0.45 | 12% / 25% |
 | Qwen3-4B-Instruct-2507 | 8192 | 0.67 | 0.63 | 0.69 | 0.64 | 0% / 2% |
 
 Qwen3-4B-Instruct-2507 (the model we train) by family and number of variables, 8,192 tokens, `iid` and

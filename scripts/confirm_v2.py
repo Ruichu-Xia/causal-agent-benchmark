@@ -12,9 +12,10 @@ largest over its comparators (an intersection-union test), and Holm's procedure 
 family-wise error at one-sided 0.025. Before the control exists the same procedure decides the gate: the control
 is trained only if some endpoint passes, since adding a comparator can only raise an endpoint's p-value.
 
-Every input is checked against the registration first: item lists (``REGISTERED``), each arm's model, adapter
-weights, token limit, vLLM version and sampling (one configuration per arm across all sets), and each arm's
-replies against the manifest ``--record`` committed when they were collected (``RECORDS``).
+Every input is checked against the registration first: item lists (``REGISTERED``), the prompt each reply
+answered, each arm's model revision, adapter, token limit, vLLM version and sampling (one configuration per arm
+across all sets), and each arm's replies against the manifest ``--record`` committed when they were collected
+(``RECORDS``).
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ ENDPOINTS = {
     "c2c_test": True,
     "cladder_adjust": True,
 }
-"""Confirmatory endpoints and whether each uses balanced accuracy (over labels, or over CLadder's cells)."""
+"""Confirmatory endpoints and whether each uses balanced accuracy over its cells (``transfer_eval.stratum``)."""
 AGAINST_CHANCE = ("dsep", "c2c_test", "cladder_adjust")
 """Yes/no sets on which the trained arm must also beat chance: a below-chance base can be beaten by guessing."""
 MANIPULATION_CHECK = "iid_test"
@@ -60,11 +61,15 @@ REGISTERED = {
 }
 """Item-list fingerprints (``transfer_eval.py hash``) fixed by the pre-registration."""
 MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+REVISION = "cdbee75f17c01a7cc42f958dc650907174af0554"
 VLLM = "0.31.0"
+SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}
+"""The model's generation-config defaults, which every arm must have sampled with."""
 ADAPTERS = {"v2-base": "", "v2-trained": "reason-v2/adapter", "v2-control": "control-v2/adapter"}
 """The adapter each arm must have been evaluated with."""
 ADAPTER_SHA256 = {"v2-base": "", "v2-trained": "", "v2-control": ""}
-"""SHA-256 of each adapter's weights, committed right after its training run and before any evaluation."""
+"""Each adapter's ``modal_eval.adapter_digest`` (config and weights), committed right after its training run and
+before any evaluation."""
 RECORDS = ROOT / "docs" / "preregistration_v2_records.json"
 """Committed manifest: SHA-256 of each arm's replies on each set, written by ``--record`` right after collection."""
 SEED = 1000
@@ -97,7 +102,7 @@ def _digest(records: list[dict[str, Any]]) -> str:
 
 def configuration(record: dict[str, Any]) -> str:
     """The generation settings a reply was produced with, as one comparable string."""
-    keys = ("base_model", "adapter", "adapter_sha256", "max_tokens", "vllm", "sampling")
+    keys = ("base_model", "revision", "adapter", "adapter_sha256", "max_tokens", "vllm", "sampling")
     return json.dumps({key: record.get(key) for key in keys}, sort_keys=True)
 
 
@@ -110,11 +115,21 @@ def check(name: str, model: str) -> str:
     found = Counter((r["id"], r["seed"]) for r in records)
     if set(found) != expected or max(found.values()) != 1:
         raise ValueError(f"{model} does not have exactly the pre-registered replies on {name}")
+    prompts = {item["id"]: hashlib.sha256(item["prompt"].encode("utf-8")).hexdigest() for item in items(name)}
+    if any(r.get("prompt_sha256") != prompts[r["id"]] for r in records):
+        raise ValueError(f"some {model} replies on {name} answered a prompt other than the registered one")
     settings = {configuration(r) for r in records}
     if len(settings) != 1:
         raise ValueError(f"{model} replies on {name} come from more than one configuration")
     setting = json.loads(next(iter(settings)))
-    wanted = {"base_model": MODEL, "adapter": ADAPTERS[model], "max_tokens": MAX_TOKENS, "vllm": VLLM}
+    wanted = {
+        "base_model": MODEL,
+        "revision": REVISION,
+        "adapter": ADAPTERS[model],
+        "max_tokens": MAX_TOKENS,
+        "vllm": VLLM,
+        "sampling": SAMPLING,
+    }
     if any(setting[key] != value for key, value in wanted.items()):
         raise ValueError(f"{model} on {name} was generated with {setting}, not {wanted}")
     if setting["adapter_sha256"] != ADAPTER_SHA256[model]:
@@ -161,7 +176,8 @@ def analyze(trained_arm: str, base_arm: str, control_arm: str | None) -> None:
             raise ValueError(f"{arm} used more than one configuration across sets")
     trained_check = complete(MANIPULATION_CHECK, trained_arm)
     result = compare(MANIPULATION_CHECK, False, trained_check, complete(MANIPULATION_CHECK, base_arm))
-    print(f"manipulation check {MANIPULATION_CHECK} vs {base_arm}: {_format(result)}")
+    worked = "passes" if result["p"] <= ALPHA else "fails: a null elsewhere says nothing about generalization"
+    print(f"manipulation check {MANIPULATION_CHECK} vs {base_arm}: {_format(result)}; {worked}")
     results = {}
     for name, balanced in ENDPOINTS.items():
         trained = complete(name, trained_arm)
