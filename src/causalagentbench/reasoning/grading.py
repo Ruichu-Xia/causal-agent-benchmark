@@ -32,6 +32,9 @@ def parse(kind: str, text: str) -> str | None:
     if kind == "number":
         number = _NUMBER.search(text)
         return f"{float(number.group().replace(_MINUS, '-')):.4f}" if number else None
+    if kind == "letter":
+        letter = re.match(r"\(?([a-c])\b", text)
+        return letter.group(1) if letter else None
     if kind == "letters":
         if re.match(r"none\b", text):
             return "none"
@@ -43,12 +46,12 @@ def parse(kind: str, text: str) -> str | None:
     raise ValueError(f"unknown answer format {kind!r}")
 
 
-def grade(kind: str, answer: str, reply: str) -> float:
-    """1.0 if the reply's final answer matches ``answer`` (numbers within ``NUMBER_TOLERANCE``), else 0.0."""
+def grade(kind: str, answer: str, reply: str, tolerance: float = NUMBER_TOLERANCE) -> float:
+    """1.0 if the reply's final answer matches ``answer`` (numbers within ``tolerance``), else 0.0."""
     text = final_answer(reply)
     given = parse(kind, text) if text is not None else None
     if given is None:
         return 0.0
     if kind == "number":
-        return float(abs(float(given) - float(answer)) <= NUMBER_TOLERANCE)
+        return float(abs(float(given) - float(answer)) <= tolerance)
     return float(given == answer)

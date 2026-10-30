@@ -29,65 +29,113 @@ Lessons, each a design rule below:
 
 ## Episode
 
-1. A hidden causal model (DAG plus linear-Gaussian mechanisms) generates 2,000 rows. Columns are named after
-   CauseNet concepts, or nonsense words in some items.
-2. The prompt gives the column names, the sample size, the modelling assumptions (acyclic, all common causes
-   measured, and so on), and one question.
-3. The agent calls `python` up to 10 times. Each call runs code in a persistent per-episode session with
-   `df` (a pandas DataFrame) already loaded.
-4. The final reply ends with `Answer: <answer>`. The reward is 1 if correct, 0 otherwise, the same as v2.
+1. **World.** Draw a random connected DAG G0, and a unit-variance linear-Gaussian correlation matrix Σ on it
+   (`scm.generate.draw_correlation`). Then draw the true DAG D uniformly from G0's Markov equivalence class,
+   with weights set by regression (`realize`, v1's "covariance transfer"). The data then carry no orientation
+   information beyond the CPDAG: no variance, R² or coefficient size can hint at a direction the data leave
+   open.
+2. **Names.** v1's `CauseNetLabeler` names D's nodes with its four rules:
+   - every edge of D is a one-way CauseNet relation in that direction;
+   - no CauseNet relation between chosen names points against D's causal order;
+   - no near-duplicate names.
+
+   Pairs with no causal path between them may still carry CauseNet relations, so names can suggest links
+   the data refute. Naming takes about 0.1 s per graph, and held-out concepts name every size tried (4–8
+   nodes).
+3. **Data.** 2,000 rows sampled from D. The task stores the model and the sampling seed, not the rows, so a
+   task file stays small. Sampling adds each node's weighted parents to its noise in a fixed order, using
+   elementwise operations only: a first version solved a linear system, whose last bits (LAPACK) differed
+   between the build machine and the containers. numpy's normal sampler still calls the platform's `log` in
+   a rare branch: 4 of 400 training worlds differed in the containers in a few last bits. So a regeneration
+   is checked against the build's column sums and sums of squares to a relative 1e-12, which a wrong seed or
+   simulator misses by order one, and a last-bit difference cannot move any of the gate's tests across its
+   threshold in practice.
+4. **Prompt.** It gives:
+   - the column names and the row count;
+   - the assumptions: linear, Gaussian noise, acyclic, no hidden common causes, no exact cancellations, unit
+     variances;
+   - the names statement: "Every direct cause in this system is one the variables' meanings make plausible,
+     in that direction; some plausible links are absent, and effect sizes and signs are synthetic";
+   - one question.
+5. **Tool.** The agent calls `python` up to 10 times. Each call runs in a persistent per-episode session with
+   `df` already loaded.
+6. **Answer.** The final reply ends with `Answer: <answer>`. The reward is 1 if correct, else 0.
 
 ## Question families
 
-Each item asks one question. Labels come from the hidden model, never from the data.
+Labels come from D. Two reference rules show what each source alone can do:
+- **data-only:** the answer in every member of D's equivalence class (a population-level, perfect analysis
+  that ignores names). When members disagree it guesses, with credit 1/2 on binary questions.
+- **names-only:** the answer in Gn, the graph of CauseNet relations among the chosen names.
 
-| Family | Format | Example | Shortcut balanced to chance |
+Using both, skeleton and compelled orientations from data and the remaining orientations from names, always
+gives D, because every edge of D is a CauseNet relation in its direction.
+
+| Family | Format | Question | Drawn independently (cells) |
 | --- | --- | --- | --- |
-| Independence | yes/no | "In the population, is `sleep quality` independent of `caffeine` given `stress`?" | Marginal-correlation rule (answer from the unconditional correlation) |
-| Structure | choice | "Which is most consistent with the data and the variables' meaning? A: X causes Y, B: Y causes X, C: no direct causal link" (QRData's pairwise format) | "Adjacent in the data means a causal link, in the direction the names suggest" |
-| Adjustment | choice | "Analyst 1 adjusts for {A, B}; analyst 2 for {C}. With unlimited data, whose estimate of the effect of X on Y is unbiased: 1, 2, Both or Neither?" | Adjust-for-everything rule; confounder rule (v2) |
-| Effect | number (2 decimals, tolerance ±0.05 in standard-deviation units), or sign | "By how many standard deviations does Y change per one-SD intervention on X?" | Unadjusted regression slope; regression adjusting for everything |
+| Independence | yes/no | "Is X independent of Y given Z?" (or "associated") | label; names-only right (Gn has a directed path between X and Y in either direction iff "associated"); marginal rule right (the answer with Z empty) |
+| Structure | A/B/C | "Which is true in this system? X causes Y (directly or indirectly) / Y causes X / neither causes the other", the letters shuffled (QRData's pairwise format) | source cell: name-critical 1/2 (D has a path, the class disagrees on it, names right); data-critical 1/4 (no path in D, the class agrees, Gn has a path); both suffice 1/4 |
+| Adjustment | yes/no (one set) or 1/2/Both/Neither (two analysts) | "Would regressing Y on X and Z recover X's total effect on Y?" (one set, or two analysts' sets) | per question: data-determined (every class member gives each set the same validity). Per set: valid; confounder rule right, a fair coin for valid sets and fixed by determinedness for invalid ones, since no invalid, undetermined set has the confounder rule wrong (none in about 150,000 sets of random 4- to 7-node graphs) |
+| Effect | number, 2 decimals, graded within ±0.10 | "How many standard deviations does Y change when X is set one standard deviation higher?" | name-critical (some class member's effect is more than 0.2 from the truth) or data-identified (all within 0.02); unadjusted correlation right (within 0.10) or wrong (more than 0.2 off); regression on every other column right or wrong, likewise; nonzero (90%) |
 
-As in v2, sampling draws each label and whether the family's shortcut agrees with it independently, so
-every shortcut and every constant answer scores 0.5 (or the numeric equivalent for effects).
+Reported, not balanced: each family's single-source accuracies, the confounder rule on structure-like
+questions, and constant answers. By construction on Structure, names-only and data-only each score about
+0.75, both together score 1, and a constant letter scores about 1/3.
 
-**Names stay part of the skill, as in v1.** Some structure and effect items have edges the data cannot
-orient (same Markov equivalence class), where the concept names settle the direction. These are marked
-*name-critical*. The placeholder-name ablation (columns renamed `X1…Xk`) measures how much names contribute.
+### Audit of the training set (4,000 items, `dataenv/audit.py`)
+
+Mean credit of each rule; correct analysis of the data and names scores 1 by construction.
+
+| Family, format (items) | Data-only | Names-only | Family shortcuts | Constant answers |
+| --- | ---: | ---: | --- | --- |
+| Independence, yes/no (1,000) | 1.00 | 0.50 | marginal 0.50 | yes 0.50, no 0.50 |
+| Structure, A/B/C (1,000) | 0.76 | 0.74 | — | A 0.35, B 0.35, C 0.30 |
+| Adjustment, yes/no (493) | 0.79 | — | confounder rule 0.48 | yes 0.55, no 0.45 |
+| Adjustment, two analysts (507) | 0.76 | — | confounder rule 0.30 (chance 0.25) | 1 0.25, 2 0.29, Both 0.21, Neither 0.25 |
+| Effect, number (1,000) | 0.73 | — | unadjusted 0.51, adjust for all others 0.51 | 0.00 scores 0.10 |
+
+The first build left adjusting for every other column unbalanced (0.64 on effect questions), so it was added
+to the effect family's drawn cells.
 
 ## Answerable from the data
 
-A label from the hidden model must also be recoverable from the sampled rows, or the reward punishes
-correct analysis. Each item passes a gate before it is kept:
-- **Data-identified items:** a reference analysis (PC at α = 0.01, then the adjustment criterion and OLS)
-  run on the item's own rows must reach the label.
-- **Name-critical items:** the data must leave the relevant edge unoriented, and the CauseNet relation
-  between the names must orient it.
-- **Strength:** every dependence the label relies on must have a partial correlation of at least 0.1, so
-  2,000 rows detect it reliably. v1 used 10,000 rows; fewer rows keep tool calls fast.
+A label from D must also be recoverable from the sampled rows, or the reward punishes correct analysis.
+Every item passes these checks on its own rows:
+- **Structure from data:** PC (α = 0.01, stable) on the rows returns exactly D's CPDAG. Measured on 100 random
+  graphs per size with 2,000 rows, this keeps 90% at 4 nodes, 66% at 5, 34% at 6, 16% at 7 and 10% at 8.
+  Rejected draws cost milliseconds. The kept graphs have clearer signal; that is the price of exact labels.
+- **Independence:** the Fisher-z test of the queried pair given Z agrees with the label, with a margin: p
+  below 0.01 for dependent pairs, above 0.05 for independent ones.
+- **Effect:** OLS of Y on X and X's parents in D, on the rows, lands within 0.03 of the true effect.
 
-This filter is about correctness, not curation: an item whose answer the data cannot support is wrong.
-Gate pass rates will be reported per family.
+This filter is about correctness, not curation. Pass rates are reported per family and split.
 
 ## The Python tool
 
 - **Session:** one long-lived Python worker per episode, which keeps variables between calls. Preloaded:
-  `df`, numpy, pandas, scipy, statsmodels, and three helpers documented in the prompt:
-  - `partial_corr(df, x, y, given)`;
-  - `pc(df, alpha)`, which returns the CPDAG;
+  `df`, numpy (`np`), pandas (`pd`), scipy, statsmodels, and three documented helpers:
+  - `partial_corr(df, x, y, given=())`;
+  - `pc(df, alpha=0.01)`, which returns the CPDAG's directed and undirected edges;
   - `ols(df, y, X)`.
 
   The agent can use them or write its own analysis.
-- **Limits:** 20 seconds and 2 GB per call. Output is truncated to 2,000 characters. No network.
+- **Limits:** 20 seconds of CPU per call and 2 GB of memory. Output is truncated to 2,000 characters.
 - **Isolation (a correctness requirement in RL).** The model's code is untrusted, and a policy that can read
   answer keys will learn to.
-  - The worker runs as an unprivileged user in an empty working directory, with only the episode's data
-    file.
-  - Training data, labels, adapters and credentials are owned by another user and unreadable by it.
-  - A test tries to read the training file, the volume and the environment variables from inside the tool,
-    and must fail each time.
-  - Every training run also scans its rollouts for file and OS access.
-- **Errors:** they return the traceback text, so the agent can fix its code, as v1's tools do.
+  - All model code runs in Modal containers, for both training and evaluation, never on a laptop.
+  - The worker runs as an unprivileged user with a cleared environment, in an empty directory holding only
+    the episode's data.
+  - The volume and the code directory are made unreadable to that user at container start.
+  - A Modal smoke test runs code that tries to read the task file, the volume, `/proc` of the parent and
+    the environment from inside the tool, and each attempt must fail.
+  - Every training run's rollouts are scanned for file and OS access.
+  - Network access is not blocked: nothing secret is reachable, and no answer exists anywhere online.
+- **Errors:** they return the traceback text, so the agent can fix its code.
+- **Format:** training (TRL `environment_factory`) and evaluation (a multi-turn loop over offline vLLM) render
+  tools with the model's own chat template and parse calls with TRL's `parse_response`, so they see one
+  format. Evaluation uses the CUDA devel image, because vLLM compiles FlashInfer's top-k/top-p sampling
+  kernels with nvcc; training samples at temperature 1.0 and keeps v1's image. The isolation check and a
+  data-regeneration check run in both images.
 
 ## Splits
 
@@ -98,7 +146,7 @@ v2's scheme, with data:
 | train | 4–6 | training templates | training concepts |
 | iid | 4–6 | training templates | training concepts |
 | ood_wording | 4–6 | held-out templates | training concepts |
-| ood_size | 7–9 | training templates | training concepts |
+| ood_size | 7–8 | training templates | training concepts |
 | ood_vocab | 4–6 | training templates | held-out concepts |
 
 Each split has a `dev` set (seed 100) for development and a `test` set (seed 200) for the confirmatory
