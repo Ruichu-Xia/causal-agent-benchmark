@@ -15,11 +15,13 @@ Replies are appended to ``outputs/transfer/<set>.jsonl`` under ``name``, in ``tr
 format, so ``transfer_eval.py report`` scores them; (item, seed) pairs already answered by ``name`` are skipped.
 Each record also carries the model and its revision, the adapter path and ``adapter_digest``, ``max_tokens``, the
 sampling parameters, the vLLM version and the SHA-256 of the prompt, so an analysis can check that every reply
-came from the registered configuration and the registered prompt.
+came from the registered configuration and the registered prompt. The remote call also saves its settings and
+replies to ``/eval/<SHA-256 of the requests>.json`` on the runs volume before returning.
 """
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import sys
@@ -100,6 +102,12 @@ def generate(
         }
         for output in outputs
     ]
+    # A copy on the volume, so a lost local client does not lose the replies.
+    request_digest = hashlib.sha256(json.dumps(requests).encode("utf-8")).hexdigest()
+    backup = Path(f"/runs/eval/{request_digest}.json")
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_text(json.dumps({"settings": settings, "requests": requests, "replies": replies}))
+    runs.commit()
     return settings, replies
 
 
@@ -143,4 +151,5 @@ def main(
         prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         record = {"id": item_id, "model": name, "seed": s, **reply, **settings, "prompt_sha256": prompt_sha256}
         with out.open("a", encoding="utf-8") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)  # other evaluations may append to the same file concurrently
             handle.write(json.dumps(record) + "\n")
