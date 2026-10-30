@@ -1,0 +1,16 @@
+{
+ "c2c_test/v2-base": "477ce4f430ce5eb147ee96fd2c6f02c9ceabd560c44c102fc50bd5e97a453f2c",
+ "c2c_test/v2-trained": "d7d8d654b74b0577ae0ae2348ed5cfe370024016902eae6a1ef23e17e0088459",
+ "cladder_adjust/v2-base": "fbe845cb826bcf05c5c32d04d7b3bd48053a5878414c97771863a8b9e298fdda",
+ "cladder_adjust/v2-trained": "b7273c8bf36ebe3c5afb4a20659ca2cc334ed0ca772b4158a4700c123bf98017",
+ "dsep/v2-base": "82b433b4058d7ae5efb4a71e96d2c200a9c708e654bb08237377dcfc27a58179",
+ "dsep/v2-trained": "8fa346503414e1eb100c1e464dd83d3ae60e862b3b634b1ce3ddbf6114a57241",
+ "iid_test/v2-base": "165db9e52b12edcab0a8e22a23dc9aa207275e2a4bfb39f7857020a9edca203d",
+ "iid_test/v2-trained": "28879c7f7f5d7d0996f9ac2eaa1604fb00d7d7e6f48778c8de7796e775944ec2",
+ "ood_size_test/v2-base": "376a4c03e319e85cf38126733a7785da4e4e65e42ef970a5cf390ef929fc1998",
+ "ood_size_test/v2-trained": "d0a05a8e7830c2db0ce32865868209b5762e55af45b8b616812d9b90d292e75c",
+ "ood_vocab_test/v2-base": "c72b75d2444b2be16c7e512c8804f24008bd0bfcc973469fc215a7a179e9472d",
+ "ood_vocab_test/v2-trained": "d8744e4b955170ea32240f67efbc83fe7190bfbb0586d44be763b8614014f883",
+ "ood_wording_test/v2-base": "0f4b461dcc986487745f1eee2b4d68bb93b9fbb018adbdcfa5ca889364429f36",
+ "ood_wording_test/v2-trained": "3d2de7e74757547385d079a1775922e68ce5d656e49d549d958efc9646ef5960"
+}
