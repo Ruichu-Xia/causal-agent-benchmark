@@ -199,3 +199,23 @@ Cost is kept low in three ways:
 | D. Confirmatory | Pre-register; evaluate base and the pilot adapter on test splits, QRData and bnRep (the gate) | — | $8–12 |
 | D'. Control, only if the gate opens | 60-step shuffled-reward run and its evaluation | — | $22–34 |
 | **Total** | | | **$33–52 without the control, $55–86 with it; about $25–40 if the pilot stops it** |
+
+## Phase B: calibration (2026-10-30)
+
+Base Qwen3-4B-Instruct-2507 (revision `cdbee75`), 200 dev episodes per split, one sample, generation-config
+sampling, 8,192 completion tokens (`modal_dataenv.py::eval_main`):
+
+| Split | Accuracy | Ends with an answer | Truncated | Tool calls per episode |
+| --- | ---: | ---: | ---: | ---: |
+| iid | 0.465 | 0.920 | 0.055 | 2.5 |
+| ood_wording | 0.520 | 0.925 | 0.050 | 2.9 |
+| ood_size | 0.415 | 0.885 | 0.070 | 2.7 |
+| ood_vocab | 0.430 | 0.925 | 0.050 | 2.4 |
+
+- iid by family: independence 0.70, structure 0.44, adjustment 0.40, effect 0.32.
+- About half the base model's tool outputs are its own errors: guessing the helpers' result keys instead of
+  calling `help()`, overwriting a helper with its result, importing functions that do not exist.
+- Training throughput (3 steps, 64 rollouts, H100): about 380 s per step, so 60 steps cost about $27.
+- No training rollout's code touched files, the OS or other processes.
+- Gate: accuracy is inside 40–75% on every split. Ending with an answer is at least 90% on three splits and
+  0.885 on ood_size, where the misses are mostly truncation on larger graphs.
