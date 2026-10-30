@@ -67,7 +67,11 @@ SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0}
 """The model's generation-config defaults, which every arm must have sampled with."""
 ADAPTERS = {"v2-base": "", "v2-trained": "reason-v2/adapter", "v2-control": "control-v2/adapter"}
 """The adapter each arm must have been evaluated with."""
-ADAPTER_SHA256 = {"v2-base": "", "v2-trained": "", "v2-control": ""}
+ADAPTER_SHA256 = {
+    "v2-base": "",
+    "v2-trained": "b0f0b32c0ecb5d344465dff9ebab703bb7234aa3077f909f5cec3c213b71c2af",
+    "v2-control": "",
+}
 """Each adapter's ``modal_eval.adapter_digest`` (config and weights), committed right after its training run and
 before any evaluation."""
 RECORDS = ROOT / "docs" / "preregistration_v2_records.json"
