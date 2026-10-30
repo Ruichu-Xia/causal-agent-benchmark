@@ -88,6 +88,14 @@ uv run --with modal modal run scripts/modal_grpo.py::reasoning_main --dataset ou
     --run control-v2 --max-steps 60 --extra "--revision cdbee75f17c01a7cc42f958dc650907174af0554 --shuffle-rewards"
 ```
 
+**Training record.**
+- `reason-v2` (2026-10-29): the first call stopped during step 60 when the local Modal client lost the app
+  (`APP_STATE_STOPPED`), before the adapter was saved. The same command, with `modal run --detach`, resumed
+  from `checkpoint-50` (steps 51–60 rerun, their earlier log records dropped) and finished. After saving the
+  adapter and `log_history.json`, the process segfaulted at interpreter exit, in vLLM's sleep-mode memory
+  pool destructor. The saved adapter is byte-identical to `checkpoint-60`'s. Adapter digest
+  `b0f0b32c0ecb5d344465dff9ebab703bb7234aa3077f909f5cec3c213b71c2af`.
+
 **Training data.** `outputs/reasoning/v2/train.jsonl`:
 - **Contents:** 4,000 tasks, 1,000 per family, built by
   `scripts/build_reasoning.py --out-dir outputs/reasoning/v2 --train 4000 --dev 400 --test 1000`.
