@@ -149,7 +149,10 @@ after resuming, no endpoint is confirmed.
     or no.
   - No answer scores 0. A reply that stopped at the token limit counts as no answer, even if it already
     contains an answer line.
-- **Collection:** for each arm, the same three calls, then `python scripts/confirm_v2.py --record <arm>` and
+- **Collection:** each call is spawned on the deployed evaluator app, so it survives a lost local client, and
+  rerunning the command waits for it. A first attempt (2026-10-29) used `modal run` directly; the local
+  network dropped three minutes in, Modal cancelled all six calls, and no reply was written. For each arm, the
+  same three calls, then `python scripts/confirm_v2.py --record <arm>` and
   a commit of `docs/preregistration_v2_records.json`. That file holds the hash of each arm's replies on each
   set. It refuses to overwrite an entry, and the analysis refuses replies that do not match it. Replies are
   not looked at before they are recorded; the manifest cannot detect replies collected, discarded and collected

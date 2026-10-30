@@ -1,5 +1,6 @@
 r"""Sample replies to evaluation sets with offline vLLM on one Modal GPU.
 
+    uv run --with modal modal deploy scripts/modal_eval.py      # after every change to this file
     uv run --with modal modal run scripts/modal_eval.py --model Qwen/Qwen3-8B --name qwen3-8b \
         --sets iid_dev,ood_size_dev
     uv run --with modal modal run scripts/modal_eval.py --model Qwen/Qwen3-4B-Instruct-2507 --name trained \
@@ -15,8 +16,12 @@ Replies are appended to ``outputs/transfer/<set>.jsonl`` under ``name``, in ``tr
 format, so ``transfer_eval.py report`` scores them; (item, seed) pairs already answered by ``name`` are skipped.
 Each record also carries the model and its revision, the adapter path and ``adapter_digest``, ``max_tokens``, the
 sampling parameters, the vLLM version and the SHA-256 of the prompt, so an analysis can check that every reply
-came from the registered configuration and the registered prompt. The remote call also saves its settings and
-replies to ``/eval/<SHA-256 of the requests>.json`` on the runs volume before returning.
+came from the registered configuration and the registered prompt.
+
+The GPU call is spawned on the deployed app, so it keeps running if the local client loses its connection. Its
+id is kept in ``outputs/transfer/pending/<call_key>.txt`` until its replies are written, and rerunning the same
+command waits for that call instead of starting another. The call also saves its settings and replies to
+``/eval/<call_key>.json`` on the runs volume.
 """
 
 from __future__ import annotations
@@ -41,6 +46,12 @@ image = (
     .uv_pip_install("vllm==0.31.0")
     .env({"HF_HOME": "/hf"})
 )
+
+
+def call_key(model: str, revision: str, adapter: str, requests: list[tuple[str, int]], max_tokens: int) -> str:
+    """SHA-256 of a generation call's arguments, naming its pending-call file and its copy on the volume."""
+    arguments = [model, revision, adapter, [list(request) for request in requests], max_tokens]
+    return hashlib.sha256(json.dumps(arguments).encode("utf-8")).hexdigest()
 
 
 def adapter_digest(directory: Path) -> str:
@@ -103,8 +114,7 @@ def generate(
         for output in outputs
     ]
     # A copy on the volume, so a lost local client does not lose the replies.
-    request_digest = hashlib.sha256(json.dumps(requests).encode("utf-8")).hexdigest()
-    backup = Path(f"/runs/eval/{request_digest}.json")
+    backup = Path(f"/runs/eval/{call_key(model, revision, adapter, requests, max_tokens)}.json")
     backup.parent.mkdir(parents=True, exist_ok=True)
     backup.write_text(json.dumps({"settings": settings, "requests": requests, "replies": replies}))
     runs.commit()
@@ -125,7 +135,7 @@ def main(
 ) -> None:
     """Answer every item of the comma-separated sets not yet answered by ``name``, in one GPU call.
 
-    ``max_tokens`` 0 means ``transfer_eval.MAX_TOKENS``.
+    ``max_tokens`` 0 means ``transfer_eval.MAX_TOKENS``. The call runs on the deployed app (``modal deploy``).
     """
     sys.path.insert(0, str(ROOT / "scripts"))
     from transfer_eval import MAX_TOKENS, OUT, _load, items
@@ -142,9 +152,19 @@ def main(
     if not todo:
         return
     requests = [(prompt, s) for _, _, prompt, s in todo]
-    settings, replies = generate.with_options(gpu=gpu).remote(
-        model, revision, adapter, requests, max_tokens or MAX_TOKENS
-    )
+    arguments = (model, revision, adapter, requests, max_tokens or MAX_TOKENS)
+    pending = OUT / "pending" / f"{call_key(*arguments)}.txt"
+    if pending.exists():
+        call_id = pending.read_text(encoding="utf-8").strip()
+        call = modal.FunctionCall.from_id(call_id)
+        print(f"{name}: waiting for call {call_id}, spawned earlier", flush=True)
+    else:
+        deployed = modal.Function.from_name(app.name, "generate").with_options(gpu=gpu)
+        call = deployed.spawn(*arguments)
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text(call.object_id, encoding="utf-8")
+        print(f"{name}: spawned call {call.object_id}", flush=True)
+    settings, replies = call.get()
     print(f"{name}: {settings}", flush=True)
     OUT.mkdir(parents=True, exist_ok=True)
     for (out, item_id, prompt, s), reply in zip(todo, replies, strict=True):
@@ -153,3 +173,4 @@ def main(
         with out.open("a", encoding="utf-8") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)  # other evaluations may append to the same file concurrently
             handle.write(json.dumps(record) + "\n")
+    pending.unlink()
