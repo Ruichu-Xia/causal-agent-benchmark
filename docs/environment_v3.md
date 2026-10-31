@@ -219,3 +219,37 @@ sampling, 8,192 completion tokens (`modal_dataenv.py::eval_main`):
 - No training rollout's code touched files, the OS or other processes.
 - Gate: accuracy is inside 40–75% on every split. Ending with an answer is at least 90% on three splits and
   0.885 on ood_size, where the misses are mostly truncation on larger graphs.
+
+## Phase C: pilot (2026-10-30)
+
+60 GRPO steps on `train.jsonl` (8 tasks × 8 rollouts, LoRA rank 32, learning rate 2e-5, DAPO loss, beta 0,
+temperature 1.0, seed 0; code at `3ec1cd4`; `modal_dataenv.py::train_main --run data-pilot --max-steps 60`).
+Training took 4.3 hours on one H100. Adapter digest `722501e4…` (`data-pilot/adapter`).
+
+Training reward rose from about 0.44 (steps 1–30) to 0.62 (steps 51–60); ending with an answer stayed at
+0.95–0.98 and tool calls at about 2.5 per episode.
+
+Dev evaluation, same protocol as phase B (seed 1000, one sample, same tasks). Differences are pilot minus
+base, with 95% paired bootstrap intervals over tasks (10,000 resamples, seed 0):
+
+| Split | Base | Pilot | Difference | 95% interval | Ends with an answer |
+| --- | ---: | ---: | ---: | --- | --- |
+| iid | 0.465 | 0.655 | +0.190 | [+0.120, +0.260] | 0.920 → 0.970 |
+| ood_wording | 0.520 | 0.600 | +0.080 | [+0.005, +0.155] | 0.925 → 0.980 |
+| ood_size | 0.415 | 0.605 | +0.190 | [+0.105, +0.275] | 0.885 → 0.960 |
+| ood_vocab | 0.430 | 0.595 | +0.165 | [+0.080, +0.250] | 0.925 → 0.990 |
+
+**Gate: passes** (iid gain at least 0.05, interval above zero).
+
+- Truncation fell from 5–7% to about 0, but it explains only part of the gain: on episodes both arms answer,
+  pooled over splits, the difference is +0.121.
+- By family, pooled over splits: independence 0.655 → 0.960, structure 0.485 → 0.640,
+  adjustment 0.355 → 0.430, effect 0.335 → 0.425.
+- Independence, structure and adjustment gain at least as much where a shortcut is wrong as where it is
+  right: the marginal rule (+0.385 wrong, +0.219 right) and the confounder rule (+0.120 wrong, +0.037 right).
+  Structure gains more where the names are right (+0.189) than wrong (+0.058): the pilot uses the names.
+- **Effect gains come from shortcuts.** Where the unadjusted estimate is wrong, the pilot's answer lands on
+  it in 42 of 104 episodes (base 25) and is right in 22 (base 24). Of those 22, 21 equal the
+  adjust-for-everything estimate, and only 1 is right where both shortcuts are wrong (base 5). The pilot
+  always regresses (96–99% of effect episodes) but does not learn a valid adjustment set.
+- No training rollout's code touched files, the OS or other processes (3,840 rollouts, 9,866 tool calls).
