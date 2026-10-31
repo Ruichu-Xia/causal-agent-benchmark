@@ -10,6 +10,7 @@
  "ood_size_test/v3-control": "ec3c21342c9b8ab9f798dbdffba45b477d9d6ddda3f74adf166adf86777c2481",
  "ood_size_test/v3-trained": "6d51aa102b5e55a984d96e4907cd8de48022cccd2c6f74184666d10d23ef6267",
  "ood_vocab_test/v3-base": "56aac9e11109e1580fe4fe175686e7276d2f887e1f7922dbb99073bfeb17a1c9",
+ "ood_vocab_test/v3-control": "74b82eeea9db953a472a707fe3612962c0f59f476dcfb96b78785ead066b8e55",
  "ood_vocab_test/v3-trained": "b333ad2e10acee9b63d6d5f31868a86519312fd2294d11c7ec118f8bfd14e339",
  "ood_wording_test/v3-base": "ce45615e7319352bc739dd5872681944aa4f8e0efae283874458dbb2365de5d3",
  "ood_wording_test/v3-control": "75d7ff806357041da2ee23aed88c9e4629e4e85a3e1c0b06e8072df1727b416f",
