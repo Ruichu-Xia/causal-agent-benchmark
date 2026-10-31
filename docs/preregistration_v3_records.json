@@ -4,6 +4,7 @@
  "iid_test/v3-base": "e8561840bc2a09712532bdaa29a079590a9a9256aff2454aebcf59ff811694be",
  "iid_test/v3-trained": "f448c10311ced96d40777d7b40d1b5a9ef81abb745647b77d4952079b8e37bba",
  "ood_size_test/v3-base": "05fe7e8f1179bdabddf44d782aff8e201e5dce391f76280a93c4df6acb357ca1",
+ "ood_size_test/v3-trained": "6d51aa102b5e55a984d96e4907cd8de48022cccd2c6f74184666d10d23ef6267",
  "ood_vocab_test/v3-base": "56aac9e11109e1580fe4fe175686e7276d2f887e1f7922dbb99073bfeb17a1c9",
  "ood_wording_test/v3-base": "ce45615e7319352bc739dd5872681944aa4f8e0efae283874458dbb2365de5d3",
  "ood_wording_test/v3-trained": "c5285cca509571ea4d54fd3f96723c1c76705c8ba4a1eb37a4a52bce2f674252",
