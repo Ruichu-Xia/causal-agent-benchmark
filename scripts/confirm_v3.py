@@ -72,7 +72,7 @@ ADAPTERS = {"v3-base": "", "v3-trained": "data-pilot/adapter", "v3-control": "da
 ADAPTER_SHA256 = {
     "v3-base": None,
     "v3-trained": "722501e468587c49e50e314bca62b6a62b1ed9d0d1502d6fafcfbb68bc514547",
-    "v3-control": "",
+    "v3-control": "80c8fa815f66f9f55753e1ca21577a31b44e524622770f5623388e228ac70e2e",
 }
 """The control's digest is committed right after it is trained, before it is evaluated."""
 RESAMPLES = 20_000
