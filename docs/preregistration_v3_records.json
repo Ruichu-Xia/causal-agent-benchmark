@@ -2,6 +2,7 @@
  "bnrep_placeholder/v3-base": "00dba09af5556c1e2adca2f3b0b81d3ae239f9eea52c0caee52dfd54894b3b5a",
  "bnrep_real/v3-base": "5255c7a84cc0ee63e7ed4232e62ce8977a74dc6055d35b9b2e956455b93b331f",
  "iid_test/v3-base": "e8561840bc2a09712532bdaa29a079590a9a9256aff2454aebcf59ff811694be",
+ "iid_test/v3-trained": "f448c10311ced96d40777d7b40d1b5a9ef81abb745647b77d4952079b8e37bba",
  "ood_size_test/v3-base": "05fe7e8f1179bdabddf44d782aff8e201e5dce391f76280a93c4df6acb357ca1",
  "ood_vocab_test/v3-base": "56aac9e11109e1580fe4fe175686e7276d2f887e1f7922dbb99073bfeb17a1c9",
  "ood_wording_test/v3-base": "ce45615e7319352bc739dd5872681944aa4f8e0efae283874458dbb2365de5d3",
