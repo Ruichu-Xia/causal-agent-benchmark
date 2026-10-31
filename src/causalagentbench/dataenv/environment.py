@@ -10,8 +10,10 @@ same class, so training and evaluation share one prompt, tool and grader.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
+from causalagentbench.dataenv import qrdata
 from causalagentbench.dataenv.dataset import world_from_dict
 from causalagentbench.dataenv.sandbox import PythonSession
 from causalagentbench.environment import final_reply
@@ -21,13 +23,23 @@ MAX_TOOL_CALLS = 10
 """Tool calls per episode."""
 
 
+def grade_reply(task: dict[str, Any], reply: str) -> float:
+    """The reward of a final reply: QRData's own rule on its tasks, else the task's answer format."""
+    if task["kind"].startswith("qrdata_"):
+        return qrdata.grade(task["kind"], task["answer"], reply)
+    return grade(task["kind"], task["answer"], reply, task.get("tolerance") or NUMBER_TOLERANCE)
+
+
 class DataEnv:
     """One episode: a question about a dataset, a persistent Python session over it, and an exact reward."""
 
-    def __init__(self, tasks: Sequence[dict[str, Any]], max_tool_calls: int = MAX_TOOL_CALLS) -> None:
-        """Bind task records (``dataset.load``)."""
+    def __init__(
+        self, tasks: Sequence[dict[str, Any]], max_tool_calls: int = MAX_TOOL_CALLS, data_dir: Path | None = None
+    ) -> None:
+        """Bind task records (``dataset.load``, or ``qrdata.records`` with their files in ``data_dir``)."""
         self._tasks = tasks
         self._max_tool_calls = max_tool_calls
+        self._data_dir = data_dir
         self._task: dict[str, Any] | None = None
         self._session: PythonSession | None = None
         self._calls = 0
@@ -42,9 +54,14 @@ class DataEnv:
             if index is None:
                 raise ValueError("reset needs a task index or a task record")
             task = self._tasks[int(index)]
-        world = world_from_dict(task["world"])
         self._task = task
-        self._session = PythonSession(world.data(), world.names)
+        if "files" in task:
+            if self._data_dir is None:
+                raise ValueError("a task with data files needs data_dir")
+            self._session = PythonSession.from_files([self._data_dir / name for name in task["files"]])
+        else:
+            world = world_from_dict(task["world"])
+            self._session = PythonSession(world.data(), world.names)
         self._calls = 0
         self.done = False
         self.reward = 0.0
@@ -72,8 +89,7 @@ class DataEnv:
         if self.done or self._task is None:
             raise ValueError("The episode is over.")
         task = self._task
-        tolerance = task.get("tolerance") or NUMBER_TOLERANCE
-        self.reward = grade(task["kind"], task["answer"], reply, tolerance)
+        self.reward = grade_reply(task, reply)
         self.done = True
         self.info = {
             "id": task["id"],

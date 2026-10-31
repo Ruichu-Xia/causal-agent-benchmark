@@ -186,20 +186,33 @@ def independence(rng: np.random.Generator, phrase: Phrases, spec: Spec, labeler:
         return query if (p > ALPHA_INDEPENDENT if label else p < ALPHA_DEPENDENT) else None
 
     world, (x, y, z) = _search(rng, spec, labeler, find)
+    cell = {"names_right": names_right, "marginal_right": marginal_right}
+    return independence_task(rng, phrase, world, (x, y, z), label, cell)
+
+
+def independence_task(
+    rng: np.random.Generator,
+    phrase: Phrases,
+    world: DataWorld,
+    query: tuple[int, int, Sequence[int]],
+    independent: bool,
+    cell: dict[str, Any],
+) -> Task:
+    """The independence question for a chosen query; ``cell`` records which rules are right."""
+    x, y, z = query
     if rng.random() < 0.5:
         x, y = y, x
     ask_independent = bool(rng.random() < 0.5)
     names = world.names
     where = phrase("where_given", z=_join([names[v] for v in z])) if z else phrase("where_none")
     question = phrase("ask_independent" if ask_independent else "ask_associated", x=names[x], y=names[y], where=where)
-    answer = "yes" if label == ask_independent else "no"
+    answer = "yes" if independent == ask_independent else "no"
     meta = {
         "x": x,
         "y": y,
         "z": list(z),
-        "independent": label,
-        "names_right": names_right,
-        "marginal_right": marginal_right,
+        "independent": independent,
+        **cell,
         "variant": "independent" if ask_independent else "associated",
     }
     return Task("independence", "yesno", _prompt(world, phrase, question, "yesno"), answer, world, meta)
@@ -244,6 +257,14 @@ def structure(rng: np.random.Generator, phrase: Phrases, spec: Spec, labeler: Ca
         return _pick(rng, cell)
 
     world, (x, y) = _search(rng, spec, labeler, find)
+    return structure_task(rng, phrase, world, (x, y), {"cell": target})
+
+
+def structure_task(
+    rng: np.random.Generator, phrase: Phrases, world: DataWorld, pair: tuple[int, int], cell: dict[str, Any]
+) -> Task:
+    """The structure question for a chosen pair; ``cell`` records which source settles it."""
+    x, y = pair
     if rng.random() < 0.5:
         x, y = y, x
     names = world.names
@@ -258,7 +279,7 @@ def structure(rng: np.random.Generator, phrase: Phrases, spec: Spec, labeler: Ca
     truth = _ancestry(world.graph(), x, y)
     answer = "ABC"[order.index(truth)].lower()
     question = phrase("ask_structure", options=options)
-    meta = {"x": x, "y": y, "truth": truth, "cell": target, "order": order}
+    meta = {"x": x, "y": y, "truth": truth, **cell, "order": order}
     return Task("structure", "letter", _prompt(world, phrase, question, "letter"), answer, world, meta)
 
 
@@ -304,6 +325,19 @@ def adjustment(rng: np.random.Generator, phrase: Phrases, spec: Spec, labeler: C
         return None
 
     world, (x, y, sets) = _search(rng, spec, labeler, find)
+    return adjustment_task(phrase, world, (x, y), sets, targets, variant)
+
+
+def adjustment_task(
+    phrase: Phrases,
+    world: DataWorld,
+    pair: tuple[int, int],
+    sets: Sequence[tuple[int, ...]],
+    targets: Sequence[tuple[bool, bool, bool]],
+    variant: str,
+) -> Task:
+    """The adjustment question for chosen sets, each with its (valid, determined, confounder rule right) cell."""
+    x, y = pair
     names = world.names
     fill = {"x": names[x], "y": names[y]}
 
@@ -396,19 +430,22 @@ def effect(rng: np.random.Generator, phrase: Phrases, spec: Spec, labeler: Cause
         return query if abs(estimate - world.total_effect(x, y)) <= ORACLE else None
 
     world, (x, y) = _search(rng, spec, labeler, find)
-    names = world.names
-    question = phrase("ask_effect", x=names[x], y=names[y])
-    truth = world.total_effect(x, y)
-    meta = {
-        "x": x,
-        "y": y,
-        "effect": truth,
+    cell = {
         "nonzero": nonzero,
         "name_critical": name_critical,
         "unadjusted_right": unadjusted_right,
         "adjust_all_right": adjust_all_right,
-        "tolerance": TOLERANCE,
     }
+    return effect_task(phrase, world, (x, y), cell)
+
+
+def effect_task(phrase: Phrases, world: DataWorld, pair: tuple[int, int], cell: dict[str, Any]) -> Task:
+    """The effect question for a chosen ordered pair; ``cell`` records which rules are right."""
+    x, y = pair
+    names = world.names
+    question = phrase("ask_effect", x=names[x], y=names[y])
+    truth = world.total_effect(x, y)
+    meta = {"x": x, "y": y, "effect": truth, **cell, "tolerance": TOLERANCE}
     return Task("effect", "number", _prompt(world, phrase, question, "number"), _number(truth), world, meta)
 
 

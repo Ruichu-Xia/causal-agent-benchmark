@@ -1,7 +1,8 @@
 """The ``python`` tool: a persistent Python session per episode, in a separate, restricted worker process.
 
-The worker runs ``WORKER`` with ``python -I`` in a fresh directory holding only ``data.csv``, with a cleared
-environment. As root (inside Modal containers) it drops to the ``nobody`` user, and on Linux it gets memory
+The worker runs ``WORKER`` with ``python -I`` in a fresh directory holding only the episode's data files, with
+a cleared environment. A generated task has one file, ``data.csv``; an external task (QRData) keeps its own
+file names. As root (inside Modal containers) it drops to the ``nobody`` user, and on Linux it gets memory
 and CPU limits. The model's code is untrusted: a policy that can read answer keys will learn to, so training
 and evaluation run it only in containers whose task files are unreadable to ``nobody``
 (``docs/environment_v3.md``). Each request and reply is one JSON line on the worker's stdin and stdout.
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
+from pathlib import Path
 
 import numpy as np
 
@@ -35,7 +37,7 @@ NOBODY = 65534
 """User and group id the worker runs as when started by root."""
 
 WORKER = r'''
-import ast, contextlib, io, json, sys, traceback
+import ast, contextlib, io, json, os, sys, traceback
 import numpy as np
 import pandas as pd
 import scipy
@@ -44,6 +46,7 @@ import statsmodels.api as sm
 from scipy import stats
 
 OUTPUT_CHARS = int(sys.argv[1])
+FILES = json.loads(sys.argv[2])
 
 
 def partial_corr(df, x, y, given=()):
@@ -111,9 +114,12 @@ def _run(code, namespace):
             print(repr(value))
 
 
-namespace = {"__name__": "__main__", "df": pd.read_csv("data.csv"), "np": np, "pd": pd, "scipy": scipy,
+frames = {name: pd.read_csv(name) for name in FILES}
+namespace = {"__name__": "__main__", "df": frames[FILES[0]], "np": np, "pd": pd, "scipy": scipy,
              "stats": stats, "sm": sm, "statsmodels": statsmodels, "partial_corr": partial_corr, "pc": pc,
              "ols": ols}
+if len(FILES) > 1:
+    namespace["dfs"] = frames
 protocol = sys.stdout
 print(json.dumps({"ready": True}), file=protocol, flush=True)
 for line in sys.stdin:
@@ -149,15 +155,35 @@ class PythonSession:
     """A persistent Python session over one dataset, in a restricted worker process."""
 
     def __init__(self, rows: np.ndarray, columns: Sequence[str]) -> None:
-        """Write the data to a fresh directory and start the worker (it loads in the background)."""
-        self.directory = tempfile.mkdtemp(prefix="episode-")
-        with open(os.path.join(self.directory, "data.csv"), "w", newline="", encoding="utf-8") as handle:
+        """Write the data to ``data.csv`` in a fresh directory and start the worker (it loads in the background)."""
+        directory = tempfile.mkdtemp(prefix="episode-")
+        with open(os.path.join(directory, "data.csv"), "w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(columns)
             writer.writerows(rows.tolist())
+        self._open(directory, ["data.csv"])
+
+    @classmethod
+    def from_files(cls, paths: Sequence[Path]) -> PythonSession:
+        """A session over copies of the given CSV files, under their own names; the first one is ``df``."""
+        names = [path.name for path in paths]
+        if len(set(names)) != len(names) or not names:
+            raise ValueError(f"need distinct file names, got {names}")
+        directory = tempfile.mkdtemp(prefix="episode-")
+        for path in paths:
+            shutil.copyfile(path, os.path.join(directory, path.name))
+        session = cls.__new__(cls)
+        session._open(directory, names)
+        return session
+
+    def _open(self, directory: str, files: list[str]) -> None:
+        """Give the episode directory to the worker's user and start the worker."""
+        self.directory = directory
+        self.files = files
         if os.geteuid() == 0:
-            os.chown(self.directory, NOBODY, NOBODY)
-            os.chown(os.path.join(self.directory, "data.csv"), NOBODY, NOBODY)
+            os.chown(directory, NOBODY, NOBODY)
+            for name in files:
+                os.chown(os.path.join(directory, name), NOBODY, NOBODY)
         self.process: subprocess.Popen[str] | None = None
         self._ready = False
         self._start()
@@ -167,7 +193,7 @@ class PythonSession:
         environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": self.directory, "OMP_NUM_THREADS": "1"}
         environment |= {"OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "MPLBACKEND": "Agg"}
         self.process = subprocess.Popen(
-            [sys.executable, "-I", "-c", WORKER, str(OUTPUT_CHARS)],
+            [sys.executable, "-I", "-c", WORKER, str(OUTPUT_CHARS), json.dumps(self.files)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
