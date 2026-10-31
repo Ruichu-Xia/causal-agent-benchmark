@@ -1,10 +1,11 @@
 import itertools
+from pathlib import Path
 
 import networkx as nx
 import numpy as np
 import pytest
 
-from causalagentbench.dataenv import sandbox
+from causalagentbench.dataenv import bnrep, qrdata, sandbox
 from causalagentbench.dataenv.dataset import to_record, world_from_dict, world_to_dict
 from causalagentbench.dataenv.environment import DataEnv
 from causalagentbench.dataenv.families import (
@@ -174,3 +175,68 @@ def test_data_env_exposes_one_tool_enforces_its_budget_and_grades(tasks):
     assert env.info["correct"] and env.info["tool_calls"] == 2
     env.reset(task=record)
     assert env._score("no answer here") == 0.0 and not env.info["answered"]
+
+
+def test_qrdata_grading_follows_the_benchmark_rule():
+    """Choices match by prefix of the lowercased answer; numbers by the first number, strictly within 3%."""
+    assert qrdata.grade("qrdata_choice", "B", "work\nAnswer: B. praf causes PKC") == 1.0
+    assert qrdata.grade("qrdata_choice", "B", "Answer: A") == 0.0
+    assert qrdata.grade("qrdata_choice", "no", "Answer: **No**") == 1.0
+    assert qrdata.grade("qrdata_number", "4.00", "Answer: 4.11") == 1.0
+    assert qrdata.grade("qrdata_number", "4.00", "Answer: 4.12") == 0.0
+    assert qrdata.grade("qrdata_number", "-2.00", "Answer: -1.95") == 1.0
+    assert qrdata.grade("qrdata_number", "12.5%", "Answer: 0.125") == 1.0
+    assert qrdata.grade("qrdata_number", "0.125", "Answer: 12.6%") == 1.0
+    assert qrdata.grade("qrdata_number", "4.00", "the effect is 4.00") == 0.0
+    assert qrdata.grade("qrdata_choice", "C", "Answer: Cannot be determined") == 1.0  # the benchmark's prefix rule
+    assert qrdata.strict_choice("C", "Answer: Cannot be determined") == 0.0
+    assert qrdata.strict_choice("B", "Answer: Both") == 0.0 and qrdata.strict_choice("no", "Answer: not sure") == 0.0
+    assert (
+        qrdata.strict_choice("B", "Answer: B. praf causes PKC") == 1.0
+        and qrdata.strict_choice("no", "Answer: No,") == 1.0
+    )
+
+
+def test_python_session_loads_external_files_and_data_env_grades_them(tmp_path):
+    """The first file is `df`, several files are also in `dfs`, and a QRData-style record runs end to end."""
+    (tmp_path / "a.csv").write_text("u,v\n1,x\n2,y\n")
+    (tmp_path / "b.csv").write_text("w\n5\n6\n7\n")
+    session = sandbox.PythonSession.from_files([tmp_path / "a.csv", tmp_path / "b.csv"])
+    try:
+        assert session.run("df.shape").strip() == "(2, 2)"
+        assert session.run("sorted(dfs)").strip() == "['a.csv', 'b.csv']"
+        assert session.run("len(pd.read_csv('b.csv'))").strip() == "3"
+    finally:
+        session.close()
+    single = sandbox.PythonSession.from_files([tmp_path / "b.csv"])
+    try:
+        assert "NameError" in single.run("dfs")
+    finally:
+        single.close()
+    record = {"id": "q-0", "family": "qrdata_statistics", "kind": "qrdata_number", "prompt": "How many rows?"}
+    env = DataEnv([], data_dir=tmp_path)
+    assert env.reset(task={**record, "answer": "3", "files": ["b.csv"]}) == "How many rows?"
+    assert env.python("len(df)").startswith("3")
+    assert env._score("Answer: 3") == 1.0 and env.info["answered"]
+
+
+def test_bnrep_items_are_correct_and_paired():
+    """On a published network, answers follow the true graph and the placeholder twin matches the real item."""
+    world = bnrep.network_world(Path(__file__).resolve().parent.parent / "data" / "bnrep" / "lexical.json")
+    names = bnrep.placeholders(world, np.random.default_rng(0))
+    for family in bnrep.FINDERS:
+        real, placeholder = bnrep.items("lexical", world, family, 0, names, set())
+        graph, meta = real.world.graph(), real.meta
+        assert real.answer == placeholder.answer and real.meta == placeholder.meta
+        assert np.array_equal(real.world.data(), placeholder.world.data())
+        assert bnrep.NAMES_SENTENCE["real"] in real.prompt and bnrep.NAMES_SENTENCE["placeholder"] in placeholder.prompt
+        if family == "independence":
+            independent = d_separated(graph, meta["x"], meta["y"], set(meta["z"]))
+            assert real.answer == ("yes" if independent == (meta["variant"] == "independent") else "no")
+        elif family == "structure":
+            assert real.answer == "abc"[meta["order"].index(_ancestry(graph, meta["x"], meta["y"]))]
+        elif family == "adjustment":
+            valid = [valid_adjustment(graph, meta["x"], meta["y"], set(z)) for z in meta["sets"]]
+            assert [cell["valid"] for cell in meta["cells"]] == valid
+        else:
+            assert real.answer == _number(real.world.total_effect(meta["x"], meta["y"]))

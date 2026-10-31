@@ -223,7 +223,8 @@ sampling, 8,192 completion tokens (`modal_dataenv.py::eval_main`):
 ## Phase C: pilot (2026-10-30)
 
 60 GRPO steps on `train.jsonl` (8 tasks × 8 rollouts, LoRA rank 32, learning rate 2e-5, DAPO loss, beta 0,
-temperature 1.0, seed 0; code at `3ec1cd4`; `modal_dataenv.py::train_main --run data-pilot --max-steps 60`).
+temperature 1.0, seed 0; code at `3ec1cd4`; `modal_dataenv.py::train_main --run data-pilot --max-steps 60
+--extra "--revision cdbee75f17c01a7cc42f958dc650907174af0554"`).
 Training took 4.3 hours on one H100. Adapter digest `722501e4…` (`data-pilot/adapter`).
 
 Training reward rose from about 0.44 (steps 1–30) to 0.62 (steps 51–60); ending with an answer stayed at

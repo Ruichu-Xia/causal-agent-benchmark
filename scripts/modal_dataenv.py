@@ -20,6 +20,7 @@ Evaluation calls are spawned on the deployed app and reattached on rerun, as in 
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -70,12 +71,28 @@ MAX_COMPLETION_TOKENS = 8192
 """Tokens of one episode after the prompt (model and tool output together), as in training."""
 WAVE = 96
 """Episodes run concurrently in evaluation (each holds a Python worker)."""
+QRDATA_DIR = "/runs/qrdata"
+"""Where QRData's files live on the runs volume during evaluation."""
 
 
 def lock_down() -> None:
     """Make the runs volume and the code directory unreadable to the sandbox user."""
     for path in ("/runs", "/root"):
         os.chmod(path, 0o700)
+
+
+EVAL_PACKAGES = ("vllm", "transformers", "trl", "numpy", "pandas", "scipy", "statsmodels", "causal-learn", "networkx")
+"""Packages whose installed versions every evaluation reply records."""
+
+
+def _eval_code_digest(root: Path) -> str:
+    """SHA-256 over the paths and contents of the package code and this evaluator, as deployed in the image."""
+    files = sorted([*root.glob("src/**/*.py"), root / "modal_dataenv.py"])
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(str(path.relative_to(root)).encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
 
 
 def _code_digest(root: Path) -> str:
@@ -213,6 +230,64 @@ def regenerate_main(tasks: str, n: int = 300) -> None:
     print(f"all {len(records)} worlds regenerate to the build's moments in both images")
 
 
+def _upload_files(records: list[dict[str, Any]], files_dir: str) -> None:
+    """Upload the data files the records name (QRData) from ``files_dir`` to ``QRDATA_DIR``; no-op if none."""
+    needed = sorted({file for record in records for file in record.get("files", [])})
+    if not needed:
+        return
+    if not files_dir:
+        raise ValueError("these tasks have data files: pass --files-dir")
+    with runs.batch_upload(force=True) as batch:
+        for file in needed:
+            batch.put_file(str(ROOT / files_dir / file), f"/{Path(QRDATA_DIR).name}/{file}")
+    print(f"uploaded {len(needed)} data files to {QRDATA_DIR}", flush=True)
+
+
+@app.function(image=eval_image, cpu=8, memory=32768, volumes=VOLUMES, timeout=3600)
+def files_check(file_sets: list[list[str]]) -> tuple[str, list[str]]:
+    """The evaluation code digest, and what a locked-down session over each file set prints for its data."""
+    import numpy as np
+
+    from causalagentbench.dataenv.sandbox import PythonSession
+
+    lock_down()
+    # The first worker in a cold container can take over a minute to import its libraries; warm them first.
+    warm = PythonSession(np.zeros((2, 1)), ["x"])
+    warm.run("1")
+    warm.close()
+    outputs = []
+    for files in file_sets:
+        session = PythonSession.from_files([Path(QRDATA_DIR) / name for name in files])
+        try:
+            outputs.append(session.run("print(df.shape, len(dfs) if 'dfs' in globals() else 1)").strip())
+        finally:
+            session.close()
+    return _eval_code_digest(Path("/root")), outputs
+
+
+@app.local_entrypoint()
+def files_check_main(tasks: str, files_dir: str) -> None:
+    """Fail unless every task's data files load in a locked-down session of the evaluation image."""
+    import re
+
+    sys.path.insert(0, str(ROOT / "src"))
+    from causalagentbench.dataenv.dataset import load
+
+    records = load(ROOT / tasks)
+    _upload_files(records, files_dir)
+    file_sets = sorted({tuple(record["files"]) for record in records})
+    digest, outputs = files_check.remote([list(files) for files in file_sets])
+    print(f"evaluation code digest {digest}")
+    failed = [
+        (files, out)
+        for files, out in zip(file_sets, outputs, strict=True)
+        if not re.fullmatch(rf"\(\d+, \d+\) {len(files)}", out)
+    ]
+    if failed:
+        raise SystemExit(f"{len(failed)} of {len(file_sets)} file sets failed to load, e.g. {failed[:3]}")
+    print(f"all {len(file_sets)} file sets load in the evaluation image")
+
+
 def _suffix_ids(tokenizer: Any, tool_messages: list[dict[str, Any]], tools: list[Any]) -> list[int]:
     """Token ids that append tool results and open the next assistant turn (TRL's ``_get_tool_suffix_ids``)."""
     calls = [{"type": "function", "function": {"name": tool_messages[0]["name"], "arguments": {}}}]
@@ -261,6 +336,8 @@ def evaluate(
     defaults = llm.get_default_sampling_params()
     settings["sampling"] = {key: getattr(defaults, key) for key in ("temperature", "top_p", "top_k", "min_p")}
     settings["max_completion_tokens"] = MAX_COMPLETION_TOKENS
+    settings["eval_code"] = _eval_code_digest(Path("/root"))
+    settings["packages"] = {name: importlib.metadata.version(name) for name in EVAL_PACKAGES}
     request = LoRARequest("adapter", 1, str(Path(f"/runs/{adapter}"))) if adapter else None
 
     results = []
@@ -305,7 +382,7 @@ def _run_wave(llm: Any, tokenizer: Any, defaults: Any, request: Any, wave: list[
 
     episodes = []
     for task, seed in wave:
-        env = DataEnv([])
+        env = DataEnv([], data_dir=Path(QRDATA_DIR))
         messages = [{"role": "user", "content": env.reset(task=task)}]
         ids = tokenizer.apply_chat_template(messages, tools=[env.python], add_generation_prompt=True, tokenize=True)
         ids = list(ids["input_ids"] if hasattr(ids, "keys") else ids)
@@ -368,13 +445,20 @@ def _run_wave(llm: Any, tokenizer: Any, defaults: Any, request: Any, wave: list[
 
 
 @app.local_entrypoint()
-def eval_main(tasks: str, name: str, revision: str, adapter: str = "", samples: int = 1, seed: int = 1000) -> None:
-    """Evaluate every task of a file ``samples`` times on the deployed app; append to ``eval/<name>.jsonl``."""
+def eval_main(
+    tasks: str, name: str, revision: str, adapter: str = "", samples: int = 1, seed: int = 1000, files_dir: str = ""
+) -> None:
+    """Evaluate every task of a file ``samples`` times on the deployed app; append to ``eval/<name>.jsonl``.
+
+    Tasks with data files (QRData) need ``files_dir``, the local folder of those files; they are uploaded to
+    ``QRDATA_DIR`` on the runs volume, which only root can read.
+    """
     sys.path.insert(0, str(ROOT / "src"))
     from causalagentbench.dataenv.dataset import load
 
     model = "Qwen/Qwen3-4B-Instruct-2507"
     records = load(ROOT / tasks)
+    _upload_files(records, files_dir)
     out = ROOT / "outputs" / "dataenv" / "eval" / f"{name}.jsonl"
     done = {(r["id"], r["seed"]) for r in map(json.loads, out.read_text().splitlines())} if out.exists() else set()
     todo = [(r, seed + j) for r in records for j in range(samples) if (r["id"], seed + j) not in done]
@@ -400,8 +484,8 @@ def eval_main(tasks: str, name: str, revision: str, adapter: str = "", samples: 
         for result in results:
             handle.write(json.dumps({"model": name, **result, **settings}, default=str) + "\n")
     pending.unlink()
-    accuracy = sum(r["reward"] for r in results) / len(results)
-    print(f"{name}: {len(results)} episodes, accuracy {accuracy:.3f}", flush=True)
+    # No score is printed: replies are recorded in the manifest before anyone looks at them.
+    print(f"{name}: {len(results)} episodes written to {out}", flush=True)
 
 
 @app.local_entrypoint()
