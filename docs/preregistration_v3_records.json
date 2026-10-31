@@ -2,6 +2,7 @@
  "bnrep_placeholder/v3-base": "00dba09af5556c1e2adca2f3b0b81d3ae239f9eea52c0caee52dfd54894b3b5a",
  "bnrep_placeholder/v3-trained": "b21391aeaa41b33265cfbf834e4d26733f3e3571e8e2fcbc0025dfbefe0ae5b3",
  "bnrep_real/v3-base": "5255c7a84cc0ee63e7ed4232e62ce8977a74dc6055d35b9b2e956455b93b331f",
+ "bnrep_real/v3-control": "23b81b717ce2b16d30c8bd2e406a47695bd548ad363821fba84d0f078a747c1f",
  "bnrep_real/v3-trained": "de6190b259be033b7b8107c896e2b3bfdb93da46b974b5989013de43372caa8e",
  "iid_test/v3-base": "e8561840bc2a09712532bdaa29a079590a9a9256aff2454aebcf59ff811694be",
  "iid_test/v3-control": "8db3f5f5015836439cef88a4cf3f9f2953efef3937834fea08f97c9099640d29",
