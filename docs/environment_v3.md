@@ -254,3 +254,8 @@ base, with 95% paired bootstrap intervals over tasks (10,000 resamples, seed 0):
   adjust-for-everything estimate, and only 1 is right where both shortcuts are wrong (base 5). The pilot
   always regresses (96–99% of effect episodes) but does not learn a valid adjustment set.
 - No training rollout's code touched files, the OS or other processes (3,840 rollouts, 9,866 tool calls).
+
+## Phase D: confirmatory study (2026-10-31)
+
+Pre-registered in `docs/preregistration_v3.md`; results in `docs/results_v3.md`. The trained adapter beats
+base and the shuffled-reward control on the three held-out test splits and on bnRep; QRData is not confirmed.
