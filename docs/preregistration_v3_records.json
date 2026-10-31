@@ -1,5 +1,6 @@
 {
  "bnrep_placeholder/v3-base": "00dba09af5556c1e2adca2f3b0b81d3ae239f9eea52c0caee52dfd54894b3b5a",
+ "bnrep_placeholder/v3-control": "08b9983ff2b0ecc6d0658e7e9a43965f5f9c47fcddcbf524fecafdfffbc45abb",
  "bnrep_placeholder/v3-trained": "b21391aeaa41b33265cfbf834e4d26733f3e3571e8e2fcbc0025dfbefe0ae5b3",
  "bnrep_real/v3-base": "5255c7a84cc0ee63e7ed4232e62ce8977a74dc6055d35b9b2e956455b93b331f",
  "bnrep_real/v3-control": "23b81b717ce2b16d30c8bd2e406a47695bd548ad363821fba84d0f078a747c1f",
