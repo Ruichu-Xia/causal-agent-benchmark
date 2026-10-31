@@ -49,7 +49,7 @@ All arms are Qwen3-4B-Instruct-2507 at revision `cdbee75f17c01a7cc42f958dc650907
 | --- | --- |
 | `v3-base` | The untrained model |
 | `v3-trained` | The pilot adapter: LoRA after 60 GRPO steps on `outputs/dataenv/v3/train.jsonl` (run `data-pilot`, code `3ec1cd4`), digest `722501e468587c49e50e314bca62b6a62b1ed9d0d1502d6fafcfbb68bc514547` |
-| `v3-control` | The same run with each step's 64 rewards shuffled (run `data-control`); trained only if the gate opens |
+| `v3-control` | The same run with each step's 64 rewards shuffled (run `data-control`); trained only if the gate opens. Trained after the gate opened (2026-10-31) from `3ec1cd4`, `run.json` code `82150b10…`, digest `80c8fa815f66f9f55753e1ca21577a31b44e524622770f5623388e228ac70e2e` |
 
 **Training configuration (both runs).** `scripts/train_dataenv.py` via `scripts/modal_dataenv.py::train_main`
 on one H100:
