@@ -5,7 +5,21 @@
 > (`build_dataenv.py` → `build_tasks.py`, `build_dataenv_transfer.py` → `build_transfer.py`,
 > `train_dataenv.py` → `train.py`, `modal_dataenv.py` → `modal_app.py`, `confirm_v3.py` → `confirm.py`,
 > `explore_v3.py` → `explore.py`). A regeneration check showed the refactored code builds the same tasks
-> byte for byte. The registered text below is unchanged; the code as registered is at commit `d38dde6`.
+> byte for byte. The registered text below is unchanged.
+>
+> **Note added 2026-11-04.** One earlier commit message was edited to drop a co-author line, which changed
+> every later commit hash; commit dates and file contents are unchanged. Hashes cited below map as follows
+> (the registered code is at `e756938`):
+>
+> | Cited | Now |
+> | --- | --- |
+> | `d38dde6` | `e756938` |
+> | `35fbe58` | `437ff80` |
+> | `a59e428` | `7327e43` |
+> | `553d8b2` | `4f65302` |
+> | `aef9d1b` | `9bdd570` |
+> | `b0e3d70` | `cdfd503` |
+> | `3ec1cd4` | `dd79e10` |
 
 Does GRPO on environment v3 (`docs/environment_v3.md`), where the model answers causal questions by analyzing
 data with a Python tool, teach skills that hold beyond its training distribution? This file fixes the arms,

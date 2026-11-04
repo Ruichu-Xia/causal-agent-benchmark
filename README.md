@@ -400,12 +400,12 @@ uv run python scripts/explore.py --control v3-control
 
 | Version | Environment | What happened | Lesson |
 | --- | --- | --- | --- |
-| v1 | 10,000 rows, three fixed tools (`correlate`, `regress`, `discover`), report five signed effects | Error fell 0.20 in-domain; no confirmed transfer ([results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/51850aa/docs/transfer_results.md)) | One rigid task and fixed tools train a narrow skill |
-| v2 | Text only: a described graph, four question families | +1.9 points, not significant ([results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/51850aa/docs/results_v2.md)) | Without data and a tool, there was little to learn |
+| v1 | 10,000 rows, three fixed tools (`correlate`, `regress`, `discover`), report five signed effects | Error fell 0.20 in-domain; no confirmed transfer ([results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/e2020db/docs/transfer_results.md)) | One rigid task and fixed tools train a narrow skill |
+| v2 | Text only: a described graph, four question families | +1.9 points, not significant ([results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/e2020db/docs/results_v2.md)) | Without data and a tool, there was little to learn |
 | **v3** | Data, a general Python tool, four mixed question families | +20.6 in-domain; 4 of 5 transfer tests confirmed ([design](docs/environment_v3.md), [results](docs/results_v3.md)) | Keep data and tools; mix question types; balance shortcuts |
 
 This repository holds v3 only. The code and write-ups of v1 and v2 are kept in the history, at commit
-[`51850aa`](https://github.com/Ruichu-Xia/causal-agent-benchmark/tree/51850aa).
+[`e2020db`](https://github.com/Ruichu-Xia/causal-agent-benchmark/tree/e2020db).
 
 ## Repository layout
 

@@ -14,8 +14,8 @@ data, not only on its own format.
 
 | Study | Environment | In-domain | Transfer |
 | --- | --- | --- | --- |
-| Tool-use study ([v1 results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/51850aa/docs/transfer_results.md)) | v1: 10,000 rows, fixed tools `correlate` / `regress` / `discover`, report 5 signed effects | Error −0.20 after 120 steps | None confirmed. Exploratory: on published networks with placeholder names, error 0.624 (base) → 0.533 (trained) |
-| v2 study ([v2 results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/51850aa/docs/results_v2.md)) | Text only: a described graph, four question families, shortcut-balanced | +1.9 points (not significant) | None |
+| Tool-use study ([v1 results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/e2020db/docs/transfer_results.md)) | v1: 10,000 rows, fixed tools `correlate` / `regress` / `discover`, report 5 signed effects | Error −0.20 after 120 steps | None confirmed. Exploratory: on published networks with placeholder names, error 0.624 (base) → 0.533 (trained) |
+| v2 study ([v2 results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/e2020db/docs/results_v2.md)) | Text only: a described graph, four question families, shortcut-balanced | +1.9 points (not significant) | None |
 
 Lessons, each a design rule below:
 1. **Data plus tools gives a training signal; text alone did not.** Keep the agent working on data.
@@ -225,7 +225,7 @@ sampling, 8,192 completion tokens (`scripts/modal_app.py::eval_main`):
 ## Phase C: pilot (2026-10-30)
 
 60 GRPO steps on `train.jsonl` (8 tasks × 8 rollouts, LoRA rank 32, learning rate 2e-5, DAPO loss, beta 0,
-temperature 1.0, seed 0; code at `3ec1cd4`; `scripts/modal_app.py::train_main --run data-pilot --max-steps 60
+temperature 1.0, seed 0; code at `dd79e10`; `scripts/modal_app.py::train_main --run data-pilot --max-steps 60
 --extra "--revision cdbee75f17c01a7cc42f958dc650907174af0554"`).
 Training took 4.3 hours on one H100. Adapter digest `722501e4…` (`data-pilot/adapter`).
 

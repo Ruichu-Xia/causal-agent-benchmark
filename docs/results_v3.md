@@ -1,9 +1,10 @@
 # Environment v3 study: results
 
-The registered design is `docs/preregistration_v3.md` (commit `d38dde6`). Replies were collected on
+The registered design is `docs/preregistration_v3.md` (commit `e756938`). Replies were collected on
 2026-10-31, and each set was recorded in `docs/preregistration_v3_records.json` and committed before any
-score was computed (base and trained `35fbe58`…`a59e428`, control `553d8b2`…`aef9d1b`). The control adapter's
-digest was committed in `b0e3d70` before its evaluation. The analysis:
+score was computed (base and trained `437ff80`…`7327e43`, control `4f65302`…`9bdd570`). The control adapter's
+digest was committed in `cdfd503` before its evaluation. (These hashes are after a 2026-11-04 rewrite that changed
+one earlier commit message only; dates and contents are unchanged. See the note in the pre-registration.) The analysis:
 
 ```bash
 uv run python scripts/confirm.py analyze --control v3-control
