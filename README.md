@@ -6,6 +6,11 @@
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/hero-dark.png">
+  <img alt="Every task is a new causal world: six real generated worlds with 4 to 8 variables named after CauseNet concepts (for example storm, typhoon, rain, high winds, rough seas), drawn as causal graphs with links that raise or lower their effect. Each card says how many graphs fit its data and shows a scatter of real rows for one link. 3,999 distinct training worlds, 6,674 concepts as names, 1 to 36 graphs fitting one world's data." src="docs/figures/hero-light.png">
+</picture>
+
 Ask an LLM agent a causal question about a dataset, such as "does X affect Y?" or "should I control for Z?",
 and it often takes a shortcut. It reads off a correlation, or it answers from what the variable names suggest.
 Both can be wrong: a correlation does not show cause and effect, and a link that sounds plausible may not be in
