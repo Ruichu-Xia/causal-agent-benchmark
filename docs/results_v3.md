@@ -6,8 +6,8 @@ score was computed (base and trained `35fbe58`…`a59e428`, control `553d8b2`…
 digest was committed in `b0e3d70` before its evaluation. The analysis:
 
 ```bash
-uv run python scripts/confirm_v3.py analyze --control v3-control
-uv run python scripts/explore_v3.py --control v3-control
+uv run python scripts/confirm.py analyze --control v3-control
+uv run python scripts/explore.py --control v3-control
 ```
 
 ## Confirmatory result: four of five endpoints confirmed
@@ -135,7 +135,7 @@ Test splits hold 125 items per family (yes/no adjustment 74, choice 51); `bnrep_
   digest check. It printed the registered digest `ad5579e6…` and failed 2 of 51 file sets, both
   `FLVoters.csv + names.csv` sets: "the Python session failed to start". `isolation_main` and the
   `qrdata_causal` file check were not rerun. Collection went ahead without code changes, so all arms share
-  one evaluation code digest; `confirm_v3.py` enforces that. After collection, against the same deployment,
+  one evaluation code digest; `confirm.py` enforces that. After collection, against the same deployment,
   `isolation_main` passed in both images and all 139 `qrdata_causal` file sets loaded.
 - **Sandbox startup failures on large QRData files.** "Failed to start" tool results, by arm (base / trained /
   control):

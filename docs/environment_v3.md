@@ -14,8 +14,8 @@ data, not only on its own format.
 
 | Study | Environment | In-domain | Transfer |
 | --- | --- | --- | --- |
-| Tool-use study (`docs/transfer_results.md`) | v1: 10,000 rows, fixed tools `correlate` / `regress` / `discover`, report 5 signed effects | Error −0.20 after 120 steps | None confirmed. Exploratory: on published networks with placeholder names, error 0.624 (base) → 0.533 (trained) |
-| v2 study (`docs/results_v2.md`) | Text only: a described graph, four question families, shortcut-balanced | +1.9 points (not significant) | None |
+| Tool-use study ([v1 results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/51850aa/docs/transfer_results.md)) | v1: 10,000 rows, fixed tools `correlate` / `regress` / `discover`, report 5 signed effects | Error −0.20 after 120 steps | None confirmed. Exploratory: on published networks with placeholder names, error 0.624 (base) → 0.533 (trained) |
+| v2 study ([v2 results](https://github.com/Ruichu-Xia/causal-agent-benchmark/blob/51850aa/docs/results_v2.md)) | Text only: a described graph, four question families, shortcut-balanced | +1.9 points (not significant) | None |
 
 Lessons, each a design rule below:
 1. **Data plus tools gives a training signal; text alone did not.** Keep the agent working on data.
@@ -82,7 +82,7 @@ Reported, not balanced: each family's single-source accuracies, the confounder r
 questions, and constant answers. By construction on Structure, names-only and data-only each score about
 0.75, both together score 1, and a constant letter scores about 1/3.
 
-### Audit of the training set (4,000 items, `dataenv/audit.py`)
+### Audit of the training set (4,000 items, `src/causalagentbench/audit.py`)
 
 Mean credit of each rule; correct analysis of the data and names scores 1 by construction.
 
@@ -119,7 +119,7 @@ This filter is about correctness, not curation. Pass rates are reported per fami
   - `ols(df, y, X)`.
 
   The agent can use them or write its own analysis.
-- **Limits:** 20 seconds of CPU per call and 2 GB of memory. Output is truncated to 2,000 characters.
+- **Limits:** 20 seconds per call (a longer call restarts the session), and 600 seconds of CPU and 2 GB of memory per worker. Output is truncated to 2,000 characters.
 - **Isolation (a correctness requirement in RL).** The model's code is untrusted, and a policy that can read
   answer keys will learn to.
   - All model code runs in Modal containers, for both training and evaluation, never on a laptop.
@@ -167,14 +167,16 @@ in-domain dev splits only.
 
 ## Implementation
 
-| Piece | Reuses | New |
-| --- | --- | --- |
-| Graph and label sampling | v2's families, shortcut balance and splits | Structure family; label from the realized model |
-| Linear-Gaussian realization and data | v1's `realize` and faithfulness gates | The answerability gate |
-| Python tool | — | Sandboxed worker, helpers, isolation tests |
-| Training | `train_grpo.py` (TRL `environment_factory`, multi-turn tool use), `modal_grpo.py` | Episode adapter for the new tool |
-| Evaluation | `modal_serve.py` (vLLM server, LoRA), v1's agent loop | QRData and bnRep loaders in the new format |
-| Hub package | v2's Verifiers taskset | A multi-turn Verifiers tool environment over the same core |
+| Piece | Code (`src/causalagentbench/` unless noted) |
+| --- | --- |
+| Worlds, equivalence classes and data | `world.py`, `graphs.py`, `scm.py` |
+| CauseNet names | `causenet.py` |
+| Question families, wording, splits and audit | `families.py`, `wording.py`, `dataset.py`, `audit.py` |
+| Python tool | `sandbox.py` |
+| Episode and judge | `environment.py`, `grading.py` |
+| Transfer sets | `bnrep.py`, `qrdata.py` |
+| Training and evaluation | `scripts/train.py`, `scripts/modal_app.py` |
+| Confirmatory and exploratory analysis | `scripts/confirm.py`, `scripts/explore.py` |
 
 ## Plan and cost
 
@@ -203,7 +205,7 @@ Cost is kept low in three ways:
 ## Phase B: calibration (2026-10-30)
 
 Base Qwen3-4B-Instruct-2507 (revision `cdbee75`), 200 dev episodes per split, one sample, generation-config
-sampling, 8,192 completion tokens (`modal_dataenv.py::eval_main`):
+sampling, 8,192 completion tokens (`scripts/modal_app.py::eval_main`):
 
 | Split | Accuracy | Ends with an answer | Truncated | Tool calls per episode |
 | --- | ---: | ---: | ---: | ---: |
@@ -223,7 +225,7 @@ sampling, 8,192 completion tokens (`modal_dataenv.py::eval_main`):
 ## Phase C: pilot (2026-10-30)
 
 60 GRPO steps on `train.jsonl` (8 tasks × 8 rollouts, LoRA rank 32, learning rate 2e-5, DAPO loss, beta 0,
-temperature 1.0, seed 0; code at `3ec1cd4`; `modal_dataenv.py::train_main --run data-pilot --max-steps 60
+temperature 1.0, seed 0; code at `3ec1cd4`; `scripts/modal_app.py::train_main --run data-pilot --max-steps 60
 --extra "--revision cdbee75f17c01a7cc42f958dc650907174af0554"`).
 Training took 4.3 hours on one H100. Adapter digest `722501e4…` (`data-pilot/adapter`).
 

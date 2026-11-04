@@ -1,5 +1,12 @@
 # Environment v3 study: pre-registration
 
+> **Note added 2026-11-03.** The repository was later reduced to v3 and its layout flattened:
+> `src/causalagentbench/dataenv/*` moved to `src/causalagentbench/`, and the scripts were renamed
+> (`build_dataenv.py` → `build_tasks.py`, `build_dataenv_transfer.py` → `build_transfer.py`,
+> `train_dataenv.py` → `train.py`, `modal_dataenv.py` → `modal_app.py`, `confirm_v3.py` → `confirm.py`,
+> `explore_v3.py` → `explore.py`). A regeneration check showed the refactored code builds the same tasks
+> byte for byte. The registered text below is unchanged; the code as registered is at commit `d38dde6`.
+
 Does GRPO on environment v3 (`docs/environment_v3.md`), where the model answers causal questions by analyzing
 data with a Python tool, teach skills that hold beyond its training distribution? This file fixes the arms,
 evaluation sets, protocol, statistics and decision rules before any test, QRData or bnRep reply exists. The

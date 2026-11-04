@@ -31,12 +31,16 @@ coverage.xml
 
 # Design artifacts (proposal decks etc.), not source
 *.html
+# ...except the source of the README figures
+!docs/figures/figures.html
 
 # External data dumps (e.g. CauseNet, CC BY 4.0) - fetched locally, never committed or shipped
 causenet-*.jsonl*
 *.jsonl.bz2
 
 # Local reference material, not project source
+/reports/
+/research_notes/
 /causalds/
 /causalDS.pdf
 
