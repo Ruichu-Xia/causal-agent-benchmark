@@ -1,36 +1,25 @@
 [project]
 name = "causalagentbench"
-version = "0.2.0"
-description = "CausalAgentBench — a verifiable causal-reasoning benchmark and RL environment for tool-using agents."
+version = "0.3.0"
+description = "An RL environment where an LLM agent answers causal questions by analyzing data in a Python sandbox."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0 AND CC-BY-4.0"
 license-files = ["LICENSE", "data/README.md"]
 authors = [{ name = "CausalAgentBench" }]
 keywords = ["causal-inference", "benchmark", "rl-environment", "agents", "evaluation"]
+# The sandbox gives the agent pandas, scipy and statsmodels, and the PC helper uses causal-learn.
 dependencies = [
     "numpy>=2.1",
     "networkx>=3.3",
-    "pydantic>=2.9",
-]
-
-[project.optional-dependencies]
-# Only model evaluation needs a provider client. Dataset generation is local and deterministic.
-# tenacity: LiteLLM needs it to retry rate limits and transient provider errors.
-agents = ["litellm>=1.50", "python-dotenv>=1.0", "tenacity>=9.2.1"]
-
-# Only for causalagentbench.agent.clients.DatabricksClient - comparing the agent against a model served
-# behind a Databricks AI Gateway. Not part of the default path; most users only need `agents`.
-databricks = ["openai>=1.50", "python-dotenv>=1.0"]
-discovery = [
+    "pandas>=2.2",
+    "scipy>=1.13",
+    "statsmodels>=0.14",
     "causal-learn>=0.1.4.8",
 ]
 
 [project.urls]
-Homepage = "https://github.com/causal-agent-benchmark/causalagentbench"
-
-[project.scripts]
-causalagentbench = "causalagentbench.cli:main"
+Homepage = "https://github.com/Ruichu-Xia/causal-agent-benchmark"
 
 [build-system]
 requires = ["hatchling"]
@@ -94,10 +83,9 @@ strict = true
 warn_unreachable = true
 warn_redundant_casts = true
 disallow_untyped_defs = true
-plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["networkx.*", "litellm.*", "dotenv.*", "yaml.*", "causallearn.*"]
+module = ["networkx.*", "causallearn.*"]
 ignore_missing_imports = true
 
 # --- pytest --------------------------------------------------------------------

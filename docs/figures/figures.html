@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CausalAgentBench figures</title>
+<!-- Source of the README figures. Render with: uv run --with pillow python docs/figures/render.py
+     Open figures.html?fig=<id>&theme=dark to view one figure. Numbers come from docs/results_v3.md. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #ffffff; --panel: #f6f8fa; --ink: #1f2328; --ink-2: #59636e; --ink-3: #8c959f; --line: #d1d9e0; --code: #eef1f4;
+  --policy: #2a78d6; --policy-soft: #e5effb; --grader: #b0399a; --grader-soft: #f8e7f3;
+  --bad: #c7362f; --bad-soft: #fbe8e6; --good: #00968f; --good-soft: #ddf3f1; --names: #5b97e0;
+}
+:root[data-theme="dark"] {
+  --bg: #0d1117; --panel: #151b23; --ink: #e6edf3; --ink-2: #9198a1; --ink-3: #6e7681; --line: #30363d; --code: #1c2129;
+  --policy: #3f8ce8; --policy-soft: #15263a; --grader: #cf55ae; --grader-soft: #2d1a2a;
+  --bad: #e5534b; --bad-soft: #33191a; --good: #12a39d; --good-soft: #0f2e2c; --names: #6aa6ec;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 "IBM Plex Sans", system-ui, sans-serif; }
+.fig { width: 960px; padding: 26px 30px 30px; display: none; }
+.fig.on { display: block; }
+.show-all .fig { display: block; border-bottom: 1px dashed var(--line); }
+h2 { font: 600 20px/1.2 "IBM Plex Sans Condensed", sans-serif; margin: 0 0 4px; }
+h3 { font: 600 15px/1.25 "IBM Plex Sans Condensed", sans-serif; margin: 0; }
+.sub { color: var(--ink-2); font-size: 13px; margin: 0 0 16px; }
+.eyebrow { font: 500 10.5px/1.2 "IBM Plex Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.mono, code { font-family: "IBM Plex Mono", monospace; }
+code { background: var(--code); border-radius: 4px; padding: 0 4px; font-size: 0.92em; }
+.card { background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.card.p { border-color: var(--policy); background: var(--policy-soft); }
+.card.g { border-color: var(--grader); background: var(--grader-soft); }
+.small { font-size: 12.5px; color: var(--ink-2); }
+.row { display: flex; gap: 0; align-items: stretch; }
+.arrow { flex: none; width: 28px; display: grid; place-items: center; color: var(--ink-3); font-size: 18px; }
+.tag { display: inline-block; font: 500 10.5px/1.5 "IBM Plex Mono", monospace; padding: 0 6px; border-radius: 4px; border: 1px solid; white-space: nowrap; }
+.tag.p { color: var(--policy); border-color: var(--policy); background: var(--policy-soft); }
+.tag.g { color: var(--grader); border-color: var(--grader); background: var(--grader-soft); }
+.tag.bad { color: var(--bad); border-color: var(--bad); background: var(--bad-soft); }
+.tag.good { color: var(--good); border-color: var(--good); background: var(--good-soft); }
+.tag.n { color: var(--ink-2); border-color: var(--line); background: var(--bg); }
+.code { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font: 11px/1.55 "IBM Plex Mono", monospace; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+.code .c { color: var(--ink-3); }
+.code .o { color: var(--policy); }
+.q { font-size: 13px; font-style: italic; color: var(--ink); }
+table.data { border-collapse: collapse; font: 10.5px/1.4 "IBM Plex Mono", monospace; width: 100%; }
+table.data th { text-align: right; font-weight: 500; color: var(--ink-2); padding: 3px 4px; border-bottom: 1px solid var(--line); }
+table.data td { text-align: right; padding: 3px 4px; color: var(--ink); }
+table.data tr.more td { color: var(--ink-3); text-align: center; }
+.grid { display: grid; gap: 14px; }
+svg text { font-family: "IBM Plex Sans", sans-serif; fill: var(--ink); }
+svg .lbl { font-size: 11.5px; fill: var(--ink); }
+svg .lbl-s { font-size: 10.5px; fill: var(--ink-2); }
+svg .ax { font-size: 11px; fill: var(--ink-3); }
+svg .gridline { stroke: var(--line); stroke-width: 1; }
+.mb { display: grid; grid-template-columns: 74px 1fr 34px; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); }
+.mb b { display: block; height: 8px; background: var(--code); border-radius: 4px; overflow: hidden; }
+.mb b i { display: block; height: 100%; border-radius: 0 4px 4px 0; background: var(--policy); }
+.mb.n b i { background: var(--names); }
+.mb.s b i { background: var(--bad); }
+.mb span { font: 500 11px/1 "IBM Plex Mono", monospace; text-align: right; color: var(--ink); }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.steps { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.chip { font: 500 11.5px/1.3 "IBM Plex Mono", monospace; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.chip.p { border-color: var(--policy); color: var(--policy); }
+.chip.g { border-color: var(--grader); color: var(--grader); }
+.to { color: var(--ink-3); }
+.files { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.file { border: 1px solid var(--line); border-radius: 6px; background: var(--bg); padding: 6px 8px; font-size: 12px; }
+.file b { font-weight: 600; display: block; font-size: 12px; }
+.file span { color: var(--ink-2); font-size: 11px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12.5px; }
+.kv dt { color: var(--ink-3); font: 500 10.5px/1.9 "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: 0.05em; }
+.kv dd { margin: 0; color: var(--ink-2); }
+.branch { display: flex; flex-direction: column; gap: 10px; flex: 1; min-width: 0; }
+.branch > div { display: flex; align-items: center; }
+.out { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font-size: 12.5px; color: var(--ink-2); }
+.out li::before { content: "✕"; color: var(--bad); font-weight: 600; margin-right: 7px; }
+.card.bad { border-color: var(--bad); }
+.card.good { border-color: var(--good); }
+.verdict { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.note { border-left: 3px solid var(--line); padding: 1px 0 1px 9px; font-size: 12.5px; color: var(--ink-2); }
+.note.bad { border-color: var(--bad); }
+.note.good { border-color: var(--good); }
+.code .x { color: var(--bad); }
+.sb { display: grid; gap: 2px; }
+.sl { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--ink-2); line-height: 1.25; }
+.sl b { font: 500 11px/1.25 "IBM Plex Mono", monospace; color: var(--ink); white-space: nowrap; }
+.tr { display: block; height: 7px; background: var(--code); border-radius: 4px; overflow: hidden; }
+.tr i { display: block; height: 100%; border-radius: 0 4px 4px 0; }
+.sb.ok .tr i { background: var(--good); } .sb.d .tr i { background: var(--policy); } .sb.n .tr i { background: var(--names); }
+.sb.s .tr i { background: var(--bad); } .sb.c .tr i { background: var(--ink-3); }
+.bars { display: grid; gap: 7px; }
+#families .q { min-height: 124px; }
+#families .rule { min-height: 50px; }
+.rule { font-size: 12px; color: var(--ink); display: grid; gap: 2px; }
+.card.wf { flex: 1; gap: 7px; }
+.env { margin-top: auto; border-top: 1px dashed var(--line); padding-top: 8px; display: grid; gap: 5px; }
+.span { text-align: center; font: 500 11px/1.2 "IBM Plex Mono", monospace; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); border-top: 2px solid var(--line); padding-top: 6px; }
+</style>
+</head>
+<body>
+
+<!-- 0. The analyst workflow -->
+<section class="fig" id="workflow">
+  <div class="row" style="align-items:stretch">
+    <div class="card wf">
+      <span class="eyebrow">Step 1</span>
+      <h3 style="font-size:17px">Test a relationship</h3>
+      <div class="q">"If stress raises accidents only through drinking, then among people who drink the same amount, stress and accidents are unrelated. Are they?"</div>
+      <div class="small"><b style="color:var(--ink)">How:</b> check whether X and Y are still related once the controls are held fixed (partial correlation).</div>
+      <div class="env">
+        <div><span class="tag p">Independence</span> <span class="tag n">Yes / No</span></div>
+        <div class="small">"Are fatigue and distracted_drivers independent given stresses and auto_accidents?"</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="card wf">
+      <span class="eyebrow">Step 2</span>
+      <h3 style="font-size:17px">Find the direction</h3>
+      <div class="q">"Does exercise improve mood, or does a good mood make people exercise?"</div>
+      <div class="small"><b style="color:var(--ink)">How:</b> the data reveal some directions; domain knowledge settles the rest.</div>
+      <div class="env">
+        <div><span class="tag p">Structure</span> <span class="tag n">A / B / C</span></div>
+        <div class="small">"Does assault cause bodily_harm, does bodily_harm cause assault, or neither?"</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="card wf">
+      <span class="eyebrow">Step 3</span>
+      <h3 style="font-size:17px">Choose the controls</h3>
+      <div class="q">"To measure a training program's effect on earnings, should we control for the job people got afterwards?" (No.)</div>
+      <div class="small"><b style="color:var(--ink)">How:</b> control for common causes; never for steps on the causal path, or for common effects.</div>
+      <div class="env">
+        <div><span class="tag p">Adjustment</span> <span class="tag n">Yes / No</span></div>
+        <div class="small">"An analyst regresses poor_diets on runny_nose, adjusting for malnutrition. Is this estimate unbiased?"</div>
+      </div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="card wf">
+      <span class="eyebrow">Step 4</span>
+      <h3 style="font-size:17px">Estimate the effect</h3>
+      <div class="q">"How much would sales rise if we raised ad spend by one standard deviation?"</div>
+      <div class="small"><b style="color:var(--ink)">How:</b> regress the outcome on the cause plus a valid set of controls.</div>
+      <div class="env">
+        <div><span class="tag p">Effect size</span> <span class="tag n">a number</span></div>
+        <div class="small">"How many SDs does craters change when collisions is raised one SD?"</div>
+      </div>
+    </div>
+  </div>
+  <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
+    <div class="span">Steps 1–2 work out the causal graph</div>
+    <div class="span">Steps 3–4 use it to measure an effect</div>
+  </div>
+  <div class="card" style="margin-top:12px;flex-direction:row;align-items:center;gap:18px">
+    <div style="flex:none;display:flex;gap:8px"><span class="chip">Domain knowledge = the variable names</span><span class="chip">Evidence = 2,000 rows of data</span></div>
+    <div class="small">A real analyst needs both. Every task is built so that neither alone settles the answer. Each task asks about <b style="color:var(--ink)">one</b> step, so the results show which steps the model learned.</div>
+  </div>
+</section>
+
+<!-- 1. One episode -->
+<section class="fig" id="episode">
+  <div class="row">
+    <div class="card g" style="width:186px">
+      <span class="eyebrow">Hidden · judge only</span>
+      <svg id="ep-graph" viewBox="0 0 212 150" width="172"></svg>
+      <div class="small">The true causal graph. The label comes from it: here, <b style="color:var(--ink)">No</b>.</div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="card p" style="width:194px">
+      <span class="eyebrow">What the agent sees</span>
+      <div class="small">A table of 2,000 rows with columns alcohol, fatigue, distracted_drivers, stresses and auto_accidents. The prompt states the assumptions: linear, Gaussian, no hidden confounders.</div>
+      <div class="q">"Are fatigue and distracted_drivers independent given stresses and auto_accidents?"</div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="card p" style="width:300px">
+      <span class="eyebrow">Python sandbox · up to 10 calls</span>
+      <div class="code" style="font-size:10.4px"><span class="c"># plain correlation</span>
+df.fatigue.corr(df.distracted_drivers)
+<span class="o">→ −0.02</span>  <span class="c">looks independent</span>
+<span class="c"># condition on the question's set</span>
+partial_corr(df, 'fatigue',
+  'distracted_drivers',
+  given=['stresses', 'auto_accidents'])
+<span class="o">→ r = −0.28, p ≈ 1e−37</span></div>
+      <div class="small">Final reply ends with <code>Answer: No</code></div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="card g" style="width:136px">
+      <span class="eyebrow">Judge</span>
+      <div class="small">Reads only the final line. Compares it with the label.</div>
+      <div style="font:600 30px/1 'IBM Plex Sans Condensed';color:var(--grader)">r = 1</div>
+      <div class="small">1 if correct, else 0. GRPO compares 8 attempts per task.</div>
+    </div>
+  </div>
+</section>
+
+<!-- 1b. The action space -->
+<section class="fig" id="actions">
+  <div class="row" style="align-items:center">
+    <div class="card" style="width:168px">
+      <span class="eyebrow">Start · reset()</span>
+      <div class="small">The prompt: the column names, the assumptions, one question and the answer format.</div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="card p" style="width:190px">
+      <span class="eyebrow">Agent turn</span>
+      <div style="font:600 17px/1.25 'IBM Plex Sans Condensed'">Each turn, one of two moves</div>
+      <div class="small">The model may write reasoning first, then it either calls the tool or stops.</div>
+    </div>
+    <div class="branch">
+      <div>
+        <div class="arrow">→</div>
+        <div class="card p" style="flex:1">
+          <div class="verdict"><span class="eyebrow">Move 1 · call the tool</span><span class="tag p">↺ up to 10 calls</span></div>
+          <div class="code">python(code="partial_corr(df, 'x', 'y', given=['z'])")
+<span class="o">→ {'r': 0.134, 'p_value': 1.5e-09, 'n': 2000}
+  [9 of 10 tool calls left]</span></div>
+          <div class="small">The sandbox runs the code. Its printed output, or the traceback, comes back to the agent, which takes another turn.</div>
+        </div>
+      </div>
+      <div>
+        <div class="arrow">→</div>
+        <div class="card g" style="flex:1">
+          <div class="verdict"><span class="eyebrow">Move 2 · answer</span><span class="tag g">ends the episode</span></div>
+          <div class="code">…the association survives conditioning.
+Answer: Yes</div>
+          <div class="small">A reply without a tool call ends the episode. The judge reads the last <code>Answer:</code> line and returns reward 1 or 0.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="grid" style="grid-template-columns:1.35fr 1fr 0.95fr;margin-top:14px">
+    <div class="card">
+      <span class="eyebrow">Inside python · preloaded</span>
+      <div class="code" style="font-size:10.6px">df  <span class="c"># the 2,000-row table</span>
+np, pd, scipy, stats, sm, statsmodels
+
+partial_corr(df, x, y, given=())
+<span class="o">  → {'r', 'p_value', 'n'}</span>  <span class="c"># Fisher-z test</span>
+pc(df, alpha=0.01)
+<span class="o">  → {'directed': [...], 'undirected': [...]}</span>
+ols(df, y, X)
+<span class="o">  → statsmodels fit: .params, .bse</span></div>
+      <div class="small">Any other Python is allowed. Variables persist between calls, and a final expression is printed, as in a notebook.</div>
+    </div>
+    <div class="card">
+      <span class="eyebrow">Limits</span>
+      <dl class="kv">
+        <dt>calls</dt><dd>10 per episode</dd>
+        <dt>tokens</dt><dd>8,192 per episode, model and tool output together; past it, reward 0</dd>
+        <dt>time</dt><dd>20 s per call, then the session restarts and its variables are lost</dd>
+        <dt>memory</dt><dd>2 GB; 600 s of CPU per episode</dd>
+        <dt>output</dt><dd>2,000 characters, head and tail kept</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <span class="eyebrow">Out of reach</span>
+      <ul class="out">
+        <li>the hidden graph and weights</li>
+        <li>the label and the judge</li>
+        <li>every file except <code>data.csv</code>: the worker runs as <code>nobody</code> in an empty folder</li>
+        <li>other tasks</li>
+        <li>the answer online: each world is new</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 1c. One task, before and after training -->
+<section class="fig" id="example">
+  <div class="grid" style="grid-template-columns:1fr 1.05fr;align-items:start">
+    <div class="card">
+      <span class="eyebrow">Held-out test task iid_test-88 · the question</span>
+      <div class="q">"Is severe_poverty statistically associated with accident after conditioning on change and additional_expenses, in the population?"</div>
+      <div class="small">Columns: accident, complications, additional_expenses, disability, change, severe_poverty. Answer Yes or No.</div>
+      <div class="small">Both shortcuts point to the wrong answer, No: the plain correlation is near zero, and neither name plausibly causes the other.</div>
+    </div>
+    <div class="card g">
+      <span class="eyebrow">Hidden · why the label is Yes</span>
+      <svg id="ex-graph" viewBox="0 0 470 132"></svg>
+      <div class="legend" style="margin:0"><span><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="var(--ink-3)"/></svg>conditioned on</span><span><svg width="22" height="12"><line x1="1" y1="6" x2="21" y2="6" stroke="var(--policy)" stroke-width="2.2"/></svg>path that conditioning opens</span></div>
+      <div class="small">additional_expenses is a common effect of both. On their own the two are unrelated (r = 0.02, p = 0.39), but conditioning on a common effect links them (r = 0.13, p ≈ 1.5e−9).</div>
+    </div>
+  </div>
+  <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:14px;align-items:start">
+    <div class="card bad">
+      <div class="verdict"><span class="eyebrow">Base model · 1 call · 367 tokens</span><span class="tag bad">Answer: No · reward 0</span></div>
+      <div class="code" style="font-size:10.4px"><span class="c"># Partial correlation function</span>
+<span class="x">def partial_corr(df, x, y, given=()):</span>
+    ...
+    <span class="c"># Remove the effect of the given variables</span>
+    for var in given:
+        <span class="x">df_temp = df_temp.drop(columns=[var])</span>
+    corr, p = pearsonr(df_temp[x], df_temp[y])
+    return corr, p
+
+corr, p = partial_corr(df, 'severe_poverty',
+    'accident', given=('change', 'additional_expenses'))
+p &lt; 0.05
+<span class="o">→ np.False_</span></div>
+      <div class="note bad"><b>Overwrites the provided helper.</b> Dropping the columns is not conditioning on them, so this is the plain correlation: the trap the task was built around.</div>
+      <div class="note bad"><b>Never looks at the effect size.</b> It prints only True/False, then answers "not statistically significant (p-value &gt; 0.05)".</div>
+    </div>
+    <div class="card good">
+      <div class="verdict"><span class="eyebrow">Trained model · 1 call · 225 tokens</span><span class="tag good">Answer: Yes · reward 1</span></div>
+      <div class="code" style="font-size:10.4px">partial_corr(df, 'severe_poverty', 'accident',
+             given=('change', 'additional_expenses'))
+<span class="o">→ {'r': 0.134, 'p_value': 1.53e-09, 'n': 2000}</span></div>
+      <div class="note good"><b>Uses the right test as given.</b> It calls the provided helper with exactly the conditioning set in the question.</div>
+      <div class="note good"><b>Reports the evidence, then decides.</b> "The partial correlation … is 0.134 with a p-value of approximately 1.53e-09. This indicates a statistically significant association even after controlling for the specified variables."</div>
+      <div class="note good"><b>Not a one-off.</b> On each of the six generated and bnRep test sets, the base model rewrites a provided helper in 27–35% of episodes; the trained model, in 0–1%.</div>
+    </div>
+  </div>
+</section>
+
+<!-- 2. How a task is generated -->
+<section class="fig" id="generation">
+  <div class="grid" style="grid-template-columns: 1fr 1.25fr 1fr">
+    <div class="card"><span class="eyebrow">1 · Draw a random causal graph</span><svg id="gen-blank" viewBox="0 0 230 165"></svg><div class="small">A random DAG with linear-Gaussian weights, 4–6 variables in training.</div></div>
+    <div class="card"><span class="eyebrow">2 · Every graph the data can't rule out</span>
+      <div style="display:flex;gap:6px"><svg id="gen-m1" viewBox="0 0 120 125" style="flex:1"></svg><svg id="gen-m2" viewBox="0 0 120 125" style="flex:1"></svg><svg id="gen-m3" viewBox="0 0 120 125" style="flex:1"></svg></div>
+      <div class="small">These three graphs produce identical data. The data fix the three arrows into the collider; the <b style="color:var(--policy)">blue</b> edges can point either way. The true graph is drawn from this set.</div></div>
+    <div class="card"><span class="eyebrow">3 · Name the variables</span><svg id="gen-named" viewBox="0 0 230 165"></svg><div class="small">Real concepts from CauseNet: every true edge is a plausible link in that direction. Data + names pin down one graph.</div></div>
+  </div>
+  <div class="grid" style="grid-template-columns: 1.1fr 1fr; margin-top:14px">
+    <div class="card"><span class="eyebrow">4 · Sample 2,000 rows</span>
+      <table class="data">
+        <tr><th>alcohol</th><th>fatigue</th><th>distracted_drivers</th><th>stresses</th><th>auto_accidents</th></tr>
+        <tr><td>−0.86</td><td>−0.61</td><td>−0.59</td><td>0.04</td><td>1.60</td></tr>
+        <tr><td>−0.26</td><td>−0.70</td><td>−0.88</td><td>−1.02</td><td>−0.29</td></tr>
+        <tr><td>−0.44</td><td>−0.76</td><td>0.02</td><td>0.26</td><td>0.38</td></tr>
+        <tr class="more"><td colspan="5">… 2,000 rows, regenerated from a stored seed</td></tr>
+      </table>
+    </div>
+    <div class="card"><span class="eyebrow">5 · Ask, label from the true graph, check it's answerable</span>
+      <div class="q">"Are fatigue and distracted_drivers independent given stresses and auto_accidents?"</div>
+      <div class="small">Label <b style="color:var(--ink)">No</b>: conditioning on <code>auto_accidents</code>, their common effect, links them. A Fisher-z test on these rows must agree (p &lt; 0.01), or the item is redrawn.</div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 8px;align-items:center;font-size:12.5px;color:var(--ink-2)">
+        <span class="tag bad">wrong</span><span>Plain correlation (r = −0.02) says "independent"</span>
+        <span class="tag bad">wrong</span><span>Names alone (no plausible link) say "independent"</span>
+        <span class="tag good">right</span><span>Testing the conditional independence the question asks for</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 3. Question families -->
+<section class="fig" id="families">
+  <h2>Four question families, one measure</h2>
+  <p class="sub">Each family has its own answer format and its own rule for "correct", but every item is graded right (1) or wrong (0). So every bar below is the same measure: <b style="color:var(--ink)">the share of the 4,000 training items that a strategy answers correctly</b>, graded by the agent's own judge.</p>
+  <div class="grid" style="grid-template-columns: repeat(4, 1fr)">
+    <div class="card"><h3>Independence</h3><span><span class="tag p">yes / no</span></span><div class="q">"Are fatigue and distracted_drivers independent given stresses and auto_accidents?"</div><div class="rule"><span class="eyebrow">Correct when</span>the Yes/No matches the label</div><div class="bars"><div class="sb ok"><div class="sl"><span>Data + names, analyzed correctly</span><b>1.00</b></div><span class="tr"><i style="width:100%"></i></span></div><div class="sb d"><div class="sl"><span>Data only</span><b>1.00</b></div><span class="tr"><i style="width:100%"></i></span></div><div class="sb n"><div class="sl"><span>Names only</span><b>0.50</b></div><span class="tr"><i style="width:50%"></i></span></div><div class="sb s"><div class="sl"><span>Shortcut: plain correlation</span><b>0.50</b></div><span class="tr"><i style="width:50%"></i></span></div><div class="sb c"><div class="sl"><span>Same answer every time</span><b>0.50</b></div><span class="tr"><i style="width:50%"></i></span></div></div></div><div class="card"><h3>Structure</h3><span><span class="tag p">A / B / C</span></span><div class="q">"Which is true: A. neither causes the other, B. assault causes bodily_harm, C. bodily_harm causes assault?"</div><div class="rule"><span class="eyebrow">Correct when</span>the letter matches the true causal relation</div><div class="bars"><div class="sb ok"><div class="sl"><span>Data + names, analyzed correctly</span><b>1.00</b></div><span class="tr"><i style="width:100%"></i></span></div><div class="sb d"><div class="sl"><span>Data only</span><b>0.76</b></div><span class="tr"><i style="width:76%"></i></span></div><div class="sb n"><div class="sl"><span>Names only</span><b>0.74</b></div><span class="tr"><i style="width:74%"></i></span></div><div class="sb s"><div class="sl"><span>Shortcut: earlier column causes later</span><b>0.48</b></div><span class="tr"><i style="width:48%"></i></span></div><div class="sb c"><div class="sl"><span>Same answer every time</span><b>0.35</b></div><span class="tr"><i style="width:35%"></i></span></div></div></div><div class="card"><h3>Adjustment</h3><span><span class="tag p">yes / no</span></span><div class="q">"An analyst regresses poor_diets on runny_nose, adjusting for malnutrition. Is this estimate unbiased for the causal effect?"</div><div class="rule"><span class="eyebrow">Correct when</span>the Yes/No matches whether the set is valid</div><div class="bars"><div class="sb ok"><div class="sl"><span>Data + names, analyzed correctly</span><b>1.00</b></div><span class="tr"><i style="width:100%"></i></span></div><div class="sb d"><div class="sl"><span>Data only</span><b>0.79</b></div><span class="tr"><i style="width:79%"></i></span></div><div class="sb n"><div class="sl"><span>Names only</span><b>not measured</b></div><span class="tr"><i style="width:0%"></i></span></div><div class="sb s"><div class="sl"><span>Shortcut: adjust for confounders</span><b>0.48</b></div><span class="tr"><i style="width:48%"></i></span></div><div class="sb c"><div class="sl"><span>Same answer every time</span><b>0.55</b></div><span class="tr"><i style="width:55%"></i></span></div></div><div class="small">The other half ask the same thing about two analysts' regressions at once, answered 1, 2, Both or Neither: data only 0.76, shortcut 0.30, same answer 0.29.</div></div><div class="card"><h3>Effect size</h3><span><span class="tag p">a number</span></span><div class="q">"How many SDs does craters change when collisions is raised one SD by intervention?"</div><div class="rule"><span class="eyebrow">Correct when</span>within ±0.10 of the true effect, in SDs</div><div class="bars"><div class="sb ok"><div class="sl"><span>Data + names, analyzed correctly</span><b>1.00</b></div><span class="tr"><i style="width:100%"></i></span></div><div class="sb d"><div class="sl"><span>Data only</span><b>0.73</b></div><span class="tr"><i style="width:73%"></i></span></div><div class="sb n"><div class="sl"><span>Names only</span><b>gives no number</b></div><span class="tr"><i style="width:0%"></i></span></div><div class="sb s"><div class="sl"><span>Shortcut: plain or adjust-for-all regression</span><b>0.51</b></div><span class="tr"><i style="width:51%"></i></span></div><div class="sb c"><div class="sl"><span>Same answer every time (0.00)</span><b>0.10</b></div><span class="tr"><i style="width:10%"></i></span></div></div></div>
+  </div>
+  <dl class="kv" style="margin-top:14px;grid-template-columns:auto 1fr auto 1fr;gap:4px 12px">
+    <dt style="color:var(--good)">Data + names</dt><dd>What the agent should do: analyze the rows, and use the names to choose among graphs the data cannot tell apart. 1.00 by construction.</dd>
+    <dt style="color:var(--policy)">Data only</dt><dd>A perfect analysis of the data that ignores the names. Where several graphs fit the data equally well, it guesses among them.</dd>
+    <dt style="color:var(--names)">Names only</dt><dd>Answers from the links the names make plausible (CauseNet), never looking at the data.</dd>
+    <dt style="color:var(--bad)">Shortcut</dt><dd>The family's most tempting habit. On independence and adjustment it does no better than a constant answer; on structure and effect size it does, a known limitation.</dd>
+    <dt style="color:var(--ink-3)">Same answer</dt><dd>The best single answer given to every item: the chance level for that family.</dd>
+  </dl>
+</section>
+
+<!-- 4. Transfer tasks -->
+<section class="fig" id="transfer">
+  <div class="grid" style="grid-template-columns: 1fr 1fr">
+    <div class="card">
+      <span class="eyebrow">bnRep · published causal networks</span>
+      <h3>Real structures from published studies</h3>
+      <svg id="tr-algal" viewBox="0 0 410 210"></svg>
+      <div class="small" style="margin-top:-4px">One of the four networks: <code>algal2</code>, a lake water-quality model (chlorophyll, phosphorus, wind, cyanobacteria).</div>
+      <div class="steps"><span class="chip">published graph + coefficients</span><span class="to">→</span><span class="chip">2,000 rows</span><span class="to">→</span><span class="chip p">same 4 question families</span></div>
+      <div class="files">
+        <div class="file"><b>Real names</b><span><code>ChiA</code>, <code>TP</code>, <code>WindSpeed</code>, … as in the study</span></div>
+        <div class="file"><b>Placeholders</b><span>the same item with <code>V1</code> … <code>Vn</code>, to test whether names help</span></div>
+      </div>
+      <dl class="kv"><dt>New</dt><dd>graphs not drawn by our generator; 8–12 variables (training: 4–6); real variable names</dd>
+        <dt>Size</dt><dd>4 networks · 192 items, each also with placeholder names</dd>
+        <dt>Graded</dt><dd>exactly like training</dd></dl>
+    </div>
+    <div class="card">
+      <span class="eyebrow">QRData · real datasets (Liu et al., 2024)</span>
+      <h3>Real data files and the benchmark's own questions</h3>
+      <div class="files" style="margin-top:4px">
+        <div class="file"><b>Sachs</b><span>protein signaling, flow cytometry</span></div>
+        <div class="file"><b>Neuropathic pain</b><span>diagnosis variables</span></div>
+        <div class="file"><b>Arctic sea ice</b><span>climate measurements</span></div>
+        <div class="file"><b>IHDP · Jobs</b><span>treatment-effect studies</span></div>
+      </div>
+      <div class="steps"><span class="chip">CSV files → <code>df</code></span><span class="to">→</span><span class="chip">multiple choice or a number</span><span class="to">→</span><span class="chip g">QRData's own grader</span></div>
+      <div class="code" style="font-size:11px"><span class="c"># question types (paraphrased)</span>
+which causal links hold among these variables?
+does X cause Y, Y cause X, or neither?
+what is the average treatment effect?</div>
+      <dl class="kv"><dt>New</dt><dd>real, messy data; the textbook assumptions may not hold; unseen question styles and grading (numbers within 3%)</dd>
+        <dt>Size</dt><dd>269 causal items (205 choice, 64 numeric) + 142 non-causal statistics items as a check</dd>
+        <dt>License</dt><dd>CC BY-NC 4.0: used locally, not redistributed</dd></dl>
+    </div>
+  </div>
+</section>
+
+<!-- 5. Study design and training -->
+<section class="fig" id="study">
+  <div class="grid" style="grid-template-columns: 1fr 1.35fr">
+    <div class="card">
+      <span class="eyebrow">Training reward per step</span>
+      <div class="legend"><span><i style="width:14px;height:3px;background:var(--policy);display:inline-block"></i>Trained (real rewards)</span><span><i style="width:14px;height:3px;background:var(--ink-3);display:inline-block"></i>Control (shuffled rewards)</span></div>
+      <svg id="train-chart" viewBox="0 0 360 208"></svg>
+      <div class="small">Lines: 10-step moving average; dots: each step. Qwen3-4B-Instruct-2507, LoRA rank 32, 8 tasks × 8 attempts, 60 steps, 4.3 h on one H100.</div>
+    </div>
+    <div class="card">
+      <span class="eyebrow">Three models, seven test sets</span>
+      <div class="steps"><span class="chip">Base: untrained</span><span class="chip p">Trained: real rewards</span><span class="chip">Control: shuffled rewards</span></div>
+      <div class="small" style="margin-top:2px">The control gets the same prompts, compute and steps, so any gain it lacks comes from the reward signal.</div>
+      <div style="display:grid;grid-template-columns:110px 1fr;gap:8px 12px;font-size:12.5px;margin-top:4px;align-items:start">
+        <span class="tag n" style="justify-self:start">In-domain</span><span><b>iid test</b> · 500 items like training</span>
+        <span class="tag p" style="justify-self:start">Near transfer</span><span><b>held-out wording</b> · <b>bigger graphs</b> (7–8 variables) · <b>unseen names</b> · 500 items each</span>
+        <span class="tag g" style="justify-self:start">Far transfer</span><span><b>bnRep</b> published networks · <b>QRData causal</b> real datasets</span>
+        <span class="tag n" style="justify-self:start">Check</span><span><b>QRData statistics</b>: does general data analysis change?</span>
+      </div>
+      <div class="small">"Confirmed" means the trained model beats both base and control, one-sided α = 0.025 with Holm correction over five endpoints.</div>
+    </div>
+  </div>
+</section>
+
+<!-- 6. Results: transfer -->
+<section class="fig" id="results">
+  <p class="sub"><b style="color:var(--ink)">Accuracy</b> = the share of a set's items whose final answer the judge marks correct (each item scores 1 or 0; an item answered several times scores its average). Right column: trained minus base, in percentage points. <b style="color:var(--ink)">Confirmed</b> = trained beats both base and control in the pre-registered test.</p>
+  <div class="legend">
+    <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="var(--bg)" stroke="var(--ink-2)" stroke-width="2"/></svg>Base</span>
+    <span><svg width="14" height="14"><rect x="2.5" y="2.5" width="9" height="9" fill="var(--bg)" stroke="var(--ink-3)" stroke-width="1.8"/></svg>Shuffled-reward control</span>
+    <span><svg width="14" height="14"><circle cx="7" cy="7" r="6" fill="var(--policy)"/></svg>Trained</span>
+  </div>
+  <svg id="res-chart" viewBox="0 0 900 330"></svg>
+  <p class="small" style="margin:4px 0 0">* QRData's gold answers are skewed ("no causal relationship" is right on 92 of 150 graph questions), so items are reweighted until no answer habit that ignores the question can score above chance.</p>
+</section>
+
+<!-- 7b. Results by step, against chance -->
+<section class="fig" id="steps">
+  <div class="legend">
+    <span><svg width="14" height="14"><line x1="7" y1="1" x2="7" y2="13" stroke="var(--ink-3)" stroke-width="3"/></svg>Chance: the best single answer given every time</span>
+    <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="var(--bg)" stroke="var(--ink-2)" stroke-width="2"/></svg>Base model</span>
+    <span><svg width="14" height="14"><circle cx="7" cy="7" r="6" fill="var(--policy)"/></svg>Trained model</span>
+  </div>
+  <svg id="steps-chart" viewBox="0 0 900 318"></svg>
+  <p class="small" style="margin:6px 0 0">Accuracy = share of that step's test items answered correctly; 500 items per step, pooled over the four held-out test sets. Rows starting with "…" keep only items where a tempting shortcut gives the wrong answer.</p>
+</section>
+
+
+
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+if (params.get("theme") === "dark") document.documentElement.dataset.theme = "dark";
+const only = params.get("fig");
+document.querySelectorAll(".fig").forEach(f => { if (!only || f.id === only) f.classList.add("on"); });
+if (!only) document.body.classList.add("show-all");
+
+const NS = "http://www.w3.org/2000/svg";
+function el(parent, name, attrs, text) {
+  const n = document.createElementNS(NS, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  parent.appendChild(n);
+  return n;
+}
+function defs(svg) {
+  const d = el(svg, "defs", {});
+  for (const [id, color] of [["a", "var(--ink-2)"], ["ap", "var(--policy)"], ["ag", "var(--grader)"]]) {
+    const m = el(d, "marker", { id: svg.id + "-" + id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6.5, markerHeight: 6.5, orient: "auto-start-reverse" });
+    el(m, "path", { d: "M0,0 L10,5 L0,10 z", fill: color });
+  }
+}
+// Draw a DAG: nodes {id: [x, y, label, labelPos]}, edges [[from, to, style]], style "" | "p" | "u" (undirected, blue).
+function graph(id, nodes, edges, opt = {}) {
+  const svg = document.getElementById(id);
+  defs(svg);
+  const r = opt.r || 7;
+  for (const [a, b, style] of edges) {
+    const [x1, y1] = nodes[a], [x2, y2] = nodes[b];
+    const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy), ux = dx / L, uy = dy / L;
+    const color = style === "p" || style === "u" ? "var(--policy)" : (opt.edge || "var(--ink-2)");
+    const attrs = { x1: x1 + ux * (r + 2), y1: y1 + uy * (r + 2), x2: x2 - ux * (r + 3), y2: y2 - uy * (r + 3), stroke: color, "stroke-width": style ? 2.2 : 1.6 };
+    if (style !== "u") attrs["marker-end"] = `url(#${id}-${style ? "ap" : "a"})`;
+    el(svg, "line", attrs);
+  }
+  for (const k in nodes) {
+    const [x, y, label, pos] = nodes[k];
+    el(svg, "circle", { cx: x, cy: y, r, fill: opt.fill || "var(--bg)", stroke: opt.stroke || "var(--ink-2)", "stroke-width": 1.6 });
+    if (label && !opt.nolabels) {
+      const p = { l: [x - r - 5, y + 4, "end"], r: [x + r + 5, y + 4, "start"], t: [x, y - r - 6, "middle"], b: [x, y + r + 14, "middle"] }[pos || "r"];
+      el(svg, "text", { x: p[0], y: p[1], "text-anchor": p[2], class: opt.small ? "lbl-s" : "lbl" }, label);
+    }
+  }
+  return svg;
+}
+
+// The worked example: stresses → alcohol → fatigue, and alcohol, fatigue, distracted_drivers → auto_accidents.
+const EX = { s: [86, 22, "stresses", "l"], a: [86, 82, "alcohol", "l"], f: [86, 142, "fatigue", "l"], d: [172, 30, "distracted_drivers", "t"], c: [172, 118, "auto_accidents", "b"] };
+const EX_EDGES = [["s", "a"], ["a", "f"], ["a", "c"], ["f", "c"], ["d", "c"]];
+graph("ep-graph", { s: [70, 22, "stresses", "l"], a: [70, 75, "alcohol", "l"], f: [70, 128, "fatigue", "l"], d: [152, 30, "distracted_drivers", "t"], c: [152, 112, "auto_accidents", "b"] }, EX_EDGES, { small: true, r: 6, stroke: "var(--grader)" });
+graph("gen-blank", EX, EX_EDGES, { nolabels: true, r: 9 });
+graph("gen-named", EX, EX_EDGES, {});
+const M = { s: [28, 18], a: [28, 62], f: [28, 106], d: [96, 22], c: [96, 92] };
+const fixed = [["a", "c"], ["f", "c"], ["d", "c"]];
+const members = [
+  ["gen-m1", [["a", "s", "p"], ["a", "f", "p"]], false],
+  ["gen-m2", [["s", "a", "p"], ["a", "f", "p"]], true],
+  ["gen-m3", [["a", "s", "p"], ["f", "a", "p"]], false],
+];
+for (const [id, open, isTrue] of members) {
+  const svg = graph(id, M, [...fixed, ...open], { r: 6, nolabels: true });
+  if (isTrue) {
+    el(svg, "rect", { x: 2, y: 2, width: 116, height: 121, rx: 8, fill: "none", stroke: "var(--grader)", "stroke-width": 1.6, "stroke-dasharray": "4 3" });
+    el(svg, "text", { x: 62, y: 120, "text-anchor": "middle", class: "lbl-s", style: "fill:var(--grader)" }, "true graph");
+  }
+}
+
+// iid_test-88: blue marks the path that conditioning on additional_expenses opens; shaded nodes are conditioned on.
+(function () {
+  const nodes = {
+    acc: [44, 92, "accident", "b"], chg: [110, 26, "change", "t"], cmp: [205, 26, "complications", "t"],
+    exp: [272, 92, "additional_expenses", "b"], dis: [345, 26, "disability", "t"], pov: [420, 92, "severe_poverty", "b"],
+  };
+  const svg = graph("ex-graph", nodes, [["acc", "chg"], ["chg", "cmp"], ["acc", "cmp"], ["cmp", "exp"], ["acc", "exp", "p"], ["dis", "exp", "p"], ["pov", "dis", "p"]], { r: 7 });
+  for (const k of ["chg", "exp"]) el(svg, "circle", { cx: nodes[k][0], cy: nodes[k][1], r: 7, fill: "var(--ink-3)", stroke: "var(--ink-2)", "stroke-width": 1.6 });
+})();
+
+// bnRep algal2: the published structure.
+graph("tr-algal", {
+  TP_PS: [40, 28, "TP_PS", "t"], WindSpeed: [215, 28, "WindSpeed", "r"], Colour_PS: [300, 28, "Colour_PS", "r"], RainSum: [385, 80, "RainSum", "t"],
+  ChiA_PS: [40, 112, "ChiA_PS", "b"], TP: [130, 74, "TP", "r"], Colour: [330, 128, "Colour", "r"],
+  ChiA: [150, 150, "ChiA", "b"], Cyanobacteria: [250, 192, "Cyanobacteria", "r"],
+}, [["TP_PS", "ChiA_PS"], ["TP_PS", "TP"], ["ChiA_PS", "ChiA"], ["TP", "ChiA"], ["WindSpeed", "ChiA"], ["Colour_PS", "Colour"], ["RainSum", "Colour"], ["ChiA", "Cyanobacteria"], ["Colour", "Cyanobacteria"]], { r: 6 });
+
+// Training curve: per-step mean reward (results_v3.json "training").
+const TRAINED = [0.547, 0.578, 0.469, 0.562, 0.234, 0.375, 0.406, 0.469, 0.5, 0.328, 0.562, 0.391, 0.359, 0.703, 0.391, 0.266, 0.641, 0.297, 0.406, 0.344, 0.344, 0.484, 0.25, 0.547, 0.391, 0.422, 0.578, 0.547, 0.25, 0.578, 0.609, 0.781, 0.625, 0.516, 0.594, 0.609, 0.5, 0.484, 0.609, 0.438, 0.656, 0.562, 0.672, 0.625, 0.406, 0.75, 0.359, 0.656, 0.75, 0.578, 0.641, 0.766, 0.547, 0.562, 0.5, 0.672, 0.391, 0.812, 0.656, 0.656];
+const CONTROL = [0.547, 0.641, 0.469, 0.438, 0.25, 0.375, 0.453, 0.5, 0.438, 0.406, 0.531, 0.25, 0.344, 0.625, 0.406, 0.234, 0.625, 0.469, 0.422, 0.328, 0.25, 0.453, 0.234, 0.484, 0.422, 0.297, 0.562, 0.547, 0.25, 0.375, 0.531, 0.641, 0.5, 0.516, 0.375, 0.5, 0.547, 0.297, 0.438, 0.234, 0.531, 0.438, 0.547, 0.516, 0.438, 0.453, 0.406, 0.625, 0.672, 0.438, 0.422, 0.422, 0.391, 0.422, 0.328, 0.531, 0.359, 0.547, 0.547, 0.344];
+(function () {
+  const svg = document.getElementById("train-chart");
+  const L = 34, R = 350, T = 10, B = 172;
+  const x = i => L + (i / 59) * (R - L), y = v => B - (v - 0.2) / 0.65 * (B - T);
+  for (const v of [0.2, 0.4, 0.6, 0.8]) {
+    el(svg, "line", { x1: L, x2: R, y1: y(v), y2: y(v), class: "gridline" });
+    el(svg, "text", { x: L - 6, y: y(v) + 4, "text-anchor": "end", class: "ax" }, v.toFixed(1));
+  }
+  for (const s of [1, 20, 40, 60]) el(svg, "text", { x: x(s - 1), y: B + 16, "text-anchor": "middle", class: "ax" }, s);
+  el(svg, "text", { x: (L + R) / 2, y: B + 28, "text-anchor": "middle", class: "ax" }, "training step");
+  const series = [[CONTROL, "var(--ink-3)"], [TRAINED, "var(--policy)"]];
+  for (const [ys, c] of series) {
+    ys.forEach((v, i) => el(svg, "circle", { cx: x(i), cy: y(v), r: 2, fill: c, opacity: 0.35 }));
+    let d = "";
+    for (let i = 9; i < ys.length; i++) {
+      const m = ys.slice(i - 9, i + 1).reduce((a, b) => a + b, 0) / 10;
+      d += (i === 9 ? "M" : "L") + x(i).toFixed(1) + "," + y(m).toFixed(1);
+    }
+    el(svg, "path", { d, fill: "none", stroke: c, "stroke-width": 2.4, "stroke-linejoin": "round" });
+  }
+})();
+
+// Dot chart helper: rows [label, sublabel, base, control, trained, note, strong].
+function dots(id, rows, lo, hi, ticks, plotL, plotR, rowH, axisTitle) {
+  const svg = document.getElementById(id);
+  const top = 14, x = v => plotL + (v - lo) / (hi - lo) * (plotR - plotL);
+  const bottom = top + rows.length * rowH;
+  for (const t of ticks) {
+    el(svg, "line", { x1: x(t), x2: x(t), y1: top, y2: bottom, class: "gridline" });
+    el(svg, "text", { x: x(t), y: bottom + 18, "text-anchor": "middle", class: "ax" }, Math.round(t * 100) + "%");
+  }
+  el(svg, "text", { x: (plotL + plotR) / 2, y: bottom + 36, "text-anchor": "middle", class: "ax" }, axisTitle);
+  rows.forEach(([label, sub, b, c, t, note, strong], i) => {
+    const cy = top + rowH * i + rowH / 2;
+    const indent = label.startsWith("…") ? 14 : 0;
+    el(svg, "text", { x: indent, y: sub ? cy - 2 : cy + 4, class: indent ? "lbl-s" : "lbl", style: indent ? "" : "font-weight:600" }, label);
+    if (sub) el(svg, "text", { x: indent, y: cy + 13, class: "lbl-s" }, sub);
+    const vals = [b, c, t];
+    el(svg, "line", { x1: x(Math.min(...vals)), x2: x(Math.max(...vals)), y1: cy, y2: cy, stroke: "var(--line)", "stroke-width": 4, "stroke-linecap": "round" });
+    el(svg, "rect", { x: x(c) - 5, y: cy - 5, width: 10, height: 10, fill: "var(--bg)", stroke: "var(--ink-3)", "stroke-width": 1.8 });
+    el(svg, "circle", { cx: x(b), cy, r: 5.5, fill: "var(--bg)", stroke: "var(--ink-2)", "stroke-width": 2 });
+    el(svg, "circle", { cx: x(t), cy, r: 6.5, fill: "var(--policy)", stroke: "var(--bg)", "stroke-width": 2 });
+    el(svg, "text", { x: plotR + 22, y: cy + 4, class: "lbl", style: strong ? "font-weight:600" : "fill:var(--ink-2)" }, note);
+  });
+}
+dots("res-chart", [
+  ["iid test", "500 items · same kind as training", 0.426, 0.376, 0.632, "+20.6 · in-domain check", true],
+  ["Held-out wording", "500 items · new prompt templates", 0.428, 0.380, 0.612, "+18.4 · confirmed", true],
+  ["Bigger graphs", "500 items · 7–8 variables (train: 4–6)", 0.440, 0.360, 0.614, "+17.4 · confirmed", true],
+  ["Unseen names", "500 items · held-out concepts", 0.462, 0.364, 0.600, "+13.8 · confirmed", true],
+  ["bnRep", "192 items × 2 tries · published networks", 0.443, 0.380, 0.615, "+17.2 · confirmed", true],
+  ["QRData causal", "269 items × 4 tries · reweighted*", 0.323, 0.382, 0.367, "+4.4 · not confirmed: control equal", false],
+  ["QRData statistics", "142 items × 4 tries · non-causal", 0.567, 0.563, 0.565, "flat", false],
+], 0.2, 0.7, [0.2, 0.3, 0.4, 0.5, 0.6, 0.7], 250, 600, 38, "accuracy: share of items answered correctly");
+
+
+// Results by step: rows [label, chance or null, base, trained, note, strong].
+(function () {
+  const svg = document.getElementById("steps-chart");
+  const rows = [
+    ["Step 1 · Test a relationship", 0.506, 0.630, 0.956, "+33 points · learned", true],
+    ["… the plain correlation misleads", null, 0.580, 0.949, "+37", false],
+    ["Step 2 · Find the direction", 0.352, 0.448, 0.640, "+19 · learned", true],
+    ["… column order misleads", null, 0.356, 0.525, "+17", false],
+    ["Step 3 · Choose the controls", 0.464, 0.424, 0.470, "+5 · not learned", true],
+    ["Step 4 · Estimate the effect", 0.048, 0.254, 0.392, "+14 · a shortcut grew", true],
+    ["… both lazy regressions are wrong", null, 0.050, 0.029, "−2 · no real skill", false],
+  ];
+  const L = 260, R = 640, top = 10, rowH = 38, x = v => L + v * (R - L), bottom = top + rows.length * rowH;
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    el(svg, "line", { x1: x(t), x2: x(t), y1: top, y2: bottom, class: "gridline" });
+    el(svg, "text", { x: x(t), y: bottom + 18, "text-anchor": "middle", class: "ax" }, Math.round(t * 100) + "%");
+  }
+  el(svg, "text", { x: (L + R) / 2, y: bottom + 36, "text-anchor": "middle", class: "ax" }, "accuracy: share of items answered correctly");
+  rows.forEach(([label, chance, b, t, note, strong], i) => {
+    const cy = top + rowH * i + rowH / 2, sub = label.startsWith("…");
+    el(svg, "text", { x: sub ? 14 : 0, y: cy + 4, class: sub ? "lbl-s" : "lbl", style: sub ? "" : "font-weight:600" }, label);
+    el(svg, "line", { x1: x(Math.min(b, t)), x2: x(Math.max(b, t)), y1: cy, y2: cy, stroke: "var(--line)", "stroke-width": 4, "stroke-linecap": "round" });
+    if (chance !== null) el(svg, "line", { x1: x(chance), x2: x(chance), y1: cy - 10, y2: cy + 10, stroke: "var(--ink-3)", "stroke-width": 3 });
+    el(svg, "circle", { cx: x(b), cy, r: 5.5, fill: "var(--bg)", stroke: "var(--ink-2)", "stroke-width": 2 });
+    el(svg, "circle", { cx: x(t), cy, r: 6.5, fill: "var(--policy)", stroke: "var(--bg)", "stroke-width": 2 });
+    el(svg, "text", { x: R + 24, y: cy + 4, class: "lbl", style: strong ? "font-weight:600" : "fill:var(--ink-2)" }, note);
+  });
+})();
+</script>
+</body>
+</html>
