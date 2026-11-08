@@ -1,6 +1,6 @@
 # CausalAgentBench
 
-**An RL environment that trains LLM agents to answer causal questions from data, the way an analyst would.**
+**An RL environment and benchmark for training LLM agents to answer causal questions from data the way a data scientist would.**
 
 [![ci](https://github.com/Ruichu-Xia/causal-agent-benchmark/actions/workflows/ci.yml/badge.svg)](https://github.com/Ruichu-Xia/causal-agent-benchmark/actions/workflows/ci.yml)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
@@ -13,8 +13,9 @@
 
 When an LLM agent answers a causal question about a dataset, such as whether one variable affects another, it
 often takes a shortcut. It reads the answer off a correlation, or it guesses from what the variable names
-suggest, and both can be wrong. I built this environment to reward the steps a trained analyst follows instead.
-Every task comes from a simulated causal world, so each answer can be graded exactly against the truth.
+suggest, and both can be wrong. I built this environment to reward the steps an experienced data scientist
+follows instead. Every task comes from a simulated causal world, so each answer can be graded exactly against the
+truth.
 
 Training a 4B model on these tasks with RL raised its accuracy on held-out tasks from **43% to 63%**, and the
 gain carried over to new wording, larger graphs, unseen variable names and causal structures from published
@@ -36,7 +37,7 @@ scipy, statsmodels and three helper functions. The agent finishes with a reply w
 answer, and the judge compares only that line with the true answer to return a reward of 1 or 0. The true graph
 and answer stay outside the sandbox, so the only way to the answer is through the data.
 
-## Four questions, one analyst workflow
+## Four questions, one causal analysis workflow
 
 A causal analysis usually moves through four steps, and each task asks about one of them. This makes it possible
 to see which steps training actually improved.
@@ -48,9 +49,10 @@ to see which steps training actually improved.
 | 3. Choose the controls | Does regressing Y on X and Z recover X's effect? | Yes / No, or which of two analysts | controlling for the wrong variable | 46% |
 | 4. Estimate the effect | How much does Y change if X rises by one standard deviation? | a number | a biased estimate from wrong controls | 5% |
 
-**Accuracy** is the share of questions answered correctly. **Chance** is the accuracy from giving the best single
-answer to every question, so a model has only learned something if it beats chance. A numerical answer counts as
-correct within 0.10 standard deviations of the truth, and a reply without a final answer line scores 0.
+**Accuracy** is the share of questions answered correctly. **Chance** is the score a model would get by giving the
+same answer to every question, picking whichever answer is correct most often. A model has only learned something
+if it scores above chance. A numerical answer counts as correct within 0.10 standard deviations of the truth, and
+a reply without a final answer line scores 0.
 
 ## What training changed
 
