@@ -13,7 +13,7 @@ from PIL import Image
 
 HERE = Path(__file__).resolve().parent
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-FIGURES = ("hero", "episode", "workflow", "steps", "example", "transfer", "generation")
+FIGURES = ("hero", "episode", "steps", "example", "transfer", "generation")
 WIDTH = 960
 SCALE = 2
 

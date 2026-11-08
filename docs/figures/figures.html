@@ -14,13 +14,13 @@
   --bg: #ffffff; --wash: #f3f6f2; --surface: #ffffff; --ink: #1d2925; --muted: #55635c; --faint: #8a978f; --line: #dbe2dc;
   --accent: #1a7f56; --accent-ink: #1b6247; --accent-wash: #e6f1ea;
   --base: #bb7f26; --base-ink: #8a5a1e; --base-wash: #f6ecdf; --trained: #17734d;
-  --pos: #2a78d6; --neg: #c7362f; --code-bg: #f3f6f2;
+  --pos: #2a78d6; --neg: #c7362f; --code-bg: #f3f6f2; --up: #17734d; --down: #bb7f26;
 }
 :root[data-theme="dark"] {
   --bg: #0d1117; --wash: #151c19; --surface: #111815; --ink: #e4ebe7; --muted: #a2b0a9; --faint: #6f7d76; --line: #2b3732;
   --accent: #2f9a70; --accent-ink: #7fcfaa; --accent-wash: #15261f;
   --base: #bb8231; --base-ink: #e0b071; --base-wash: #2a2218; --trained: #1d7a55;
-  --pos: #3f8ce8; --neg: #e5534b; --code-bg: #151c19;
+  --pos: #3f8ce8; --neg: #e5534b; --code-bg: #151c19; --up: #1d7a55; --down: #bb8231;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 "IBM Plex Sans", system-ui, sans-serif; }
@@ -52,45 +52,27 @@ code { font-size: 0.86em; background: var(--code-bg); padding: 1px 5px; border-r
 .codeblock .o { color: var(--accent-ink); }
 svg text { font-family: "IBM Plex Sans", sans-serif; fill: var(--ink); }
 
-/* Gallery */
-.hero-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-bottom: 16px; }
-.hero-sub { margin: 0; max-width: 600px; font-size: 14.5px; color: var(--muted); }
-.hero-legend { display: grid; gap: 6px; font-size: 13px; color: var(--muted); flex: none; }
-.hero-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.hero-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.hc { background: var(--wash); border-radius: 12px; padding: 12px 12px 10px; display: flex; flex-direction: column; gap: 6px; }
-.hc-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.hc-top .label { color: var(--muted); font-size: 10.5px; }
-.hc-graph { flex: 1; display: grid; place-items: center; }
-.hc-fit { font-size: 12.5px; color: var(--muted); }
-.hc-data { border-top: 1px solid var(--line); padding-top: 7px; display: grid; grid-template-columns: 1fr 96px; gap: 8px; align-items: center; }
-.hc-data .lab { font-size: 12px; color: var(--muted); line-height: 1.35; }
-.hc-data .lab b { color: var(--ink); font-weight: 500; }
-.facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
-.fact { background: var(--wash); border-radius: 10px; padding: 12px 14px; }
-.fact b { display: block; font: 600 24px/1.15 "Newsreader", Georgia, serif; }
-.fact span { font-size: 12.5px; color: var(--muted); }
-.foot { margin: 12px 0 0; font-size: 12px; color: var(--faint); }
+/* Example tasks */
+.hero-top { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; }
+.hero-top .legend { margin: 0 0 12px; }
+.hero-sub { margin: 0 0 16px; max-width: 760px; font-size: 15px; color: var(--muted); }
+.ex-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.ex { background: var(--wash); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ex h3 { font: 600 17px/1.2 "Newsreader", Georgia, serif; margin: 0; }
+.ex-graph { display: grid; place-items: center; background: var(--bg); border-radius: 8px; padding: 10px 4px; }
+.ex .q { font-size: 13.5px; font-style: italic; flex: 1; }
+.ex .a { border-top: 1px solid var(--line); padding-top: 8px; font-size: 13.5px; color: var(--muted); min-height: 50px; }
+.ex .a b { font-weight: 600; color: var(--ink); }
 
 /* Episode */
-.flow { display: grid; grid-template-columns: 1.15fr 26px 1.35fr 26px 1.2fr 26px 1fr 26px 1fr; align-items: stretch; }
+.flow { display: grid; grid-template-columns: 1.75fr 26px 1.3fr 26px 1.2fr 26px 0.95fr 26px 0.95fr; align-items: stretch; }
 .flow .box { display: flex; flex-direction: column; gap: 6px; }
 .flow .box p { margin: 0; font-size: 13.5px; }
-.bracket { grid-column: 1 / -1; display: grid; grid-template-columns: 1.15fr 26px 1.35fr 26px 1.2fr 26px 1fr 26px 1fr; margin-top: 8px; }
+.bracket { grid-column: 1 / -1; display: grid; grid-template-columns: 1.75fr 26px 1.3fr 26px 1.2fr 26px 0.95fr 26px 0.95fr; margin-top: 8px; }
 .bracket div { grid-column: 1 / -1; border: 1.5px dashed var(--faint); border-top: 0; height: 16px; border-radius: 0 0 10px 10px; margin: 0 12% 0 8%; }
 .bracket p { grid-column: 1 / -1; text-align: center; font-size: 13px; color: var(--muted); margin: 6px 0 0; }
 .tool { display: grid; gap: 6px; }
 .tool .box { padding: 10px 12px; }
-
-/* Workflow */
-.four { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-.step { border-top: 3px solid var(--accent); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
-.step h3 { font: 600 19px/1.2 "Newsreader", Georgia, serif; margin: 0; }
-.step .q { font-size: 13.5px; font-style: italic; flex: 1; }
-.step .catch { font-size: 13px; color: var(--muted); }
-.step .meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--line); padding-top: 8px; font-size: 12.5px; color: var(--muted); }
-.span2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
-.span2 div { text-align: center; font: 500 11.5px/1.2 "IBM Plex Mono", monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); border-top: 1.5px solid var(--line); padding-top: 7px; }
 
 /* Example */
 .question { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
@@ -117,28 +99,19 @@ svg text { font-family: "IBM Plex Sans", sans-serif; fill: var(--ink); }
 </head>
 <body>
 
-<!-- Gallery of generated worlds -->
+<!-- Example tasks -->
 <section class="fig" id="hero">
-  <div class="hero-head">
-    <div>
-      <div class="label">The tasks</div>
-      <div class="display">Every task is a new causal world</div>
-      <p class="hero-sub">A hidden causal graph, real concept names and 2,000 rows of data. The agent sees only the rows and the names, and has to work out what the hidden graph implies.</p>
-    </div>
-    <div class="hero-legend">
-      <span><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="var(--pos)" stroke-width="3" stroke-linecap="round"/></svg>raises</span>
-      <span><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="var(--neg)" stroke-width="3" stroke-linecap="round"/></svg>lowers</span>
-      <span><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="var(--faint)" stroke-width="1.3"/></svg><svg width="34" height="10"><line x1="1" y1="5" x2="33" y2="5" stroke="var(--faint)" stroke-width="4"/></svg>weaker &rarr; stronger</span>
+  <div class="hero-top">
+    <div><div class="label">The tasks</div>
+    <div class="display">Every task is a new causal world</div></div>
+    <div class="legend">
+      <span><svg width="30" height="10"><line x1="1" y1="5" x2="29" y2="5" stroke="var(--up)" stroke-width="2.5" stroke-linecap="round"/></svg>raises</span>
+      <span><svg width="30" height="10"><line x1="1" y1="5" x2="29" y2="5" stroke="var(--down)" stroke-width="2.5" stroke-linecap="round"/></svg>lowers</span>
+      <span><svg width="22" height="14"><rect x="1" y="1" width="20" height="12" rx="6" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.5"/></svg>asked about</span>
     </div>
   </div>
-  <div class="hero-grid" id="hero-grid"></div>
-  <div class="facts">
-    <div class="fact"><b>3,999</b><span>distinct training worlds</span></div>
-    <div class="fact"><b>4&ndash;8</b><span>variables per world; 7&ndash;8 only in testing</span></div>
-    <div class="fact"><b>6,674</b><span>CauseNet concepts used as names</span></div>
-    <div class="fact"><b>1&ndash;36</b><span>graphs that fit one world's data</span></div>
-  </div>
-  <p class="foot">Six real worlds from the task sets. Links follow CauseNet relations in their stated direction; effect sizes and signs are simulated. Each scatter shows 260 of the 2,000 rows for one linked pair.</p>
+  <p class="hero-sub">For each task, the generator draws a random causal graph and names its variables after real cause-and-effect pairs. The agent never sees the graph. It only gets 2,000 rows of data simulated from the graph and one question. Below are four example tasks, one for each question type.</p>
+  <div class="ex-grid" id="hero-grid"></div>
 </section>
 
 <!-- One episode -->
@@ -146,20 +119,20 @@ svg text { font-family: "IBM Plex Sans", sans-serif; fill: var(--ink); }
   <div class="flow">
     <div class="box hidden">
       <div class="label" style="color:var(--muted)">Hidden world</div>
-      <svg id="ep-graph" viewBox="0 0 210 126" width="100%"></svg>
-      <p class="small">The true graph decides the answer: <b style="color:var(--ink)">No</b>.</p>
+      <div style="display:grid;place-items:center;margin:2px 0 4px"><svg id="ep-graph"></svg></div>
+      <p class="small">Under the true graph, the answer is <b style="color:var(--ink)">No</b>.</p>
     </div>
     <div class="arrow">&rarr;</div>
     <div class="box wash">
       <div class="label" style="color:var(--muted)">The agent sees</div>
-      <p><code>data.csv</code>: 2,000 rows</p>
+      <p><code>data.csv</code> with 2,000 rows</p>
       <p style="font-style:italic">"Are fatigue and distracted_drivers independent, given stresses and auto_accidents?"</p>
     </div>
     <div class="arrow">&rarr;</div>
     <div class="tool">
       <div class="box accent">
         <div class="label">Agent</div>
-        <p>Writes Python, reads the output, repeats</p>
+        <p>Writes Python, reads the output and repeats</p>
       </div>
       <div class="box">
         <p><code>python(code)</code> &nbsp;up to 10 calls</p>
@@ -182,41 +155,6 @@ svg text { font-family: "IBM Plex Sans", sans-serif; fill: var(--ink); }
   <div class="bracket"><div></div><p>The true answer goes straight to the judge. The agent never sees the graph or the answer.</p></div>
 </section>
 
-<!-- The four questions -->
-<section class="fig" id="workflow">
-  <div class="four">
-    <div class="step">
-      <div class="label">Step 1</div>
-      <h3>Test a relationship</h3>
-      <div class="q">"Are fatigue and distracted_drivers independent, given stresses and auto_accidents?"</div>
-      <div class="catch">Catches: trusting the plain correlation</div>
-      <div class="meta"><span class="pill plain">Yes / No</span><span>chance 51%</span></div>
-    </div>
-    <div class="step">
-      <div class="label">Step 2</div>
-      <h3>Find the direction</h3>
-      <div class="q">"Which is true? A. rain causes flooding, B. flooding causes rain, C. neither causes the other"</div>
-      <div class="catch">Catches: reading direction off a correlation</div>
-      <div class="meta"><span class="pill plain">A / B / C</span><span>chance 35%</span></div>
-    </div>
-    <div class="step">
-      <div class="label">Step 3</div>
-      <h3>Choose the controls</h3>
-      <div class="q">"To estimate the effect of X on Y, an analyst regresses Y on X and Z. Would this recover the causal effect?"</div>
-      <div class="catch">Catches: controlling for the wrong variable</div>
-      <div class="meta"><span class="pill plain">Yes / No</span><span>chance 46%</span></div>
-    </div>
-    <div class="step">
-      <div class="label">Step 4</div>
-      <h3>Estimate the effect</h3>
-      <div class="q">"If X were set one standard deviation higher, by how many standard deviations would Y change?"</div>
-      <div class="catch">Catches: a biased estimate from wrong controls</div>
-      <div class="meta"><span class="pill plain">number &plusmn; 0.10</span><span>chance 5%</span></div>
-    </div>
-  </div>
-  <div class="span2"><div>Work out the causal graph</div><div>Use it to measure an effect</div></div>
-</section>
-
 <!-- Results by step -->
 <section class="fig" id="steps">
   <div class="legend">
@@ -231,7 +169,7 @@ svg text { font-family: "IBM Plex Sans", sans-serif; fill: var(--ink); }
 <section class="fig" id="transfer">
   <div class="legend">
     <span><i class="dot" style="background:var(--base)"></i>base model</span>
-    <span><i class="dot" style="border:2px solid var(--faint);background:var(--bg)"></i>control: same training, shuffled rewards</span>
+    <span><i class="dot" style="border:2px solid var(--faint);background:var(--bg)"></i>control (same training, shuffled rewards)</span>
     <span><i class="dot" style="background:var(--trained)"></i>after RL training</span>
   </div>
   <svg id="transfer-chart" viewBox="0 0 904 352"></svg>
@@ -243,27 +181,27 @@ svg text { font-family: "IBM Plex Sans", sans-serif; fill: var(--ink); }
     <div>
       <div class="label" style="color:var(--muted)">Held-out task iid_test-88 &middot; step 1</div>
       <p style="font-style:italic;margin-top:4px">"Are severe_poverty and accident associated, given change and additional_expenses?"</p>
-      <p class="small" style="margin-top:4px">Both cause additional_expenses, so holding it fixed links them. True answer: <b style="color:var(--ink)">Yes</b>.</p>
+      <p class="small" style="margin-top:4px">Both cause additional_expenses, so holding it fixed links them. The true answer is <b style="color:var(--ink)">Yes</b>.</p>
     </div>
   </div>
   <div class="vs">
     <div class="box base">
       <div class="verdict"><h3>Base model</h3><span class="pill warn">wrong &middot; reward 0</span></div>
-      <p class="small" style="margin:0">Wrote its own <code>partial_corr</code>, which deletes the columns it should hold fixed:</p>
+      <p class="small" style="margin:0">It wrote its own <code>partial_corr</code>, which deletes the columns it should hold fixed.</p>
       <div class="codeblock"><span class="c"># "Remove the effect of the given variables"</span>
 for var in given:
     df_temp = <span class="x">df_temp.drop(columns=[var])</span>
 corr, p = pearsonr(df_temp[x], df_temp[y])</div>
-      <p class="small" style="margin:0">So it measured the plain correlation, found nothing, and stopped.</p>
+      <p class="small" style="margin:0">It measured the plain correlation instead, found nothing and stopped.</p>
       <div class="ans"><span>Answer: No</span><span style="color:var(--neg)">&#10005;</span></div>
     </div>
     <div class="box trained">
       <div class="verdict"><h3>After RL training</h3><span class="pill good">right &middot; reward 1</span></div>
-      <p class="small" style="margin:0">Called the provided helper with exactly the variables in the question:</p>
+      <p class="small" style="margin:0">It called the provided helper with exactly the variables in the question.</p>
       <div class="codeblock">partial_corr(df, 'severe_poverty', 'accident',
   given=('change', 'additional_expenses'))
 <span class="o">{'r': 0.134, 'p_value': 1.5e-09, 'n': 2000}</span></div>
-      <p class="small" style="margin:0">Read the result: a clear association once both are held fixed.</p>
+      <p class="small" style="margin:0">The result shows a clear association once both are held fixed.</p>
       <div class="ans"><span>Answer: Yes</span><span style="color:var(--accent-ink)">&#10003;</span></div>
     </div>
   </div>
@@ -275,13 +213,13 @@ corr, p = pearsonr(df_temp[x], df_temp[y])</div>
     <div class="g"><div class="box wash"><span class="n">1</span><h3>Draw a random causal graph</h3><p>4&ndash;6 variables in training, with random link strengths.</p></div><div class="arrow">&rarr;</div></div>
     <div class="g"><div class="box wash"><span class="n">2</span><h3>Find every graph the data can't rule out</h3><p>Between 1 and 36 graphs fit the same data equally well.</p></div><div class="arrow">&rarr;</div></div>
     <div class="g"><div class="box wash"><span class="n">3</span><h3>Name the variables</h3><p>Real cause&ndash;effect concepts from CauseNet, matching the true graph.</p></div><div class="arrow">&rarr;</div></div>
-    <div class="g"><div class="box wash"><span class="n">4</span><h3>Simulate data, ask one question</h3><p>2,000 rows; the answer comes from the true graph.</p></div><div class="arrow">&rarr;</div></div>
+    <div class="g"><div class="box wash"><span class="n">4</span><h3>Simulate data, ask one question</h3><p>2,000 rows, with the answer taken from the true graph.</p></div><div class="arrow">&rarr;</div></div>
     <div class="g"><div class="box accent"><span class="n">5</span><h3>Check it is answerable</h3><p>A standard method on these rows must reach the answer, or the task is redrawn.</p></div></div>
   </div>
   <div class="guards">
-    <div class="box"><b>Data alone falls short</b><span class="muted">Several graphs fit the data, so the direction often can't be read from it.</span></div>
+    <div class="box"><b>Data alone falls short</b><span class="muted">Several graphs fit the same data, so the direction often cannot be read from it.</span></div>
     <div class="box"><b>Names alone fall short</b><span class="muted">Some plausible-sounding links are absent from the true graph.</span></div>
-    <div class="box"><b>Not yet airtight</b><span class="muted">Column order and lazy regressions still beat chance; see Limitations.</span></div>
+    <div class="box"><b>Not yet airtight</b><span class="muted">Column order and lazy regressions still beat chance, as described under Limitations.</span></div>
   </div>
 </section>
 
@@ -305,21 +243,10 @@ const pct = v => `${Math.round(v * 100)}%`;
 
 // The episode's hidden graph: stresses → alcohol → fatigue; alcohol, fatigue, distracted_drivers → auto_accidents.
 function episodeGraph() {
-  const svg = document.getElementById("ep-graph");
-  const d = el(svg, "defs", {});
-  const m = el(d, "marker", { id: "ep-a", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto" });
-  el(m, "path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--muted)" });
-  const N = { s: [24, 16, "stresses", "r"], a: [24, 62, "alcohol", "r"], f: [24, 108, "fatigue", "r"], d: [170, 30, "distracted", "t"], c: [170, 98, "accidents", "b"] };
-  for (const [a, b] of [["s", "a"], ["a", "f"], ["a", "c"], ["f", "c"], ["d", "c"]]) {
-    const [x1, y1] = N[a], [x2, y2] = N[b], L = Math.hypot(x2 - x1, y2 - y1), ux = (x2 - x1) / L, uy = (y2 - y1) / L;
-    el(svg, "line", { x1: x1 + ux * 8, y1: y1 + uy * 8, x2: x2 - ux * 9, y2: y2 - uy * 9, stroke: "var(--muted)", "stroke-width": 1.5, "marker-end": "url(#ep-a)" });
-  }
-  for (const k in N) {
-    const [x, y, label, pos] = N[k];
-    el(svg, "circle", { cx: x, cy: y, r: 6, fill: "var(--bg)", stroke: "var(--muted)", "stroke-width": 1.5 });
-    const [tx, ty, anchor] = { r: [x + 11, y + 4, "start"], t: [x, y - 11, "middle"], b: [x, y + 20, "middle"] }[pos];
-    el(svg, "text", { x: tx, y: ty, "text-anchor": anchor, style: "font-size:12px" }, label);
-  }
+  drawDag(document.getElementById("ep-graph"), "ep", {
+    names: ["stresses", "alcohol", "fatigue", "distracted_drivers", "auto_accidents"],
+    edges: [[0, 1], [1, 2], [1, 4], [2, 4], [3, 4]], focus: [2, 3],
+  }, { W: 214, size: 11.5 });
 }
 
 // Dot rows on a shared percentage scale. rows: {label, sub, values: {base, control?, trained, chance?}, pill: [text, kind]}.
@@ -379,96 +306,93 @@ function transferChart() {
   ], 0.2, 0.7, [0.2, 0.3, 0.4, 0.5, 0.6, 0.7]);
 }
 
-const HERO = [{"id":"train_train-3519","split":"train","names":["back_pain","accident","work_disability","smoking"],"edges":[[0,2,1.461],[1,0,0.528],[1,2,-1.786],[3,0,-0.408],[3,1,-0.788]],"members":10,"scatter":{"x":1,"y":0,"r":0.86,"pts":[[-0.1,-0.15],[-2.21,-1.67],[0.52,-0.07],[-0.57,-0.89],[-0.34,-0.54],[0.6,0.75],[-1.36,-1.27],[0.27,-1.19],[0.31,0.77],[0.15,0.1],[-1.13,-1.84],[0.2,0.09],[0.24,0.31],[-0.76,-0.68],[-0.05,0.75],[1.09,0.47],[-0.31,-0.26],[-0.26,0.17],[1.07,0.82],[0.66,1.24],[-0.9,-0.94],[0.33,0.86],[-0.93,-1.05],[-0.06,-0.03],[-0.14,-0.19],[0.42,0.41],[0.93,1.02],[0.64,0.33],[-0.42,-0.31],[0.28,0.07],[-1.82,-1.96],[0.9,0.27],[-1.05,-0.64],[-0.36,0.55],[-0.52,-0.28],[0.53,0.34],[1.3,0.58],[-0.56,-0.91],[0.62,0.46],[-1.55,-1.11],[-0.34,0.1],[-2.63,-2.69],[0.82,0.39],[1.1,0.16],[-0.29,-0.79],[-0.04,0.46],[-0.59,-1.12],[0.6,0.14],[0.97,0.38],[-0.72,-0.73],[-1.9,-2.38],[-1.55,-1.28],[0.18,-0.01],[-0.49,-0.74],[0.31,0.56],[-0.98,-0.88],[-1.63,-2.1],[-1.24,-2.12],[0.87,0.74],[1.04,1.83],[0.48,0.51],[1.3,-0.23],[-0.58,-0.79],[-0.85,-0.3],[2.11,1.72],[-0.95,-1.38],[0.46,-0.07],[-0.7,-1.06],[-0.09,-0.08],[-0.32,0.3],[-1.1,-0.76],[0.09,-0.42],[-0.22,0.35],[-0.25,-0.64],[-1.54,-1.83],[0.97,1.07],[-1.65,-0.84],[1.24,0.87],[0.08,0.56],[0.38,0.44],[0.73,-0.09],[0.45,0.3],[-0.52,-0.29],[-1.93,-0.59],[1.66,1.14],[0.96,0.38],[0.9,0.3],[-0.64,0.15],[0.33,0.6],[-0.45,0.06],[0.99,0.47],[2.34,2.56],[-0.72,-0.87],[0.05,-0.25],[1.9,1.99],[-0.64,-0.41],[-2.02,-1.12],[-2.49,-2.71],[1.21,0.55],[-0.34,-0.74],[0.51,-0.07],[-0.8,-0.51],[1.78,1.41],[-0.54,-0.18],[-0.58,-1.92],[-0.43,-1.62],[1.46,1.24],[1.17,1.05],[-0.56,-0.69],[0.69,0.8],[-1.94,-2.09],[-0.18,-0.18],[0.98,1.78],[-0.53,-0.4],[1.32,0.37],[1.74,0.82],[0.06,0.6],[1.78,1.33],[-0.22,-0.11],[-1.48,-1.82],[0.24,0.46],[-0.19,0.44],[-1.18,-1.24],[0.8,-0.36],[0.57,0.79],[-0.44,0.33],[-0.97,-0.74],[-0.38,0.05],[-0.14,-0.11],[-0.83,-0.24],[0.12,-0.49],[-1.75,-1.66],[-1.41,-0.21],[-0.29,0.07],[0.81,0.06],[0.22,-0.09],[0.7,1.09],[-2.1,-1.85],[-0.04,0.44],[-0.02,-0.61],[0.08,0.22],[-0.1,-0.39],[-1.79,-2.7],[0.1,0.31],[0.44,0.07],[-1.67,-1.42],[0.62,0.44],[0.2,0.33],[-1.88,-0.77],[-0.4,-0.48],[-0.67,0.04],[-0.03,-0.68],[-0.14,1.18],[-1.24,-0.37],[-0.61,-0.0],[-0.09,0.28],[-0.22,0.4],[-0.16,-1.37],[0.92,1.01],[-0.02,0.21],[0.21,0.19],[0.53,0.06],[0.59,0.45],[2.38,2.49],[1.64,1.31],[0.16,0.09],[-0.7,-0.85],[0.42,0.88],[-0.48,0.12],[-0.88,-1.16],[0.25,0.33],[0.95,-0.05],[-0.52,-0.26],[-1.0,-0.59],[-0.0,0.24],[0.91,-0.09],[0.51,0.92],[1.58,1.55],[-1.79,-1.05],[-0.33,-0.09],[1.97,2.56],[0.45,-0.41],[1.5,0.9],[-2.27,-1.84],[0.21,-0.17],[1.79,1.54],[-0.87,-0.88],[0.26,-1.41],[-1.35,-0.82],[1.0,0.59],[-0.54,-0.8],[-1.44,-0.86],[-1.92,-1.86],[0.25,0.16],[-0.14,-0.63],[1.83,1.93],[-0.69,-0.3],[0.97,0.45],[0.06,0.23],[0.02,0.48],[-0.45,-0.76],[0.41,0.1],[1.05,0.07],[-0.56,0.22],[-0.49,-1.14],[0.41,0.9],[-0.83,-0.76],[1.28,0.63],[-1.27,-0.85],[-0.02,-0.02],[2.58,2.42],[-0.47,-0.18],[0.06,-0.39],[-1.34,-1.05],[-0.26,-1.03],[-0.62,-0.51],[0.16,0.74],[0.35,0.22],[-0.77,-0.35],[1.45,0.3],[0.8,-0.48],[0.3,0.05],[0.01,-0.07],[0.5,-0.23],[-0.11,-0.44],[-0.77,-1.44],[0.11,0.19],[-1.11,-0.6],[-0.18,0.07],[-0.26,-0.87],[-1.15,-0.93],[0.46,0.23],[-1.02,-0.5],[-0.06,0.79],[1.13,0.32],[0.19,-0.13],[0.63,0.35],[-1.25,-1.01],[-0.45,-0.56],[-0.79,-0.21],[1.4,0.14],[1.13,1.87],[-0.87,-1.34],[0.66,1.79],[1.41,0.96],[-0.74,0.45],[-0.08,0.65],[-0.66,-0.72],[-1.17,-1.62],[0.38,-0.24],[-2.43,-2.48],[0.21,-0.4],[-1.87,-0.96],[-0.79,-0.74],[-0.48,-0.88],[-0.36,-1.14],[0.75,0.26],[-1.23,-1.13],[-0.19,0.08],[-1.66,-1.44]]}},{"id":"train_train-2983","split":"train","names":["storm","typhoon","rain","high_winds","rough_seas"],"edges":[[0,2,0.407],[0,4,-0.47],[1,2,0.781],[1,3,1.247],[1,4,0.64],[2,3,-1.492],[3,4,-0.621]],"members":1,"scatter":{"x":1,"y":2,"r":0.78,"pts":[[-1.08,-1.04],[1.09,-0.64],[0.95,0.63],[0.42,-0.42],[2.25,2.82],[-2.55,-2.65],[0.26,0.75],[-0.73,-0.82],[0.34,0.91],[0.32,-0.04],[0.77,1.08],[1.61,0.46],[0.08,0.79],[-0.03,-0.47],[0.27,-0.37],[-0.02,-0.64],[-0.16,0.26],[-1.67,-0.68],[-0.68,-0.65],[1.78,0.8],[0.91,2.28],[-0.5,-0.29],[1.43,1.57],[1.09,0.29],[-0.5,0.63],[-0.28,0.42],[0.42,0.82],[-2.25,-2.01],[0.87,0.86],[-1.06,-0.26],[-0.03,-0.33],[1.68,0.4],[-0.01,-0.31],[0.84,1.82],[-0.08,0.36],[0.83,0.65],[0.31,-0.54],[-0.29,0.09],[0.85,-0.14],[0.71,-0.03],[-1.38,-2.0],[1.87,1.35],[-0.41,-1.09],[-1.0,-1.02],[0.04,0.63],[-0.61,0.14],[-0.55,-0.69],[-1.01,-1.49],[-0.88,-0.04],[0.73,-0.47],[-0.7,-1.26],[-1.35,-2.02],[-0.54,0.11],[2.36,1.51],[-2.9,-2.33],[1.24,-0.01],[-0.53,0.12],[-0.72,-0.05],[-0.13,1.17],[0.24,-0.19],[-0.56,-1.56],[2.74,1.81],[-0.05,0.69],[-0.92,-1.4],[-0.92,-0.4],[-0.73,-0.49],[-0.23,1.37],[0.04,0.06],[-1.4,-0.48],[0.56,0.14],[-0.4,-1.57],[0.81,-0.23],[-1.74,-1.37],[1.16,0.81],[0.22,-0.09],[-1.63,0.15],[0.22,-0.11],[2.95,2.15],[-0.6,-0.3],[1.27,0.75],[-0.39,0.36],[-0.47,0.41],[0.17,0.79],[0.5,0.13],[-2.09,-2.68],[-0.09,1.04],[0.15,0.08],[-0.4,-0.25],[-0.57,-1.13],[-0.5,-0.7],[-0.12,0.4],[-0.33,-0.99],[-1.31,-0.38],[-0.45,-1.01],[-0.51,0.05],[-0.52,-0.38],[-0.47,-0.58],[-1.4,-1.44],[0.49,0.18],[-0.4,-0.31],[0.25,0.13],[0.65,0.47],[-2.23,-2.12],[0.06,-1.12],[0.06,0.57],[0.46,0.23],[-0.34,-0.41],[-0.03,-0.39],[-0.94,0.75],[0.64,0.67],[-1.98,-1.38],[-0.56,-1.33],[-2.33,-2.63],[0.01,-0.69],[1.81,1.47],[0.14,0.28],[0.09,0.9],[0.87,1.61],[-0.37,-0.33],[-0.12,-0.58],[-0.12,-0.08],[0.01,1.16],[0.14,-0.25],[-0.17,0.04],[-1.5,0.56],[-0.1,0.51],[0.73,0.49],[1.04,1.54],[-1.76,0.34],[-0.25,-0.81],[-0.31,-0.58],[0.43,0.28],[-0.51,-0.01],[1.59,0.62],[-1.15,-0.21],[-1.27,-0.76],[-0.76,0.57],[-1.05,-0.44],[0.77,0.78],[0.1,-0.65],[-0.36,-0.0],[-0.42,-0.7],[-0.33,0.5],[-1.59,-0.75],[0.8,0.06],[-0.34,-0.08],[0.36,-0.09],[0.05,-0.05],[1.61,0.5],[-1.37,-0.96],[-1.49,-1.15],[1.22,0.33],[-0.98,-0.71],[-0.78,-1.24],[1.2,0.88],[-0.86,-1.1],[1.21,1.76],[0.21,-0.82],[1.3,0.27],[-1.01,0.66],[1.22,1.5],[-0.29,0.27],[-1.56,-0.81],[0.38,0.07],[-0.43,0.07],[-0.58,-0.14],[0.73,-0.06],[1.5,1.75],[-0.77,-0.53],[1.26,-0.55],[-0.77,-0.97],[-0.98,-0.7],[-0.77,0.34],[0.35,0.11],[0.01,-0.29],[-0.27,-0.94],[-0.11,-0.21],[-1.19,-2.29],[0.31,0.84],[-1.63,-1.85],[1.11,-0.07],[0.15,-0.22],[-0.23,0.12],[-0.29,0.18],[0.16,0.15],[-0.51,-0.77],[0.68,0.78],[-0.43,-0.06],[-0.28,0.37],[0.75,0.81],[-1.35,-0.87],[0.88,0.45],[1.35,1.17],[-2.0,-0.98],[0.61,1.34],[0.28,0.99],[-0.37,-0.03],[0.58,-0.18],[-0.06,0.46],[-0.3,-0.41],[0.7,0.92],[0.63,1.31],[0.37,0.2],[0.28,1.17],[-1.1,-1.11],[0.38,-0.69],[1.51,1.36],[0.73,0.74],[0.34,0.11],[-0.15,0.11],[-0.33,-0.17],[0.4,-0.45],[0.38,0.5],[1.6,-0.18],[0.8,0.78],[0.69,0.17],[0.19,0.85],[-0.37,-0.35],[-0.25,0.01],[-1.26,-1.78],[2.47,2.27],[-0.09,0.99],[-0.39,-1.19],[1.56,1.32],[-0.31,-0.32],[-0.5,-0.34],[-1.72,-1.04],[0.92,1.18],[1.02,0.76],[1.12,0.55],[-0.08,0.5],[2.12,2.15],[-1.04,-0.79],[2.14,1.28],[-0.75,-0.4],[-0.85,-0.08],[1.34,1.73],[-0.74,-0.63],[1.96,0.92],[-1.15,-1.13],[-2.88,-2.95],[-0.23,-0.63],[-0.26,0.22],[1.39,1.02],[0.7,0.17],[-0.12,-0.13],[0.19,1.05],[0.27,1.29],[-0.61,-1.7],[0.18,-0.19],[-0.55,0.62],[1.91,2.7],[0.53,0.21],[1.12,0.93],[-0.32,0.81],[0.55,2.15],[-0.39,0.68],[1.19,0.65],[-1.24,-1.48],[-0.57,-0.88]]}},{"id":"train_train-95","split":"train","names":["exercise","bacteria","constipation","dehydration","stomach_cramps"],"edges":[[0,4,0.286],[1,2,0.838],[1,3,0.726],[1,4,0.757],[2,4,-0.308],[3,4,0.405]],"members":3,"scatter":{"x":1,"y":2,"r":0.84,"pts":[[3.35,2.43],[0.25,0.58],[0.17,-0.15],[-0.99,-1.39],[1.27,1.43],[-1.11,-0.82],[-1.29,-1.26],[1.44,1.3],[-0.44,-0.97],[0.01,0.08],[-0.48,-0.71],[0.14,0.02],[0.42,-0.42],[-0.14,0.22],[-0.63,-0.13],[0.68,2.17],[0.35,-0.51],[-0.05,0.26],[0.25,-0.29],[-0.81,-0.89],[-1.16,-0.67],[0.86,1.2],[-0.2,-1.38],[-1.48,-1.33],[0.65,-0.71],[-0.26,0.08],[0.45,0.16],[2.84,1.63],[0.27,-0.23],[-0.48,-1.52],[-0.68,-0.52],[1.22,0.36],[0.11,-0.35],[0.75,0.21],[-0.46,-1.0],[-0.17,0.25],[-0.24,0.47],[0.78,0.05],[1.57,1.0],[0.46,-0.22],[-0.15,-0.01],[-1.51,-1.42],[0.04,-0.34],[-0.25,-0.56],[0.43,0.61],[0.43,0.21],[0.68,1.79],[-1.29,-1.38],[-0.31,0.42],[1.72,0.88],[-0.67,0.32],[1.17,0.13],[-1.82,-1.83],[0.17,-0.06],[0.83,0.27],[1.01,0.61],[-0.89,-2.18],[0.36,0.21],[-0.37,0.37],[0.92,0.4],[-0.2,0.29],[-0.67,-0.09],[-0.5,-1.5],[-0.61,-0.9],[-1.23,-0.82],[-0.28,-0.05],[0.51,0.44],[-1.62,-1.71],[-1.94,-1.98],[1.59,0.83],[-0.97,-0.31],[-1.06,-0.51],[0.85,1.45],[0.05,1.03],[-2.23,-1.75],[-1.16,-1.47],[1.32,0.95],[-1.28,-1.63],[-0.07,-0.07],[0.44,-0.04],[0.79,0.4],[0.49,0.38],[-1.24,-1.23],[-0.46,0.24],[-0.0,-0.32],[1.86,2.05],[1.51,0.76],[-0.62,-1.16],[-0.24,-1.46],[0.04,0.18],[-1.85,-1.58],[1.83,0.87],[-0.38,0.32],[0.27,0.58],[0.14,-0.15],[0.77,0.23],[0.19,0.56],[1.91,1.73],[1.31,0.62],[0.05,1.05],[-0.32,-1.19],[-1.42,-0.22],[0.92,1.62],[1.12,0.26],[-0.14,-0.59],[-1.34,-1.2],[-1.15,-0.59],[-0.08,-0.43],[-0.66,0.01],[0.45,-0.25],[0.11,0.36],[1.71,1.62],[-1.8,-0.49],[2.03,2.51],[-0.37,-0.42],[-0.67,0.82],[0.32,-0.33],[0.56,1.03],[0.37,0.56],[0.27,0.63],[-0.08,0.59],[-0.05,-0.54],[0.06,-0.3],[-0.57,-0.42],[-1.35,-0.8],[-1.76,-1.74],[0.6,0.42],[-0.12,-0.35],[-1.85,-1.31],[-0.01,0.06],[0.14,-0.64],[0.2,0.46],[-0.54,-0.78],[1.2,0.07],[0.08,-0.81],[1.42,1.9],[-0.14,-0.72],[-1.66,-1.77],[0.31,0.71],[-0.11,-1.41],[-1.11,-1.49],[-0.5,-0.71],[1.48,0.45],[-0.25,-0.53],[0.45,0.07],[0.22,0.5],[1.95,2.31],[-0.35,-0.67],[-0.88,-1.28],[0.11,-0.75],[-0.12,-0.14],[-1.85,-1.55],[1.27,2.19],[0.43,-0.34],[-0.31,0.09],[0.41,0.63],[1.65,2.25],[-0.28,-0.08],[-0.14,0.52],[0.79,0.36],[0.93,-0.05],[-0.31,-0.21],[-0.88,-1.53],[0.06,-0.41],[0.07,-0.04],[1.62,0.57],[0.47,-0.15],[-0.66,-0.34],[0.23,0.84],[0.33,0.11],[0.89,0.75],[-2.62,-1.84],[-0.83,-1.22],[1.08,0.92],[-2.0,-1.01],[-1.33,-1.36],[0.54,0.58],[-0.69,-1.28],[0.16,0.23],[-0.09,-0.03],[-0.76,-0.72],[0.1,-1.13],[-0.9,-0.62],[-0.06,-0.83],[0.23,0.94],[0.89,1.13],[-0.01,-0.03],[0.52,-0.08],[-1.1,-1.42],[-2.72,-2.06],[0.16,0.5],[-0.82,-0.49],[0.34,0.52],[0.02,0.21],[0.39,1.23],[0.07,0.35],[0.99,1.0],[-0.69,-0.03],[0.72,0.99],[-0.27,-1.17],[0.95,1.42],[-1.0,-0.76],[-0.57,-0.92],[0.82,0.73],[-0.44,-0.73],[0.9,0.48],[-1.21,-1.13],[0.51,0.76],[-1.73,-0.78],[-0.25,0.42],[0.24,0.74],[-1.86,-0.41],[0.44,1.04],[0.41,0.24],[-0.04,1.14],[0.06,-0.4],[-0.17,0.43],[2.51,1.74],[-1.65,-1.65],[0.25,-0.52],[-0.64,-1.07],[-0.9,-0.66],[-2.29,-1.83],[-0.46,-0.99],[-0.66,-0.24],[1.21,0.51],[2.23,1.81],[-1.16,-0.9],[0.69,-0.03],[1.9,1.71],[-0.67,0.09],[-1.31,-1.83],[-0.23,-1.39],[0.35,0.39],[0.32,-0.13],[0.31,0.56],[-0.69,-1.04],[0.32,0.56],[-0.29,-0.22],[-0.11,-0.16],[-0.31,-0.37],[-0.16,-0.3],[-0.59,-0.47],[0.7,0.25],[-0.5,-0.11],[-0.65,-0.56],[0.53,-0.05],[0.76,0.27],[-0.11,-0.31],[-0.84,-0.6],[-2.51,-1.32],[-0.31,-0.25],[-0.26,-0.78],[-1.5,-1.6],[-0.95,-0.1],[-0.06,-1.31],[0.0,0.17],[0.88,1.0],[-0.58,-0.1],[0.3,0.7]]}},{"id":"train_train-559","split":"train","names":["disorders","injury","infection","osteoarthritis","neck_pain","joint_swelling"],"edges":[[0,3,-0.432],[0,4,-0.395],[1,3,0.588],[1,4,-0.44],[2,0,0.746],[2,3,0.788],[3,4,-0.396],[3,5,-0.873]],"members":2,"scatter":{"x":2,"y":0,"r":0.73,"pts":[[1.18,0.44],[-0.1,-0.93],[-0.08,-0.54],[-0.05,-0.37],[-0.05,-0.22],[-1.4,-1.73],[0.05,-1.37],[1.29,1.0],[-0.11,0.26],[-0.84,-0.93],[-0.04,0.19],[-1.41,0.4],[0.7,0.89],[-0.25,-0.82],[0.09,-0.03],[0.42,-0.15],[-2.7,-1.28],[0.74,-0.44],[-0.16,-0.42],[-2.65,-2.15],[0.72,-0.24],[-0.5,-1.14],[0.31,0.43],[1.65,0.65],[-2.82,-1.83],[-0.22,0.12],[-1.12,-0.41],[0.23,0.1],[-2.0,-1.48],[0.52,1.8],[1.42,0.85],[-1.69,-1.56],[-0.13,0.62],[-0.59,0.18],[0.83,0.62],[0.35,1.1],[-1.83,-0.99],[1.59,1.25],[-0.77,1.53],[0.14,1.26],[2.33,1.24],[0.33,0.15],[-0.39,-1.2],[-1.24,-0.41],[0.21,0.85],[0.17,0.62],[-0.28,-0.25],[-0.87,-0.14],[2.66,2.12],[0.42,0.66],[-1.19,-1.29],[1.43,0.32],[-0.72,-1.57],[-0.84,-1.37],[0.72,0.27],[1.11,2.04],[1.35,1.7],[1.42,0.42],[0.08,0.41],[-1.11,-0.46],[0.41,0.44],[-1.2,-1.38],[-0.51,0.28],[-0.09,-1.28],[-0.95,-0.77],[0.49,0.0],[-0.34,-0.79],[-1.97,-1.13],[-0.97,-0.69],[0.11,0.46],[1.25,0.57],[-1.36,-0.38],[-1.27,-1.28],[0.46,1.14],[0.52,0.13],[1.21,1.63],[-0.1,0.08],[0.55,0.37],[-1.24,-1.2],[1.12,0.89],[-0.75,0.34],[-0.27,-0.5],[0.92,-0.01],[-0.11,0.46],[0.42,-0.53],[0.53,-0.83],[-1.51,-1.32],[-0.42,-0.29],[0.51,0.7],[-1.23,-2.52],[-0.2,-1.03],[0.97,0.9],[1.25,-0.44],[-0.01,-0.11],[0.7,0.28],[-0.16,0.91],[1.0,0.86],[-0.81,0.61],[0.3,1.38],[-0.02,0.04],[-0.18,0.35],[-0.32,-0.99],[-0.7,-0.93],[0.68,0.21],[-0.54,-0.79],[0.55,1.32],[-0.17,0.45],[1.09,0.38],[-0.51,-1.35],[-1.51,-1.06],[-0.63,-0.38],[0.92,0.66],[-0.4,1.03],[0.67,0.95],[-0.17,1.08],[0.59,0.23],[-0.65,0.87],[0.87,0.45],[1.32,0.73],[-1.08,0.13],[-1.21,-2.07],[-0.62,-1.01],[-0.72,-0.52],[-0.33,0.59],[0.32,0.24],[0.83,0.46],[-0.53,-0.07],[0.05,1.49],[-0.68,-1.93],[-0.4,1.18],[-1.51,-1.07],[0.98,0.01],[-0.56,-0.25],[0.5,1.01],[0.24,0.25],[1.06,0.83],[1.1,2.21],[2.3,1.16],[-1.37,-0.11],[1.04,0.82],[-0.42,0.15],[0.55,0.44],[0.7,0.44],[1.88,0.93],[-0.87,0.4],[-0.34,-0.34],[-0.39,-0.57],[-0.37,0.11],[0.05,0.54],[0.74,-0.13],[0.36,0.5],[0.8,1.44],[-0.8,-0.74],[-0.78,-0.1],[-0.49,1.49],[-1.0,-1.28],[-0.39,-0.13],[-0.37,0.12],[1.53,0.86],[-0.26,-1.17],[-0.8,-1.44],[0.0,-0.29],[1.02,-0.78],[-0.44,0.21],[0.58,-1.14],[-1.04,-1.93],[-0.61,-0.05],[-0.12,-1.27],[-0.19,-0.33],[0.66,0.3],[0.46,0.08],[-0.8,-0.42],[0.87,0.84],[0.35,0.89],[-0.65,0.37],[-0.26,0.88],[0.1,0.12],[1.44,1.61],[-1.46,-0.6],[0.47,0.65],[1.29,-0.17],[2.19,2.26],[0.2,-0.68],[-0.91,-0.34],[-0.1,0.18],[-0.35,-0.12],[1.44,1.55],[-0.8,-0.53],[1.1,0.89],[0.69,0.32],[2.81,2.45],[1.57,1.17],[-0.69,-1.82],[0.11,0.38],[-0.05,-1.12],[0.19,-0.29],[0.02,-0.04],[0.31,1.37],[-1.24,-1.55],[1.27,0.88],[-1.53,-0.52],[-1.2,-0.0],[0.36,-0.6],[-0.09,-0.38],[0.16,-0.4],[-1.17,-1.32],[1.12,1.01],[0.04,-0.06],[-0.3,0.54],[-0.19,-1.03],[-1.27,-1.12],[0.26,-1.53],[1.44,2.1],[-0.88,-0.17],[-2.15,-1.66],[-0.95,-1.41],[1.12,-0.19],[0.2,0.55],[1.25,0.79],[0.49,-0.6],[0.99,0.97],[0.8,-0.53],[1.67,1.84],[1.06,0.07],[-0.12,-0.22],[0.81,0.18],[-0.39,-1.06],[0.62,-1.32],[-2.0,-1.81],[-1.1,-1.2],[-0.09,0.14],[2.36,2.41],[-1.08,-1.94],[-0.17,-0.4],[-1.32,-0.32],[0.3,-0.08],[0.3,0.25],[-1.02,-0.89],[1.24,1.85],[-0.89,-0.55],[-1.45,-0.43],[-0.18,0.95],[-0.15,-0.88],[0.37,-0.13],[-0.1,-1.18],[-0.48,0.81],[-0.77,-1.23],[-0.73,0.11],[0.99,0.06],[-0.24,-0.38],[-0.08,-0.26],[0.52,-0.2],[1.18,0.75],[-0.55,-0.11],[-0.7,-0.86],[-0.6,0.45],[-1.45,0.47],[1.37,2.11],[0.73,0.2],[1.36,0.19]]}},{"id":"ood_size_test-51","split":"held_out_size","names":["medications","beer","alcohol","drunkenness","damage","hangover","blackouts"],"edges":[[0,4,-0.673],[0,6,0.621],[1,3,0.526],[1,4,0.371],[2,3,0.551],[2,5,-0.94],[2,6,0.476],[3,5,0.984]],"members":1,"scatter":{"x":0,"y":6,"r":0.64,"pts":[[0.66,0.32],[0.11,1.23],[0.39,0.53],[-1.8,-1.27],[-2.38,-2.9],[1.92,0.97],[0.32,0.83],[-0.27,-0.95],[0.32,0.59],[0.39,-0.28],[0.21,0.42],[0.1,0.21],[0.99,1.77],[0.08,-0.33],[-0.24,-0.14],[1.61,-1.47],[2.13,1.24],[0.99,0.94],[-0.39,-0.33],[-1.43,-2.66],[-0.23,-0.8],[-0.19,-1.53],[0.04,-0.8],[-0.24,-0.62],[0.38,1.74],[-0.04,-0.01],[0.25,0.01],[-0.67,-0.18],[0.28,0.92],[-0.68,-1.98],[0.54,0.82],[-0.04,-0.37],[-0.61,-0.48],[-0.78,0.07],[0.03,-1.06],[-0.33,-0.54],[-0.06,0.2],[-0.53,-0.89],[-0.64,-0.7],[-0.98,-0.42],[-0.45,0.84],[-1.82,-0.62],[0.85,0.72],[-2.14,-0.81],[-1.81,-0.56],[-0.66,-0.29],[1.09,1.93],[0.42,0.36],[0.25,-0.45],[-1.19,-0.08],[-0.52,-1.49],[0.55,0.56],[1.26,0.31],[-1.76,-2.11],[-0.73,-0.74],[1.85,0.77],[1.95,0.58],[0.49,0.58],[1.81,1.68],[0.33,0.27],[0.31,1.23],[0.7,0.67],[-0.25,-1.11],[-0.52,-0.84],[0.33,0.28],[-0.24,-0.25],[-0.85,-1.12],[-1.41,-1.63],[-1.01,0.16],[1.42,1.86],[-1.71,-1.84],[-1.45,-1.64],[-0.61,0.69],[-0.76,-0.87],[-1.36,-1.48],[0.04,-0.2],[-0.61,0.09],[-0.04,0.39],[1.89,1.66],[0.82,1.89],[-1.03,-1.56],[-1.12,-1.14],[-0.5,0.47],[-0.22,0.08],[-0.5,-1.25],[1.1,0.94],[1.16,0.74],[-0.74,0.13],[1.4,0.21],[0.49,0.88],[-0.62,-0.75],[0.08,0.57],[0.85,2.62],[0.54,0.44],[0.67,-0.38],[-0.6,0.59],[-2.03,-1.34],[1.23,0.44],[0.35,-0.42],[-0.08,-1.23],[0.09,0.32],[0.51,1.09],[0.61,0.36],[0.56,1.17],[-0.14,-0.54],[-0.02,0.04],[0.12,-1.08],[1.5,-0.84],[0.12,0.85],[-0.24,-0.72],[0.63,0.89],[1.3,1.59],[-1.79,-0.75],[0.7,0.81],[-1.59,-1.29],[0.78,0.02],[-0.06,-0.19],[-0.38,0.23],[1.27,2.14],[0.1,0.75],[0.33,-1.38],[-0.31,0.84],[0.9,0.29],[-1.28,-0.98],[-0.02,-0.08],[-0.24,0.7],[-0.27,-0.47],[0.05,0.5],[-0.48,-1.06],[-0.0,0.37],[-0.65,-0.27],[0.5,-0.38],[-0.32,-0.14],[0.31,0.23],[-1.92,-0.61],[-1.42,-0.35],[-0.02,0.41],[-1.17,-1.29],[-0.67,-0.52],[0.07,0.81],[1.71,1.94],[-0.18,-0.14],[0.29,-0.7],[-1.73,-1.29],[-0.24,0.01],[0.97,-0.7],[-0.35,-0.56],[-0.76,-0.05],[0.39,1.15],[-0.78,-0.01],[-0.05,-1.82],[-1.27,-1.18],[0.16,0.45],[-0.95,0.74],[0.87,-0.7],[0.35,0.69],[0.81,0.09],[-1.15,-0.58],[-0.54,-0.76],[0.95,1.57],[0.07,1.27],[1.62,1.81],[0.36,-0.53],[-1.0,0.33],[-1.13,0.54],[0.02,0.06],[0.69,-0.87],[-1.16,-1.81],[3.17,1.71],[2.07,0.36],[-1.14,0.45],[-0.34,-0.59],[-1.01,0.48],[-0.22,-0.48],[0.45,0.03],[-1.59,-0.83],[0.96,0.49],[-0.75,-1.89],[-0.57,-1.36],[1.52,0.92],[-0.66,0.63],[0.14,-0.74],[0.42,-0.98],[-1.86,-0.59],[-1.8,-0.65],[-1.8,-0.79],[-0.4,-1.18],[0.2,0.11],[-1.99,-2.12],[-0.63,-0.1],[-0.14,-0.63],[2.03,2.06],[0.01,1.06],[2.0,2.35],[0.23,-1.62],[1.44,1.66],[0.56,0.98],[-1.01,-0.46],[-0.26,-0.16],[-0.22,-0.38],[-1.48,-0.75],[1.38,1.51],[-0.17,-0.0],[1.48,0.14],[-0.09,0.72],[-1.37,-0.33],[0.6,-0.39],[0.79,0.02],[-0.87,-0.49],[-0.15,0.03],[0.39,0.91],[0.12,0.84],[0.44,-0.72],[0.5,0.29],[-0.36,-1.43],[-0.58,-0.55],[0.29,-0.67],[-0.44,-1.66],[1.16,-0.19],[-0.96,-0.4],[0.35,-0.47],[1.39,-0.84],[0.07,0.14],[0.98,0.86],[-0.01,-0.24],[-0.85,-0.19],[0.4,-0.1],[-0.09,0.67],[-1.07,-1.16],[-0.71,0.51],[-1.32,0.38],[0.22,-0.04],[-0.36,-2.02],[0.43,1.72],[0.49,0.11],[-0.93,-1.47],[1.65,0.31],[-0.82,1.53],[1.1,0.28],[-0.4,-0.08],[-1.16,-1.41],[-0.26,-0.42],[0.15,-1.28],[0.32,0.17],[-0.39,-0.05],[-1.3,-1.92],[-0.04,0.88],[0.78,-0.22],[-0.51,-1.48],[-0.71,-0.51],[0.4,1.05],[-2.78,-2.72],[-0.05,-0.02],[0.53,-0.61],[-0.22,-0.38],[-0.58,-0.86],[0.41,-0.69],[1.67,1.68],[0.89,0.31],[0.03,-0.8]]}},{"id":"ood_size_test-322","split":"held_out_size","names":["pressure","alcohol","explosion","heavy_rains","debris","devastation","weight_gain","death"],"edges":[[0,2,0.853],[0,6,0.93],[0,7,0.883],[1,0,-0.744],[1,5,0.635],[2,4,-0.803],[3,4,-0.477],[3,5,0.33],[5,7,0.945]],"members":4,"scatter":{"x":0,"y":6,"r":0.93,"pts":[[-0.74,-0.35],[-1.7,-1.81],[0.26,0.24],[-0.4,-0.68],[-0.19,-0.62],[-0.68,-0.39],[0.18,-0.24],[-0.31,-0.91],[-1.99,-1.77],[0.3,0.32],[0.95,0.96],[0.16,-0.01],[-1.03,-1.08],[-0.35,-0.99],[-0.1,-0.37],[-0.82,-0.0],[-1.12,-0.89],[-1.06,-1.08],[0.8,0.7],[-0.69,-0.41],[0.64,0.75],[-1.45,-2.14],[1.39,1.25],[0.1,0.47],[0.64,0.52],[-0.83,-0.27],[0.6,0.48],[0.23,0.29],[-1.89,-2.05],[0.91,1.18],[-1.73,-1.44],[-0.4,-0.63],[-0.38,-0.41],[-1.57,-2.14],[1.15,1.54],[0.57,0.4],[-1.18,-1.16],[2.04,2.2],[1.86,2.27],[-0.84,-1.22],[-0.29,-0.86],[1.26,1.28],[0.45,0.58],[1.12,0.97],[1.02,1.0],[-0.52,-0.88],[-0.67,-0.59],[0.16,-0.37],[2.08,1.86],[-2.15,-2.0],[-1.0,-0.51],[0.8,0.89],[0.08,0.49],[0.52,0.47],[0.98,0.81],[0.94,1.25],[-0.99,-1.04],[-0.33,-0.49],[-0.11,0.04],[-0.88,-1.06],[0.05,-0.28],[-0.23,-0.36],[-0.13,0.52],[-1.73,-1.25],[0.47,0.93],[-0.8,-1.17],[0.18,0.04],[0.93,0.54],[-0.98,-0.78],[-0.13,-0.56],[-1.41,-1.3],[1.36,0.84],[1.7,1.4],[0.05,-0.08],[0.75,0.71],[0.45,0.51],[1.44,1.34],[-1.82,-0.9],[-0.64,-0.47],[-0.09,-0.4],[-0.83,-0.48],[1.15,0.54],[-0.52,-0.23],[0.3,-0.03],[0.53,0.94],[-0.21,0.19],[-0.43,0.07],[-0.45,-0.38],[-0.26,0.0],[0.91,1.67],[0.33,-0.14],[-0.26,-0.39],[2.0,1.61],[-0.34,-0.36],[2.15,2.66],[-0.77,-1.0],[-0.5,-0.42],[-0.39,-0.19],[-0.37,-0.87],[1.11,1.24],[0.82,0.51],[-0.75,-0.92],[0.71,0.71],[-0.71,-0.25],[-0.31,0.52],[0.32,-0.3],[0.69,0.85],[-0.7,0.05],[0.09,0.18],[-1.49,-1.28],[0.08,0.38],[1.38,1.06],[-1.25,-1.23],[0.36,0.41],[0.23,0.27],[0.84,0.97],[-0.17,-0.58],[0.51,0.76],[0.44,1.02],[0.45,0.27],[2.24,2.35],[-0.61,0.29],[-1.86,-1.72],[-0.2,0.16],[1.32,0.76],[1.32,1.02],[1.82,1.61],[0.4,0.32],[0.39,0.47],[-0.29,-0.34],[0.51,0.27],[-0.37,-0.66],[-0.46,-0.4],[0.17,-0.33],[0.59,0.38],[-0.51,0.14],[-1.96,-1.31],[0.59,1.15],[1.19,0.97],[-0.6,-0.82],[2.29,1.84],[-0.52,-0.3],[-3.11,-3.22],[-0.95,-0.71],[-1.2,-1.14],[2.75,2.87],[-1.54,-1.13],[-0.94,-1.15],[-0.48,-0.79],[-0.37,-0.1],[1.44,1.09],[-0.48,-0.86],[-0.81,-0.67],[-0.84,-0.13],[0.49,1.0],[-0.12,-0.33],[-0.11,0.23],[-1.07,-0.54],[1.24,1.28],[-0.53,-0.38],[-1.7,-1.29],[0.92,0.77],[-0.93,-0.64],[0.75,0.96],[-1.61,-1.09],[0.22,1.02],[-1.66,-2.1],[0.2,-0.15],[0.4,0.8],[-0.39,-0.27],[-0.35,0.32],[0.06,0.01],[0.55,0.39],[-0.6,0.04],[2.86,2.31],[-1.21,-1.4],[0.42,0.38],[2.16,2.32],[-1.02,-0.8],[-1.03,-0.87],[0.19,0.05],[-0.54,-1.19],[-0.46,-0.32],[1.3,0.54],[1.64,1.19],[0.71,0.65],[-1.22,-1.21],[-0.43,-0.25],[0.74,0.97],[-0.13,-0.28],[-1.9,-1.79],[-0.43,-0.44],[-0.91,-0.45],[0.39,0.24],[-0.45,-1.05],[-2.03,-1.82],[0.4,0.35],[-1.04,-0.12],[0.28,0.67],[0.09,0.45],[0.57,0.21],[1.58,1.89],[-0.02,-0.16],[-1.04,-0.79],[-0.76,-0.17],[1.65,1.47],[-0.34,-0.01],[-0.85,-0.78],[0.15,-0.43],[-0.43,-0.14],[1.33,0.35],[-0.1,0.52],[-3.16,-2.55],[-0.52,-0.44],[-1.89,-2.02],[0.26,0.12],[-2.6,-2.1],[-0.36,-0.64],[-1.08,-1.33],[-1.05,-1.15],[0.6,0.7],[0.6,-0.19],[-0.98,-0.44],[0.47,0.43],[0.63,0.58],[-0.9,-0.22],[0.68,0.71],[-0.01,0.13],[0.64,1.07],[0.77,1.08],[-0.7,-0.68],[-0.55,-0.26],[-1.41,-1.8],[1.01,0.72],[0.26,-0.06],[-1.89,-1.68],[0.13,0.51],[-0.17,-0.53],[-0.21,0.08],[-0.72,-0.91],[1.38,1.07],[1.02,0.93],[-0.18,-0.09],[-1.46,-1.15],[0.98,0.35],[0.47,0.44],[0.68,0.32],[-0.19,0.0],[-2.16,-2.42],[-0.99,-1.08],[0.53,0.9],[-1.27,-1.23],[-1.66,-1.82],[-2.0,-2.44],[0.05,-0.86],[-0.7,-0.06],[0.06,0.26],[-0.46,0.19],[-1.5,-1.01],[1.46,1.93]]}}];
+// Four real training tasks. Highlighted variables are the ones the question asks about.
+const EXAMPLES = [
+  { step: "Step 1", title: "Test a relationship", names: ["leakage", "methane", "explosions", "thermal_burns"],
+    edges: [[0, 2, 0.574], [1, 2, 0.484], [2, 3, -0.862]], focus: [0, 1],
+    q: "Are leakage and methane related, once explosions and thermal burns are held fixed?", a: "Yes" },
+  { step: "Step 2", title: "Find the direction", names: ["misalignment", "vibration", "stress_cracks", "bad_posture"],
+    edges: [[0, 1, 0.721], [1, 2, -0.93], [3, 0, -0.861]], focus: [1, 2],
+    q: "Does vibration cause stress cracks, the reverse, or neither?", a: "vibration causes stress cracks" },
+  { step: "Step 3", title: "Choose the controls", names: ["depression", "drug", "disability", "misconduct"],
+    edges: [[0, 3, 0.248], [1, 2, -0.764], [1, 3, -0.228], [2, 3, 0.564]], focus: [2, 3],
+    q: "Does regressing misconduct on disability and depression recover disability's effect?", a: "No, drug affects both" },
+  { step: "Step 4", title: "Estimate the effect", names: ["infection", "dust", "bronchitis", "severe_cough"],
+    edges: [[0, 2, -0.615], [0, 3, 0.766], [1, 2, -0.459], [2, 3, 0.854]], focus: [2, 3],
+    q: "If bronchitis rose by one standard deviation, how much would severe cough change?", a: "0.85 standard deviations" },
+];
+
+// Draw a DAG of rounded name pills into svg and return its height. Edges are [from, to, weight]; a weight's sign
+// picks the arrow color, and a missing weight draws a neutral arrow. Sources sit just above their first child when
+// compact is set, which keeps wide rows short.
+function drawDag(svg, id, ex, { W, size = 12.5, compact = false }) {
+  const ctx = document.createElement("canvas").getContext("2d");
+  const FONT = `500 ${size}px "IBM Plex Sans"`;
+  ctx.font = FONT;
+  const GAP = 8, ROW = 34, PH = size * 2 + 1;
+  const n = ex.names.length, focus = ex.focus || [];
+  const parents = Array.from({ length: n }, () => []), children = Array.from({ length: n }, () => []);
+  for (const [a, b] of ex.edges) { parents[b].push(a); children[a].push(b); }
+  // Layers by longest path from the roots, ordered within a layer by their parents' positions.
+  const layer = new Array(n).fill(0);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [a, b] of ex.edges) if (layer[b] < layer[a] + 1) { layer[b] = layer[a] + 1; changed = true; }
+  }
+  if (compact) for (let v = 0; v < n; v++) if (!parents[v].length && children[v].length) layer[v] = Math.min(...children[v].map(c => layer[c])) - 1;
+  const L = Math.max(...layer) + 1;
+  const layers = Array.from({ length: L }, (_, l) => [...Array(n).keys()].filter(v => layer[v] === l));
+  const pos = v => layers[layer[v]].indexOf(v);
+  const mean = xs => xs.reduce((a, b) => a + b, 0) / xs.length;
+  for (let l = 1; l < L; l++) layers[l].sort((u, v) => (parents[u].length ? mean(parents[u].map(pos)) : -1) - (parents[v].length ? mean(parents[v].map(pos)) : -1));
+  const label = v => ex.names[v].replace(/_/g, " ");
+  const pw = ex.names.map((_, v) => ctx.measureText(label(v)).width + 20);
+  const x = new Array(n), y = new Array(n);
+  layers.forEach((row, l) => {
+    const total = row.reduce((t, v) => t + pw[v], 0) + GAP * (row.length - 1);
+    let left = (W - total) / 2;
+    for (const v of row) { x[v] = left + pw[v] / 2; y[v] = PH / 2 + 2 + l * (PH + ROW); left += pw[v] + GAP; }
+  });
+  const H = L * PH + (L - 1) * ROW + 4;
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const d = el(svg, "defs", {});
+  for (const [key, color] of [["up", "var(--up)"], ["down", "var(--down)"], ["none", "var(--muted)"]]) {
+    const m = el(d, "marker", { id: `${id}-${key}`, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 5, markerHeight: 5, orient: "auto" });
+    el(m, "path", { d: "M0,0 L10,5 L0,10 z", fill: color });
+  }
+  for (const [a, b, w] of ex.edges) {
+    const x1 = x[a], y1 = y[a] + PH / 2, x2 = x[b], y2 = y[b] - PH / 2 - 1;
+    const bend = layer[b] - layer[a] > 1 ? (x1 + x2 <= W ? -1 : 1) * 46 : 0;
+    const dy = (y2 - y1) * 0.5;
+    const key = w === undefined ? "none" : w > 0 ? "up" : "down";
+    el(svg, "path", { d: `M${x1},${y1} C${x1 + bend},${y1 + dy} ${x2 + bend},${y2 - dy} ${x2},${y2}`, fill: "none", stroke: `var(--${key === "none" ? "muted" : key})`, "stroke-width": key === "none" ? 1.6 : 2.2, "stroke-linecap": "round", "marker-end": `url(#${id}-${key})` });
+  }
+  for (let v = 0; v < n; v++) {
+    const f = focus.includes(v);
+    el(svg, "rect", { x: x[v] - pw[v] / 2, y: y[v] - PH / 2, width: pw[v], height: PH, rx: PH / 2, fill: "var(--surface)", stroke: f ? "var(--ink)" : "var(--line)", "stroke-width": f ? 1.5 : 1.2 });
+    el(svg, "text", { x: x[v], y: y[v] + size * 0.36, "text-anchor": "middle", style: `font:${f ? 600 : 500} ${size}px "IBM Plex Sans";fill:var(--ink)` }, label(v));
+  }
+  return H;
+}
+
 function heroDraw() {
   const grid = document.getElementById("hero-grid");
-  const ctx = document.createElement("canvas").getContext("2d");
-  const FONT = '500 12px "IBM Plex Sans"';
-  ctx.font = FONT;
-  const W = 272, GAP = 10;
-  for (const world of HERO) {
-    const n = world.names.length, edges = world.edges;
+  const cards = EXAMPLES.map(ex => {
     const card = document.createElement("div");
-    card.className = "hc";
-    const tag = world.split === "train" ? '<span class="pill plain">training</span>' : '<span class="pill good">held out</span>';
-    const fit = world.members === 1 ? "Data alone fix every direction" : `${world.members} graphs fit this data; names break the tie`;
-    const sx = world.names[world.scatter.x].replace(/_/g, " "), sy = world.names[world.scatter.y].replace(/_/g, " ");
-    card.innerHTML = `<div class="hc-top"><span class="label">${n} variables · ${edges.length} links</span>${tag}</div>
-      <div class="hc-graph"><svg width="${W}"></svg></div>
-      <div class="hc-fit">${fit}</div>
-      <div class="hc-data"><div class="lab">Data for one link<br><b>${sx} &rarr; ${sy}</b><br>r = ${world.scatter.r.toFixed(2)}</div><svg width="96" height="62"></svg></div>`;
+    card.className = "ex";
+    card.innerHTML = `<div class="label">${ex.step}</div><h3>${ex.title}</h3>
+      <div class="ex-graph"><svg></svg></div>
+      <div class="q">"${ex.q}"</div>
+      <div class="a">Answer: <b>${ex.a}</b></div>`;
     grid.appendChild(card);
-    const svg = card.querySelector(".hc-graph svg");
-    // Layers by longest path from the roots; order within a layer by barycenter sweeps.
-    const parents = Array.from({ length: n }, () => []), children = Array.from({ length: n }, () => []);
-    for (const [a, b] of edges) { parents[b].push(a); children[a].push(b); }
-    const layer = new Array(n).fill(0);
-    for (let changed = true; changed;) {
-      changed = false;
-      for (const [a, b] of edges) if (layer[b] < layer[a] + 1) { layer[b] = layer[a] + 1; changed = true; }
-    }
-    const L = Math.max(...layer) + 1;
-    const layers = Array.from({ length: L }, (_, l) => [...Array(n).keys()].filter(v => layer[v] === l));
-    const pos = v => layers[layer[v]].indexOf(v);
-    const mean = xs => xs.reduce((a, b) => a + b, 0) / xs.length;
-    for (let it = 0; it < 4; it++) {
-      for (let l = 1; l < L; l++) layers[l].sort((u, v) => mean(parents[u].map(pos)) - mean(parents[v].map(pos)));
-      for (let l = L - 2; l >= 0; l--) layers[l].sort((u, v) => (children[u].length ? mean(children[u].map(pos)) : pos(u)) - (children[v].length ? mean(children[v].map(pos)) : pos(v)));
-    }
-    // Pill sizes: wrap long names onto two lines at the space nearest the middle.
-    const lines = world.names.map(name => {
-      const label = name.replace(/_/g, " ");
-      if (ctx.measureText(label).width <= 96 || !label.includes(" ")) return [label];
-      const mid = label.length / 2;
-      let best = -1;
-      for (let i = 0; i < label.length; i++) if (label[i] === " " && (best < 0 || Math.abs(i - mid) < Math.abs(best - mid))) best = i;
-      return [label.slice(0, best), label.slice(best + 1)];
-    });
-    const pw = lines.map(ls => Math.max(...ls.map(t => ctx.measureText(t).width)) + 18);
-    const ph = lines.map(ls => ls.length === 1 ? 24 : 38);
-    const x = new Array(n), y = new Array(n);
-    let top = 8;
-    for (const row of layers) {
-      const h = Math.max(...row.map(v => ph[v]));
-      const total = row.reduce((t, v) => t + pw[v], 0) + GAP * (row.length - 1);
-      let left = (W - total) / 2;
-      for (const v of row) { x[v] = left + pw[v] / 2; y[v] = top + h / 2; left += pw[v] + GAP; }
-      top += h + 30;
-    }
-    const H = top - 30 + 8;
-    svg.setAttribute("height", H);
-    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-    const d = el(svg, "defs", {});
-    for (const [id, color] of [["p", "var(--pos)"], ["n", "var(--neg)"]]) {
-      const m = el(d, "marker", { id: `${world.id}-${id}`, viewBox: "0 0 10 10", refX: 8.5, refY: 5, markerWidth: 4.2, markerHeight: 4.2, orient: "auto" });
-      el(m, "path", { d: "M0,0 L10,5 L0,10 z", fill: color });
-    }
-    // Spread the ends of several links on one pill so they don't overlap.
-    const outs = children.map((cs, v) => [...cs].sort((a, b) => x[a] - x[b]));
-    const ins = parents.map((ps, v) => [...ps].sort((a, b) => x[a] - x[b]));
-    for (const [a, b, w] of edges) {
-      const oa = outs[a].indexOf(b) - (outs[a].length - 1) / 2, ib = ins[b].indexOf(a) - (ins[b].length - 1) / 2;
-      const x1 = x[a] + oa * Math.min(10, pw[a] / (outs[a].length + 1)), y1 = y[a] + ph[a] / 2;
-      const x2 = x[b] + ib * Math.min(10, pw[b] / (ins[b].length + 1)), y2 = y[b] - ph[b] / 2 - 1;
-      const skip = layer[b] - layer[a] > 1;
-      const bend = skip ? (x1 + x2 < W ? -1 : 1) * 46 : 0;
-      const dy = (y2 - y1) * 0.5;
-      const path = `M${x1},${y1} C${x1 + bend},${y1 + dy} ${x2 + bend},${y2 - dy} ${x2},${y2}`;
-      const sign = w > 0 ? "p" : "n";
-      el(svg, "path", { d: path, fill: "none", stroke: w > 0 ? "var(--pos)" : "var(--neg)", "stroke-width": (1.2 + 2.8 * Math.min(1, Math.abs(w))).toFixed(2), "stroke-linecap": "round", opacity: 0.9, "marker-end": `url(#${world.id}-${sign})` });
-    }
-    for (let v = 0; v < n; v++) {
-      el(svg, "rect", { x: x[v] - pw[v] / 2, y: y[v] - ph[v] / 2, width: pw[v], height: ph[v], rx: 11, fill: "var(--bg)", stroke: "var(--line)", "stroke-width": 1.2 });
-      lines[v].forEach((t, i) => el(svg, "text", { x: x[v], y: y[v] + 4 + (i - (lines[v].length - 1) / 2) * 14, "text-anchor": "middle", style: `font:${FONT};fill:var(--ink)` }, t));
-    }
-    // A scatter of real rows for one linked pair.
-    const sc = card.querySelector(".hc-data svg"), R = 3.4, sw = 96, sh = 62;
-    el(sc, "rect", { x: 0.5, y: 0.5, width: sw - 1, height: sh - 1, rx: 6, fill: "var(--bg)", stroke: "var(--line)" });
-    for (const [px, py] of world.scatter.pts) {
-      if (Math.abs(px) > R || Math.abs(py) > R) continue;
-      el(sc, "circle", { cx: 4 + (px + R) / (2 * R) * (sw - 8), cy: sh - 4 - (py + R) / (2 * R) * (sh - 8), r: 1.25, fill: "var(--pos)", opacity: 0.45 });
-    }
-  }
+    return card;
+  });
+  const heights = EXAMPLES.map((ex, k) => drawDag(cards[k].querySelector("svg"), `ex${k}`, ex, { W: 190 }));
+  // Give every card the same graph height so the questions line up.
+  const tallest = Math.max(...heights);
+  cards.forEach(card => { card.querySelector(".ex-graph").style.height = `${tallest + 20}px`; });
 }
 
 document.fonts.ready.then(() => { episodeGraph(); stepsChart(); transferChart(); heroDraw(); });
